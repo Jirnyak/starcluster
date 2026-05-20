@@ -1,0 +1,23 @@
+.DS_Store
+
+# Build outputs and local runtime state
+/game
+*.o
+*.out
+*.exe
+*.save
+/starcluster.save
+
+# Local vendored/runtime SDL packages and binaries.
+# The active build uses system SDL2 through sdl2-config.
+/SDL.h
+/SDL2.dll
+/SDL2_image.dll
+/SDL2_ttf.dll
+/SDL2.framework/
+/SDL2_image.framework/
+/SDL2_ttf.framework/
+/mingw_dev_lib/
+
+# Unused local font asset in the current SDL2 renderer.
+/Roboto-Black.ttf
