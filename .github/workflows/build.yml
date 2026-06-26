@@ -25,6 +25,11 @@ jobs:
           # Find SDL2 and bundle it
           SDL2_DYLIB=$(otool -L Starcluster.app/Contents/MacOS/Starcluster | grep libSDL2 | awk '{print $1}')
           cp "$SDL2_DYLIB" Starcluster.app/Contents/Frameworks/
+          
+          # Also bundle SDL3 since sdl2-compat loads it dynamically
+          SDL3_PREFIX=$(brew --prefix sdl3)
+          cp "$SDL3_PREFIX"/lib/libSDL3.*.dylib Starcluster.app/Contents/Frameworks/
+          
           chmod +w Starcluster.app/Contents/Frameworks/*.dylib
           SDL2_FILENAME=$(basename "$SDL2_DYLIB")
           
