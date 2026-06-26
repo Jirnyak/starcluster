@@ -165,7 +165,9 @@ public:
     void processSignals();
     void rebuildRouteCache();
     int routeNextStar(int originStar, int targetStar) const;
+    bool abortAgentRoute(int agentIndex);
     bool commandAgentToStar(int agentIndex, int starIndex);
+    bool buyShip(int agentIndex, int starIndex, int classId);
     double routeDistance(int originStar, int targetStar) const;
     double agentRouteDistance(int agentIndex, int targetStar) const;
     double agentRouteTravelTime(int agentIndex, int targetStar) const;
@@ -183,10 +185,11 @@ public:
     bool agentBuyElementAmount(int agentIndex, int elementIndex, double amount);
     bool agentBuyFuel(int agentIndex);
     bool agentSellCargo(int agentIndex);
-    bool agentSellCargoAmount(int agentIndex, double amount);
+    bool agentSellCargoAmount(int agentIndex, double amount, int elementIndex = -1);
     bool agentAcceptContract(int agentIndex, int contractId);
     bool agentCompleteContract(int agentIndex, int contractId);
     int agentCompleteContracts(int agentIndex);
+    bool robAgent(int attackerIndex, int victimIndex);
     bool agentAutoTrade(int agentIndex);
     bool playerFoundColony();
     bool playerHireShip();

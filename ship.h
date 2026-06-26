@@ -21,6 +21,10 @@ public:
     double fuelCapacity = 3200.0;
     std::vector<Resource> cargo;
     double cargoCapacity = 100.0; // Максимальный груз (масса)
+    double heavyWeapons = 10.0;
+    double lightWeapons = 5.0;
+    double armor = 5.0;
+    double utility = 0.0;
     int ownerFaction; // -1 если свободный
     int targetStar = -1; // Индекс звезды назначения
     bool enRoute = false; // В пути ли корабль
@@ -38,3 +42,19 @@ double shipFuelNeededForDeltaV(const Ship& ship, double deltaV);
 double shipEstimateRouteFuel(const Ship& ship, double distance);
 double shipConsumeFuelForDeltaV(Ship& ship, double desiredDeltaV);
 void shipAutofit(Ship& ship);
+
+struct ShipClass {
+    std::string name;
+    double dryMass;
+    double driveThrust;
+    double driveEfficiency;
+    double cargoCapacity;
+    double fuelCapacity;
+    double heavyWeapons;
+    double lightWeapons;
+    double armor;
+    double utility;
+    double price;
+};
+
+const std::vector<ShipClass>& shipClasses();

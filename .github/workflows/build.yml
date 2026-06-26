@@ -1,0 +1,90 @@
+name: Build Launchers
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2
+        run: brew install sdl2
+      - name: Build
+        run: make game
+      - name: Package App and DMG
+        run: |
+          mkdir -p Starcluster.app/Contents/MacOS
+          cp game Starcluster.app/Contents/MacOS/Starcluster
+          chmod +x Starcluster.app/Contents/MacOS/Starcluster
+          # Basic Info.plist
+          cat << 'PLIST' > Starcluster.app/Contents/Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>Starcluster</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.example.starcluster</string>
+            <key>CFBundleName</key>
+            <string>Starcluster</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0</string>
+            <key>CFBundleVersion</key>
+            <string>1.0</string>
+          </dict>
+          </plist>
+          PLIST
+          
+          hdiutil create -volname "Starcluster" -srcfolder Starcluster.app -ov -format UDZO Starcluster.dmg
+      - name: Upload Mac Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Starcluster-macOS
+          path: Starcluster.dmg
+
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2 make
+      - name: Build
+        run: |
+          make game
+          mv game.exe starcluster.exe
+          mkdir -p dist
+          cp starcluster.exe dist/
+          cp /mingw64/bin/SDL2.dll dist/
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Starcluster-Windows
+          path: dist/
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
+      - name: Build
+        run: |
+          make game
+          mv game starcluster-linux
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Starcluster-Linux
+          path: starcluster-linux

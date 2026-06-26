@@ -20,7 +20,8 @@ struct HudSelection {
 enum class WindowKind {
     SystemInfo,
     Trade,
-    Contracts
+    Contracts,
+    Shipyard
 };
 
 struct Window {
@@ -31,6 +32,7 @@ struct Window {
     bool dragging = false;
     int dragX = 0;
     int dragY = 0;
+    int scrollOffset = 0;
 };
 
 struct WindowState {
@@ -45,6 +47,7 @@ struct WindowState {
 void openSystemWindow(WindowState& state, int starIndex, int screenW, int screenH);
 void openTradeWindow(WindowState& state, int starIndex, int screenW, int screenH);
 void openContractsWindow(WindowState& state, int starIndex, int screenW, int screenH);
+void openShipyardWindow(WindowState& state, int starIndex, int screenW, int screenH);
 bool handleMouseDown(WindowState& state, Game& game, HudSelection& selection, int screenW, int screenH, int mouseX, int mouseY, int button);
 void handleMouseMove(WindowState& state, int screenW, int screenH, int mouseX, int mouseY);
 void handleMouseUp(WindowState& state);

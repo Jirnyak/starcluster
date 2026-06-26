@@ -682,10 +682,20 @@ int main(int argc, char** argv) {
                     selectedAgent = nextVisibleAgent(game, selectedAgent);
                 }
                 if (e.key.keysym.sym == SDLK_f) followAgent = selectedAgent >= 0;
+                if (e.key.keysym.sym == SDLK_r && selectedAgent >= 0 && selectedAgent != game.playerAgent) {
+                    if (game.robAgent(game.playerAgent, selectedAgent)) followAgent = true;
+                }
                 if (e.key.keysym.sym == SDLK_i) {
                     showInfluenceOverlay = !showInfluenceOverlay;
                     invalidateInfluenceOverlayCache();
                     titleTick = 11;
+                }
+                if (e.key.keysym.sym == SDLK_RETURN && game.playerAgent >= 0) {
+                    selectedStar = game.agents[game.playerAgent].currentStar;
+                    if (selectedStar >= 0) {
+                        followAgent = false;
+                        UI::openSystemWindow(ui, selectedStar, winW, winH);
+                    }
                 }
                 if (e.key.keysym.sym == SDLK_p && game.playerAgent >= 0) {
                     selectedAgent = game.playerAgent;
@@ -704,6 +714,9 @@ int main(int argc, char** argv) {
                 if (e.key.keysym.sym == SDLK_t && game.agentAutoTrade(game.playerAgent)) {
                     selectedAgent = game.playerAgent;
                     followAgent = true;
+                }
+                if (e.key.keysym.sym == SDLK_x && game.playerAgent >= 0) {
+                    game.abortAgentRoute(game.playerAgent);
                 }
                 if (e.key.keysym.sym == SDLK_c && game.playerFoundColony()) {
                     selectedAgent = game.playerAgent;

@@ -1731,14 +1731,24 @@ bool buyFuel(Game& game, Agent& agent, int starIndex, double targetFuel) {
     return true;
 }
 
-bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount = std::numeric_limits<double>::max()) {
-    if (!validStar(game, starIndex) || agent.ship.cargo.empty() || agent.ship.cargo[0].amount <= 0.0 || requestedAmount <= 0.0) return false;
+bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount = std::numeric_limits<double>::max(), const std::string& elementSymbol = "") {
+    if (!validStar(game, starIndex) || agent.ship.cargo.empty() || requestedAmount <= 0.0) return false;
+
+    int cargoIndex = -1;
+    if (!elementSymbol.empty()) {
+        for (size_t i = 0; i < agent.ship.cargo.size(); ++i) {
+            if (agent.ship.cargo[i].element == elementSymbol) { cargoIndex = int(i); break; }
+        }
+    } else {
+        cargoIndex = 0;
+    }
+    if (cargoIndex < 0 || agent.ship.cargo[cargoIndex].amount <= 0.0) return false;
 
     Market& market = game.markets[starIndex];
-    const int resourceIndex = elementIndex(agent.ship.cargo[0].element);
+    const int resourceIndex = elementIndex(agent.ship.cargo[cargoIndex].element);
     if (resourceIndex < 0 || resourceIndex >= int(market.prices.size())) return false;
 
-    const double cargoAmount = agent.ship.cargo[0].amount;
+    const double cargoAmount = agent.ship.cargo[cargoIndex].amount;
     const double amount = std::min(cargoAmount, requestedAmount);
     if (amount <= 0.01) return false;
     const double gross = amount * market.prices[resourceIndex];
@@ -1757,43 +1767,46 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
     agent.lastProfit = gross - fee - costShare;
     agent.cargoCost = std::max(0.0, agent.cargoCost - costShare);
     agent.trades += 1;
-    agent.lastAction = "sold " + agent.ship.cargo[0].element;
-    agent.ship.cargo[0].amount -= amount;
-    if (agent.ship.cargo[0].amount <= 0.01) {
-        agent.ship.cargo.clear();
-        agent.cargoCost = 0.0;
+    agent.lastAction = "sold " + agent.ship.cargo[cargoIndex].element;
+    agent.ship.cargo[cargoIndex].amount -= amount;
+    if (agent.ship.cargo[cargoIndex].amount <= 0.01) {
+        agent.ship.cargo.erase(agent.ship.cargo.begin() + cargoIndex);
+        if (agent.ship.cargo.empty()) agent.cargoCost = 0.0;
     }
     return true;
 }
 
 void buyCargo(Game& game, Agent& agent, int starIndex, const TradePlan& plan) {
     if (!validStar(game, starIndex) || plan.elementIndex < 0 || plan.elementIndex >= int(game.markets[starIndex].supply.size())) return;
-
     Market& market = game.markets[starIndex];
-    const auto& element = elementDefinitions()[plan.elementIndex];
-    if (!agent.ship.cargo.empty() && agent.ship.cargo[0].element != element.symbol) return;
-    const double tariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.014);
-    const double unitCost = plan.buyPrice * (1.0 + tariff);
-    if (unitCost <= 0.0) return;
-    const double cargoSpace = std::max(0.0, agent.ship.cargoCapacity - shipCargoMass(agent.ship));
-    const double massLimitedAmount = cargoSpace / resourceUnitMassByIndex(plan.elementIndex);
-    const double amount = std::min(plan.amount, std::min(massLimitedAmount, std::min(market.supply[plan.elementIndex].amount, agent.money / unitCost)));
+    const ElementDefinition& element = elementDefinitions()[plan.elementIndex];
+
+    const double unitCost = market.prices[plan.elementIndex];
+    const double amount = std::min(plan.amount, std::min(market.supply[plan.elementIndex].amount, agent.money / unitCost));
     if (amount <= 0.01) return;
 
-    const double baseCost = amount * plan.buyPrice;
+    const double baseCost = amount * unitCost;
+    const double tariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.014);
     const double fee = baseCost * tariff;
     const int owner = game.cluster.stars[starIndex].ownerFaction;
+
     market.supply[plan.elementIndex].amount -= amount;
-    agent.money -= baseCost + fee;
+    market.demand[plan.elementIndex].amount += amount * 0.45;
+    agent.money -= (baseCost + fee);
     if (validFaction(game, owner)) {
         game.factions[owner].treasury += fee;
         if (fee > 0.01) game.queueSettlementSignal(owner, starIndex, fee);
     }
     agent.cargoCost += baseCost + fee;
-    if (agent.ship.cargo.empty()) {
+    
+    int cargoIndex = -1;
+    for (size_t i = 0; i < agent.ship.cargo.size(); ++i) {
+        if (agent.ship.cargo[i].element == element.symbol) { cargoIndex = int(i); break; }
+    }
+    if (cargoIndex < 0) {
         agent.ship.cargo.emplace_back(element.symbol, amount);
     } else {
-        agent.ship.cargo[0].amount += amount;
+        agent.ship.cargo[cargoIndex].amount += amount;
     }
     agent.lastAction = "bought " + std::string(element.symbol);
 }
@@ -3900,7 +3913,27 @@ void Game::updateAgents(double dt) {
     for (size_t i = 0; i < agents.size(); ++i) {
         Agent& agent = agents[i];
         if (agent.ship.enRoute) {
-            if (agent.ship.targetStar >= 0 && agent.ship.targetStar < int(cluster.stars.size())) {
+            if (agent.ship.targetStar == -2) {
+                const double speed = std::sqrt(agent.ship.vx * agent.ship.vx + agent.ship.vy * agent.ship.vy + agent.ship.vz * agent.ship.vz);
+                if (speed < 0.0001) {
+                    agent.ship.vx = agent.ship.vy = agent.ship.vz = 0.0;
+                    agent.ship.enRoute = false;
+                    agent.ship.targetStar = -1;
+                    agent.lastAction = "stopped in deep space";
+                } else {
+                    const double accel = shipCurrentAcceleration(agent.ship);
+                    const double deltaV = accel * dt;
+                    const double brake = shipConsumeFuelForDeltaV(agent.ship, std::min(deltaV, speed));
+                    if (brake > 0.0) {
+                        agent.ship.vx -= agent.ship.vx / speed * brake;
+                        agent.ship.vy -= agent.ship.vy / speed * brake;
+                        agent.ship.vz -= agent.ship.vz / speed * brake;
+                    }
+                    agent.ship.x += agent.ship.vx * dt;
+                    agent.ship.y += agent.ship.vy * dt;
+                    agent.ship.z += agent.ship.vz * dt;
+                }
+            } else if (agent.ship.targetStar >= 0 && agent.ship.targetStar < int(cluster.stars.size())) {
                 const bool arrived = moveShipToward(agent.ship, cluster.stars[agent.ship.targetStar], dt);
                 if (arrived) {
                     agent.currentStar = agent.ship.targetStar;
@@ -3938,9 +3971,172 @@ void Game::updateAgents(double dt) {
     }
 }
 
+bool Game::robAgent(int attackerIndex, int victimIndex) {
+    if (attackerIndex < 0 || attackerIndex >= int(agents.size())) return false;
+    if (victimIndex < 0 || victimIndex >= int(agents.size()) || attackerIndex == victimIndex) return false;
+    Agent& attacker = agents[attackerIndex];
+    Agent& victim = agents[victimIndex];
+    
+    if (attacker.ship.enRoute || victim.ship.enRoute || attacker.currentStar != victim.currentStar) return false;
+
+    // Fleeing check
+    if (victim.ship.acceleration > attacker.ship.acceleration * 1.2) {
+        if (double(randomer(rng, 100)) / 100.0 < 0.6) {
+            attacker.lastAction = "failed to catch " + victim.type;
+            victim.lastAction = "fled from " + attacker.type;
+            
+            // Still lowers relations
+            if (validFaction(*this, victim.ship.ownerFaction) && validFaction(*this, attacker.ship.ownerFaction)) {
+                adjustFactionRelation(victim.ship.ownerFaction, attacker.ship.ownerFaction, -10);
+            }
+            return false;
+        }
+    }
+    
+    // Determine success based on weapons, speed, and armor
+    auto calcPower = [](const Ship& atk, const Ship& def) {
+        const double defManeuver = def.acceleration * 100.0;
+        const double heavyHitChance = std::max(0.1, 1.0 - (defManeuver / 50.0));
+        const double damage = (atk.heavyWeapons * heavyHitChance) + atk.lightWeapons;
+        const double effectiveDmg = std::max(0.0, damage - def.armor);
+        return effectiveDmg + atk.utility;
+    };
+    
+    const double attackPower = calcPower(attacker.ship, victim.ship);
+    const double victimPower = calcPower(victim.ship, attacker.ship);
+    const double roll = double(randomer(rng, 100)) / 100.0;
+    
+    // Robbing ruins relations with the victim's faction
+    if (validFaction(*this, victim.ship.ownerFaction)) {
+        if (validFaction(*this, attacker.ship.ownerFaction)) {
+            adjustFactionRelation(victim.ship.ownerFaction, attacker.ship.ownerFaction, -25);
+            adjustFactionRelation(attacker.ship.ownerFaction, victim.ship.ownerFaction, -25);
+        }
+    }
+    
+    const double successThreshold = (attackPower / (attackPower + victimPower + 0.1));
+    
+    // Function to transfer cargo
+    auto lootCargo = [&](Agent& winner, Agent& loser) {
+        for (const Resource& res : loser.ship.cargo) {
+            bool found = false;
+            for (Resource& ares : winner.ship.cargo) {
+                if (ares.element == res.element) {
+                    ares.amount += res.amount;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                winner.ship.cargo.emplace_back(res.element, res.amount);
+            }
+        }
+        loser.ship.cargo.clear();
+        loser.cargoCost = 0.0;
+    };
+    
+    // Resolve combat
+    if (roll < successThreshold + 0.15) {
+        // Attacker wins
+        if (attackPower > victimPower * 1.5 && roll < successThreshold) {
+            // Victim Destroyed
+            attacker.lastAction = "destroyed " + victim.type;
+            victim.lastAction = "destroyed by " + attacker.type;
+            lootCargo(attacker, victim);
+            
+            // Credits are immaterial and cannot be stolen
+            
+            // Downgrade to Escape Pod
+            const auto& classes = shipClasses();
+            const ShipClass& pod = classes[0];
+            victim.ship.name = "Escape Pod";
+            victim.ship.dryMass = pod.dryMass;
+            victim.ship.driveThrust = pod.driveThrust;
+            victim.ship.driveEfficiency = pod.driveEfficiency;
+            victim.ship.cargoCapacity = pod.cargoCapacity;
+            victim.ship.fuelCapacity = pod.fuelCapacity;
+            victim.ship.heavyWeapons = pod.heavyWeapons;
+            victim.ship.lightWeapons = pod.lightWeapons;
+            victim.ship.armor = pod.armor;
+            victim.ship.utility = pod.utility;
+            shipAutofit(victim.ship);
+        } else {
+            // Victim surrenders cargo
+            attacker.lastAction = "robbed " + victim.type;
+            victim.lastAction = "robbed by " + attacker.type;
+            lootCargo(attacker, victim);
+        }
+        return true;
+    } else {
+        // Defender wins
+        if (victimPower > attackPower * 1.5 && roll > successThreshold + 0.3) {
+            // Attacker Destroyed
+            victim.lastAction = "destroyed pirate " + attacker.type;
+            attacker.lastAction = "destroyed by " + victim.type;
+            lootCargo(victim, attacker);
+            
+            // Credits are immaterial and cannot be stolen
+            
+            // Downgrade attacker to Escape Pod
+            const auto& classes = shipClasses();
+            const ShipClass& pod = classes[0];
+            attacker.ship.name = "Escape Pod";
+            attacker.ship.dryMass = pod.dryMass;
+            attacker.ship.driveThrust = pod.driveThrust;
+            attacker.ship.driveEfficiency = pod.driveEfficiency;
+            attacker.ship.cargoCapacity = pod.cargoCapacity;
+            attacker.ship.fuelCapacity = pod.fuelCapacity;
+            attacker.ship.heavyWeapons = pod.heavyWeapons;
+            attacker.ship.lightWeapons = pod.lightWeapons;
+            attacker.ship.armor = pod.armor;
+            attacker.ship.utility = pod.utility;
+            shipAutofit(attacker.ship);
+        } else {
+            // Attacker repelled
+            attacker.lastAction = "repelled by " + victim.type;
+            victim.lastAction = "repelled pirate " + attacker.type;
+        }
+        return false;
+    }
+}
+
+bool Game::buyShip(int agentIndex, int starIndex, int classId) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size()) || !validStar(*this, starIndex)) return false;
+    Agent& agent = agents[agentIndex];
+    if (agent.currentStar != starIndex || agent.ship.enRoute) return false;
+    const Colony& colony = colonies[starIndex];
+    if (colony.shipyardLevel <= 0 && colony.infrastructure < 1.0) return false;
+    
+    const auto& classes = shipClasses();
+    if (classId < 0 || classId >= int(classes.size())) return false;
+    const ShipClass& sc = classes[classId];
+    
+    if (agent.money < sc.price) return false;
+    
+    agent.money -= sc.price;
+    agent.ship.name = sc.name;
+    agent.ship.dryMass = sc.dryMass;
+    agent.ship.driveThrust = sc.driveThrust;
+    agent.ship.driveEfficiency = sc.driveEfficiency;
+    agent.ship.cargoCapacity = sc.cargoCapacity;
+    agent.ship.fuelCapacity = sc.fuelCapacity;
+    agent.ship.heavyWeapons = sc.heavyWeapons;
+    agent.ship.lightWeapons = sc.lightWeapons;
+    agent.ship.armor = sc.armor;
+    agent.ship.utility = sc.utility;
+    shipAutofit(agent.ship);
+    agent.lastAction = "bought " + sc.name;
+    return true;
+}
+
 bool Game::commandAgentToStar(int agentIndex, int starIndex) {
     if (agentIndex < 0 || agentIndex >= int(agents.size()) || !validStar(*this, starIndex)) return false;
     Agent& agent = agents[agentIndex];
+    if (shipCargoMass(agent.ship) > agent.ship.cargoCapacity + 0.01) {
+        agent.lastAction = "overweight";
+        if (agent.playerControlled) lastEvent = "route blocked: overweight";
+        return false;
+    }
     if (agent.currentStar == starIndex && !agent.ship.enRoute) return false;
     if (agent.ship.enRoute) {
         if (agent.playerControlled) lastEvent = "route blocked: ship already en route";
@@ -4122,10 +4318,7 @@ bool Game::agentBuyElementAmount(int agentIndex, int elementIndex, double amount
     if (agent.ship.enRoute || !validStar(*this, agent.currentStar)) return false;
     if (elementIndex < 0 || elementIndex >= int(elementCount()) || amount <= 0.0) return false;
     const auto& element = elementDefinitions()[elementIndex];
-    if (!agent.ship.cargo.empty() && agent.ship.cargo[0].element != element.symbol) {
-        agent.lastAction = "hold full";
-        return false;
-    }
+
 
     Market& market = markets[agent.currentStar];
     const double buyPrice = market.prices[elementIndex];
@@ -4137,9 +4330,22 @@ bool Game::agentBuyElementAmount(int agentIndex, int elementIndex, double amount
     plan.amount = amount;
     plan.buyPrice = buyPrice;
     plan.sellPrice = buyPrice;
-    const double beforeAmount = agent.ship.cargo.empty() ? 0.0 : agent.ship.cargo[0].amount;
+    double beforeAmount = 0.0;
+    for (const auto& res : agent.ship.cargo) {
+        if (res.element == element.symbol) {
+            beforeAmount = res.amount;
+            break;
+        }
+    }
     buyCargo(*this, agent, agent.currentStar, plan);
-    return !agent.ship.cargo.empty() && agent.ship.cargo[0].element == element.symbol && agent.ship.cargo[0].amount > beforeAmount + 0.001;
+    double afterAmount = 0.0;
+    for (const auto& res : agent.ship.cargo) {
+        if (res.element == element.symbol) {
+            afterAmount = res.amount;
+            break;
+        }
+    }
+    return afterAmount > beforeAmount + 0.001;
 }
 
 bool Game::agentBuyFuel(int agentIndex) {
@@ -4151,14 +4357,18 @@ bool Game::agentBuyFuel(int agentIndex) {
 }
 
 bool Game::agentSellCargo(int agentIndex) {
-    return agentSellCargoAmount(agentIndex, std::numeric_limits<double>::max());
+    return agentSellCargoAmount(agentIndex, std::numeric_limits<double>::max(), -1);
 }
 
-bool Game::agentSellCargoAmount(int agentIndex, double amount) {
+bool Game::agentSellCargoAmount(int agentIndex, double amount, int elementIndex) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
     Agent& agent = agents[agentIndex];
     if (agent.ship.enRoute || !validStar(*this, agent.currentStar) || agent.ship.cargo.empty() || amount <= 0.0) return false;
-    return sellCargo(*this, agent, agent.currentStar, amount);
+    std::string elementSymbol = "";
+    if (elementIndex >= 0 && elementIndex < int(elementCount())) {
+        elementSymbol = elementDefinitions()[elementIndex].symbol;
+    }
+    return sellCargo(*this, agent, agent.currentStar, amount, elementSymbol);
 }
 
 bool Game::agentAcceptContract(int agentIndex, int contractId) {
@@ -4168,7 +4378,7 @@ bool Game::agentAcceptContract(int agentIndex, int contractId) {
     if (!validStar(*this, contract->originStar) || !validStar(*this, contract->targetStar)) return false;
 
     Agent& agent = agents[agentIndex];
-    if (agent.ship.enRoute || agent.currentStar != contract->originStar || !agent.ship.cargo.empty()) return false;
+    if (agent.ship.enRoute || agent.currentStar != contract->originStar) return false;
 
     if (contractUsesCargo(contract->type)) {
         if (contract->resource < 0 || contract->resource >= int(elementCount()) || contract->amount <= 0.0) return false;
@@ -4226,13 +4436,30 @@ bool Game::agentCompleteContract(int agentIndex, int contractId) {
 
     if (contractUsesCargo(contract->type)) {
         if (contract->resource < 0 || contract->resource >= int(elementCount()) || agent.ship.cargo.empty()) return false;
-        if (agent.ship.cargo[0].element != elementDefinitions()[contract->resource].symbol ||
-            agent.ship.cargo[0].amount + 0.001 < contract->amount) {
-            return false;
+        
+        double totalFound = 0.0;
+        const std::string& targetSymbol = elementDefinitions()[contract->resource].symbol;
+        for (const Resource& res : agent.ship.cargo) {
+            if (res.element == targetSymbol) totalFound += res.amount;
         }
-
-        agent.ship.cargo[0].amount -= contract->amount;
-        if (agent.ship.cargo[0].amount <= 0.01) agent.ship.cargo.clear();
+        
+        if (totalFound + 0.001 < contract->amount) return false;
+        
+        double remainingToTake = contract->amount;
+        for (auto it = agent.ship.cargo.begin(); it != agent.ship.cargo.end() && remainingToTake > 0.001; ) {
+            if (it->element == targetSymbol) {
+                if (it->amount > remainingToTake) {
+                    it->amount -= remainingToTake;
+                    remainingToTake = 0.0;
+                    ++it;
+                } else {
+                    remainingToTake -= it->amount;
+                    it = agent.ship.cargo.erase(it);
+                }
+            } else {
+                ++it;
+            }
+        }
         Market& target = markets[contract->targetStar];
         target.supply[contract->resource].amount += contract->amount;
         target.demand[contract->resource].amount = std::max(0.0, target.demand[contract->resource].amount - contract->amount);
@@ -4373,6 +4600,17 @@ int Game::agentCompleteContracts(int agentIndex) {
         }
     }
     return completed;
+}
+
+bool Game::abortAgentRoute(int agentIndex) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
+    Agent& agent = agents[agentIndex];
+    if (!agent.ship.enRoute) return false;
+    
+    // -2 is the targetStar flag for emergency braking in deep space.
+    agent.ship.targetStar = -2;
+    agent.lastAction = "emergency braking";
+    return true;
 }
 
 bool Game::agentAutoTrade(int agentIndex) {
