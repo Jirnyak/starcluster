@@ -55,6 +55,9 @@ jobs:
           </plist>
           PLIST
           
+          # Re-sign the app since install_name_tool breaks the binary signature
+          codesign --force --deep --sign - Starcluster.app
+          
           hdiutil create -volname "Starcluster" -srcfolder Starcluster.app -ov -format UDZO Starcluster.dmg
       - name: Upload Mac Artifact
         uses: actions/upload-artifact@v4
