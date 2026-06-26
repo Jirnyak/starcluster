@@ -88,3 +88,25 @@ jobs:
         with:
           name: Starcluster-Linux
           path: starcluster-linux
+
+  package-multiplatform:
+    needs: [build-mac, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-builds
+          merge-multiple: false
+      - name: Create Multiplatform Directory
+        run: |
+          mkdir Starcluster-Multiplatform
+          mv all-builds/Starcluster-macOS/Starcluster.dmg Starcluster-Multiplatform/
+          mv all-builds/Starcluster-Windows/starcluster.exe Starcluster-Multiplatform/
+          mv all-builds/Starcluster-Windows/SDL2.dll Starcluster-Multiplatform/
+          mv all-builds/Starcluster-Linux/starcluster-linux Starcluster-Multiplatform/
+      - name: Upload Multiplatform Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Starcluster-Multiplatform
+          path: Starcluster-Multiplatform/

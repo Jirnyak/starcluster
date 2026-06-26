@@ -27,5 +27,6 @@ To access the compiled launchers:
    - `Starcluster-macOS` (contains the `.dmg` file)
    - `Starcluster-Windows` (contains the `starcluster.exe` and `.dll`)
    - `Starcluster-Linux` (contains the executable binary)
+   - `Starcluster-Multiplatform` (contains all of the above combined in a single folder)
 
 *Note: GitHub automatically zips artifacts, so the DMG and Linux binaries will be inside a downloaded zip file.*
