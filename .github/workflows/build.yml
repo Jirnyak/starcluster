@@ -19,7 +19,7 @@ jobs:
       - name: Build
         run: |
           export MACOSX_DEPLOYMENT_TARGET=11.0
-          c++ main.cpp game.cpp cluster.cpp resource.cpp market.cpp ship.cpp agent.cpp colony.cpp faction.cpp ui.cpp -O3 -std=c++11 -F/Library/Frameworks -framework SDL2 -Wl,-rpath,@executable_path/../Frameworks -o game
+          c++ main.cpp game.cpp cluster.cpp resource.cpp market.cpp ship.cpp agent.cpp colony.cpp faction.cpp ui.cpp -O3 -std=c++11 -F/Library/Frameworks -I/Library/Frameworks/SDL2.framework/Headers -framework SDL2 -Wl,-rpath,@executable_path/../Frameworks -o game
       - name: Package App and DMG
         run: |
           mkdir -p Starcluster.app/Contents/MacOS
