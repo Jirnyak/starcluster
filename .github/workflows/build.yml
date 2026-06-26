@@ -77,7 +77,7 @@ jobs:
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2 make
       - name: Build
         run: |
-          make game
+          make game CXX="g++ -static-libgcc -static-libstdc++"
           mv game.exe starcluster.exe
           mkdir -p dist
           cp starcluster.exe dist/
