@@ -10,31 +10,24 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install SDL2
-        run: brew install sdl2
+      - name: Install SDL2 Framework
+        run: |
+          curl -LO https://github.com/libsdl-org/SDL/releases/download/release-2.30.10/SDL2-2.30.10.dmg
+          hdiutil attach SDL2-2.30.10.dmg
+          sudo cp -R /Volumes/SDL2/SDL2.framework /Library/Frameworks/
+          hdiutil detach /Volumes/SDL2
       - name: Build
         run: |
           export MACOSX_DEPLOYMENT_TARGET=11.0
-          make game
+          c++ main.cpp game.cpp cluster.cpp resource.cpp market.cpp ship.cpp agent.cpp colony.cpp faction.cpp ui.cpp -O3 -std=c++11 -F/Library/Frameworks -framework SDL2 -Wl,-rpath,@executable_path/../Frameworks -o game
       - name: Package App and DMG
         run: |
           mkdir -p Starcluster.app/Contents/MacOS
           mkdir -p Starcluster.app/Contents/Frameworks
           cp game Starcluster.app/Contents/MacOS/Starcluster
           
-          # Find SDL2 and bundle it
-          SDL2_DYLIB=$(otool -L Starcluster.app/Contents/MacOS/Starcluster | grep libSDL2 | awk '{print $1}')
-          cp "$SDL2_DYLIB" Starcluster.app/Contents/Frameworks/
-          
-          # Also bundle SDL3 since sdl2-compat loads it dynamically
-          SDL3_PREFIX=$(brew --prefix sdl3)
-          cp "$SDL3_PREFIX"/lib/libSDL3.*.dylib Starcluster.app/Contents/Frameworks/
-          
-          chmod +w Starcluster.app/Contents/Frameworks/*.dylib
-          SDL2_FILENAME=$(basename "$SDL2_DYLIB")
-          
-          # Update the executable to use the bundled Frameworks library
-          install_name_tool -change "$SDL2_DYLIB" "@executable_path/../Frameworks/$SDL2_FILENAME" Starcluster.app/Contents/MacOS/Starcluster
+          # Bundle the official SDL2.framework
+          cp -R /Library/Frameworks/SDL2.framework Starcluster.app/Contents/Frameworks/
           
           chmod +x Starcluster.app/Contents/MacOS/Starcluster
           
