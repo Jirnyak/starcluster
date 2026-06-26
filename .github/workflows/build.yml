@@ -25,6 +25,7 @@ jobs:
           # Find SDL2 and bundle it
           SDL2_DYLIB=$(otool -L Starcluster.app/Contents/MacOS/Starcluster | grep libSDL2 | awk '{print $1}')
           cp "$SDL2_DYLIB" Starcluster.app/Contents/Frameworks/
+          chmod +w Starcluster.app/Contents/Frameworks/*.dylib
           SDL2_FILENAME=$(basename "$SDL2_DYLIB")
           
           # Update the executable to use the bundled Frameworks library
