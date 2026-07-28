@@ -308,6 +308,43 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_star_hot.bmp");
     }
 
+    // (13) ПОЯС АСТЕРОИДОВ вблизи (звезда 0), кокпит: подлёт к крупнейшей глыбе сбоку от
+    //      направления света, чтобы терминатор день/ночь шёл по центру диска. Проверяем
+    //      renderRockLit: освещённая по Ламберту сфера с неровным (выгрызенным) силуэтом,
+    //      кратерами/сколами и кувырканием (spin), плюс янтарные кольца добычи вокруг цели.
+    //      Мелкие соседние камни идут дешёвым фолбэком (фазовый диск).
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        int big = -1; double bestR = -1.0;
+        for (size_t i = 0; i < s.rocks.size(); ++i)
+            if (s.rocks[i].radius > bestR) { bestR = s.rocks[i].radius; big = (int)i; }
+        if (big >= 0) {
+            const LocalRock& rk = s.rocks[big];
+            const double dl = std::sqrt(rk.x*rk.x + rk.y*rk.y + rk.z*rk.z);
+            // Единичный радиус-вектор звезда->камень (= направление света у камня).
+            const double ux = dl>1e-6 ? rk.x/dl : 1.0;
+            const double uy = dl>1e-6 ? rk.y/dl : 0.0;
+            const double uz = dl>1e-6 ? rk.z/dl : 0.0;
+            // Тангенс в плоскости пояса (⟂ свету): perp = norm(light × Z).
+            double px = uy*1.0 - uz*0.0, py = uz*0.0 - ux*1.0, pz = ux*0.0 - uy*0.0;
+            double pl = std::sqrt(px*px + py*py + pz*pz);
+            if (pl < 1e-6) { px = 1.0; py = 0.0; pz = 0.0; pl = 1.0; }
+            px/=pl; py/=pl; pz/=pl;
+            const double off = std::max(14.0, rk.radius * 6.0);
+            // Глаз сбоку (перпендикулярно свету) + чуть к звезде, чтобы светило ушло за спину.
+            s.px = rk.x + px*off - ux*off*0.35;
+            s.py = rk.y + py*off - uy*off*0.35;
+            s.pz = rk.z + pz*off - uz*off*0.35 + rk.radius*0.6;
+            s.pvx = s.pvy = s.pvz = 0.0;
+            localSetForward(s, rk.x - s.px, rk.y - s.py, rk.z - s.pz);  // нос на глыбу
+            s.miningRock = big;                                          // янтарные кольца добычи
+            std::printf("  [belt] rocks=%d big=%d R=%.2f off=%.1f dl=%.0f LU\n",
+                        (int)s.rocks.size(), big, rk.radius, off, dl);
+        }
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_belt_near.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);

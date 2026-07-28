@@ -640,6 +640,160 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
     return true;
 }
 
+// ── Астероид как ОСВЕЩЁННАЯ НЕПРАВИЛЬНАЯ ГЛЫБА (тот же ray-sphere «шейдер») ──
+// Тот же приём, что планеты (§5.13.4), но для скал пояса. Отличия, делающие камень
+// камнем, а не мини-планетой: (1) СИЛУЭТ неровный — эффективный радиус сферы
+// модулируется угловым шумом (в осн. ВНУТРЬ, «сколы») → выщербленная глыба, а не
+// гладкий шар; шум берётся во ВРАЩАЮЩЕЙСЯ системе камня (spin/spinVel уже
+// интегрируются в localsim) → камень зримо кувыркается; (2) поверхность — крап +
+// тёмные кратеры (клетки в степени ^4, мягкое ядро); (3) ламбертов терминатор от
+// звезды в (0,0,0) с wrap-подсветкой + попиксельная окклюзия её веществом (как у тел).
+// Только для КРУПНЫХ на экране скал (screenR>=ROCK_SHADE_MIN); мелкие крапинки рисует
+// вызывающий дешёвым диском с фазовой подсветкой. Половинное разрешение, bbox,
+// RenderCopy ×2. Детерминизм: сид из индекса/орбиты/радиуса (НЕ глобальный rng).
+// Возвращает true, если глыба отрисована (иначе вызывающий рисует диск-фолбэк).
+static bool renderRockLit(SDL_Renderer* renderer, const LocalScene& scene,
+                          const View3D& view, const CameraBasis& basis,
+                          int winW, int winH, const LocalRock& rk,
+                          const ProjectedPoint& pc, double fade01, unsigned idx) {
+    const double Rb = rk.radius;
+    if (Rb <= 0.0 || winW <= 0 || winH <= 0) return false;
+    if (pc.behind || pc.depth <= view.nearPlane) return false;
+    const double focal = std::max(1.0, view.focal);
+    const double screenR = Rb * focal / pc.depth;
+    const double ROCK_SHADE_MIN = 5.0;      // < ~5 полноэкранных px — фолбэк-диск у вызывающего
+    if (screenR < ROCK_SHADE_MIN) return false;
+
+    // Персистентная half-res стриминг-текстура (как у звезды/тел, но своя).
+    static SDL_Texture*  tex   = nullptr;
+    static SDL_Renderer* texRd = nullptr;
+    static int texW = 0, texH = 0;
+    const int bw = (winW + 1) / 2, bh = (winH + 1) / 2;
+    if (!tex || texRd != renderer || texW != bw || texH != bh) {
+        if (tex) SDL_DestroyTexture(tex);
+        tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                SDL_TEXTUREACCESS_STREAMING, bw, bh);
+        texRd = renderer; texW = bw; texH = bh;
+        if (tex) {
+            SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+            SDL_SetTextureScaleMode(tex, SDL_ScaleModeLinear);
+        }
+    }
+    if (!tex) return false;
+
+    const double margin = screenR * 1.10 + 3.0;
+    int bx0 = std::max(0,  (int)std::floor((pc.x - margin) * 0.5));
+    int by0 = std::max(0,  (int)std::floor((pc.y - margin) * 0.5));
+    int bx1 = std::min(bw, (int)std::ceil ((pc.x + margin) * 0.5) + 1);
+    int by1 = std::min(bh, (int)std::ceil ((pc.y + margin) * 0.5) + 1);
+    if (bx0 >= bx1 || by0 >= by1) return false;
+
+    const double ex = view.centerX, ey = view.centerY, ez = view.centerZ;
+    const double cx = rk.x, cy = rk.y, cz = rk.z;
+    const double Rb2 = Rb * Rb;
+    const double Rs = scene.starRadius;                       // радиус звезды (окклюзия)
+    const bool   hasStar = scene.hasStar && Rs > 0.0;
+    const double Es2 = ex * ex + ey * ey + ez * ez;
+    const double ocx = ex - cx, ocy = ey - cy, ocz = ez - cz; // глаз относительно центра камня
+    const double cBody = ocx * ocx + ocy * ocy + ocz * ocz - Rb2;
+    const double csStar = Es2 - Rs * Rs;                      // <0 => глаз ВНУТРИ звезды
+
+    const double baseR = (double)rk.r, baseG = (double)rk.g, baseB = (double)rk.b;
+    const double ambient = 0.13;
+    // Детерминированный сдвиг фаз шума (НЕ rng) + кувыркание вокруг мировой Z на угол spin.
+    const double seed = idx * 0.61803398875 + rk.orbitAng * 0.31 + Rb * 0.13;
+    const double ca = std::cos(rk.spin), sa = std::sin(rk.spin);
+
+    const double invF  = 1.0 / focal;
+    const double halfW = winW * 0.5, halfH = winH * 0.5;
+
+    void* vpix = nullptr; int pitch = 0;
+    SDL_Rect lockRect = { bx0, by0, bx1 - bx0, by1 - by0 };
+    if (SDL_LockTexture(tex, &lockRect, &vpix, &pitch) != 0) return false;
+    unsigned char* rowbase = (unsigned char*)vpix;
+
+    for (int by = by0; by < by1; ++by) {
+        Uint32* row = (Uint32*)(rowbase + (size_t)(by - by0) * pitch);
+        std::memset(row, 0, (size_t)(bx1 - bx0) * sizeof(Uint32));   // промахи/сколы = прозрачно
+        const double fy  = (double)(by * 2) + 0.5;
+        const double scy = -(fy - halfH) * invF;
+        for (int bx = bx0; bx < bx1; ++bx) {
+            const double fx  = (double)(bx * 2) + 0.5;
+            const double scx = (fx - halfW) * invF;
+            double dx = basis.rX * scx + basis.uX * scy + basis.fX;
+            double dy = basis.rY * scx + basis.uY * scy + basis.fY;
+            double dz = basis.rZ * scx + basis.uZ * scy + basis.fZ;
+            const double il = 1.0 / std::sqrt(dx * dx + dy * dy + dz * dz);
+            dx *= il; dy *= il; dz *= il;
+
+            // Номинальная сфера радиуса Rb: ближний корень t0, нормаль поверхности.
+            const double b = ocx * dx + ocy * dy + ocz * dz;
+            const double disc = b * b - cBody;
+            if (disc < 0.0) continue;                    // луч мимо
+            const double t0 = -b - std::sqrt(disc);
+            if (t0 <= 0.0) continue;                     // сфера позади глаза
+            const double sx = ex + dx * t0, sy = ey + dy * t0, sz = ez + dz * t0;
+            const double nx = (sx - cx) / Rb, ny = (sy - cy) / Rb, nz = (sz - cz) / Rb;
+
+            // Координата выборки шума во вращающейся системе камня (tumbling вокруг Z).
+            const double qx = nx * ca - ny * sa;
+            const double qy = nx * sa + ny * ca;
+            const double qz = nz;
+
+            // Неровный силуэт: эффективный радиус reff = Rb·(1+disp), disp в осн. ВНУТРЬ.
+            // dmin² = Rb²−disc; пиксель принят, если dmin ≤ reff ⇔ disc ≥ Rb²−reff².
+            const double lump = std::sin(qx * 5.0 + seed) * std::sin(qy * 6.0 - seed * 1.3)
+                              + 0.5 * std::sin(qz * 7.0 + seed * 2.1);   // [-1.5, 1.5]
+            const double disp = -0.10 + 0.10 * lump;                     // ≈[-0.25, +0.05]
+            const double reff = Rb * (1.0 + disp);
+            if (disc < Rb2 - reff * reff) continue;                      // выщерблено → прозрачно
+
+            // Освещение: свет из (0,0,0), L=−normalize(S); ламберт с wrap (мягче кромка).
+            const double sl = std::sqrt(sx * sx + sy * sy + sz * sz);
+            double lam = 1.0;
+            if (sl > 1e-9) lam = -(nx * sx + ny * sy + nz * sz) / sl;
+            double diff = (lam + 0.10) / 1.10;
+            if (diff < 0.0) diff = 0.0; else if (diff > 1.0) diff = 1.0;
+            const double lightF = ambient + (1.0 - ambient) * diff;
+
+            // Поверхность: крап (широкий) + тёмные кратеры (мелкие клетки, степень ^4).
+            const double mott = 0.80 + 0.20 * std::sin(qx * 9.0 + seed) * std::sin(qy * 8.0 - seed);
+            double cf = 0.5 + 0.5 * std::sin(qx * 15.0 + seed * 3.0)
+                                  * std::sin(qy * 17.0 - seed * 1.7)
+                                  * std::sin(qz * 16.0 + seed);
+            double crater = cf * cf; crater *= crater;   // ^4 — маленькие тёмные ядра
+            const double surf = mott * (1.0 - 0.55 * crater);
+
+            double cr = baseR * surf * lightF;
+            double cg = baseG * surf * lightF;
+            double cb = baseB * surf * lightF;
+
+            // Попиксельная окклюзия веществом звезды (камень частично за лимбом).
+            if (hasStar) {
+                if (csStar < 0.0) continue;              // глаз внутри звезды — всё за веществом
+                const double bsr = ex * dx + ey * dy + ez * dz;   // центр звезды = 0
+                const double dss = bsr * bsr - csStar;
+                if (dss >= 0.0) {
+                    const double ts0 = -bsr - std::sqrt(dss);
+                    if (ts0 > 1e-4 && ts0 < t0) continue;         // звезда ближе камня
+                }
+            }
+
+            cr *= fade01; cg *= fade01; cb *= fade01;    // глубинный фейд сцены
+            const Uint32 ir = cr > 255.0 ? 255u : (cr < 0.0 ? 0u : (Uint32)cr);
+            const Uint32 ig = cg > 255.0 ? 255u : (cg < 0.0 ? 0u : (Uint32)cg);
+            const Uint32 ib = cb > 255.0 ? 255u : (cb < 0.0 ? 0u : (Uint32)cb);
+            row[bx - bx0] = 0xFF000000u | (ir << 16) | (ig << 8) | ib;
+        }
+    }
+    SDL_UnlockTexture(tex);
+
+    const SDL_Rect src = { bx0, by0, bx1 - bx0, by1 - by0 };
+    const SDL_Rect dst = { bx0 * 2, by0 * 2, (bx1 - bx0) * 2, (by1 - by0) * 2 };
+    SDL_RenderCopy(renderer, tex, &src, &dst);
+    return true;
+}
+
 } // namespace
 
 void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene& scene,
@@ -873,7 +1027,11 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         }
     }
 
-    // (5) АСТЕРОИДЫ.
+    // (5) АСТЕРОИДЫ. Крупные на экране — освещённые неправильные глыбы (renderRockLit,
+    //     терминатор от звезды + кувыркание + кратеры/сколы); мелкие крапинки и орто-карта —
+    //     дешёвый диск. В перспективе диск получает ФАЗОВУЮ подсветку (тёмный силуэтом к
+    //     звезде, яркий — звезда за спиной), чтобы не выглядеть плоской монеткой у светила.
+    //     Орто-карта (§2.7) — по-прежнему ровный диск (br=1.0), побитово не тронута.
     for (size_t i = 0; i < scene.rocks.size(); ++i) {
         const LocalRock& rk = scene.rocks[i];
         ProjectedPoint p = projectPointWithBasis(rk.x, rk.y, rk.z, winW, winH, view, basis);
@@ -882,7 +1040,24 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         if (occ(rk.x, rk.y, rk.z)) continue;   // астероид за звездой — скрыт
         double f = sceneFade(p.depth);
         int r = std::min(400, std::max(1, radiusPx(rk.radius, p.depth, view)));
-        fillCircle(renderer, p.x, p.y, r, fade(rk.r, rk.g, rk.b, 255, f));
+        bool drew = false;
+        if (view.perspective)
+            drew = renderRockLit(renderer, scene, view, basis, winW, winH, rk, p, f, (unsigned)i);
+        if (!drew) {
+            double br = 1.0;                   // фаза только в перспективе (орто не трогаем)
+            if (view.perspective && scene.hasStar) {
+                const double lx = -rk.x, ly = -rk.y, lz = -rk.z;                       // к звезде (0,0,0)
+                const double vx = scene.px - rk.x, vy = scene.py - rk.y, vz = scene.pz - rk.z; // к камере
+                const double ll = std::sqrt(lx * lx + ly * ly + lz * lz);
+                const double vl = std::sqrt(vx * vx + vy * vy + vz * vz);
+                if (ll > 1e-9 && vl > 1e-9) {
+                    const double ph = (lx * vx + ly * vy + lz * vz) / (ll * vl); // cos фазового угла
+                    const double phase01 = 0.5 + 0.5 * ph;                       // 1 фронт-свет, 0 контровой
+                    br = 0.28 + 0.72 * phase01;                                  // не гасим в полный ноль
+                }
+            }
+            fillCircle(renderer, p.x, p.y, r, fade(rk.r, rk.g, rk.b, 255, f * br));
+        }
         if ((int)i == scene.miningRock) {
             strokeCircle(renderer, p.x, p.y, r + 4, P.amber);
             strokeCircle(renderer, p.x, p.y, r + 8, rgba(P.amber.r, P.amber.g, P.amber.b, 110));

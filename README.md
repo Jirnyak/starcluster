@@ -47,6 +47,11 @@ cluster map stays orthographic) and the player flies a ship in 3D around:
   planet's equatorial plane: Cassini gaps, radial banding, a soft planet shadow cast
   on the rings, edge-on opacity gain, and a depth composite so the near arc passes in
   front of the planet while the far arc is occluded behind it;
+- **lit asteroid boulders**: nearby belt rocks use the same ray-sphere technique with a
+  Lambert day/night terminator, an irregular chipped silhouette (carved inward so it
+  never overflows its sprite), craters and surface mottling, and a slow tumble that
+  turns the surface detail with the rock — distant rocks fall back to cheap phase-lit
+  discs;
 - local NPC ships (traders, pirates), mining, docking, and scooping interactions.
 
 The local mode is fully deterministic and self-contained: it draws its own seeded
@@ -375,7 +380,14 @@ the same spin axis that orients the latitude bands), giving Cassini gaps, radial
 banding, a soft impact-parameter planet shadow on the rings, and an edge-on opacity
 gain. The sphere and ring roots are compared per pixel, so the near ring arc blends
 over the planet while the far arc is occluded behind it, and the star's sphere
-occludes both — no separate billboard or depth pass.
+occludes both — no separate billboard or depth pass. Nearby asteroids
+(`renderRockLit`) reuse the same machinery: a Lambert terminator from the origin
+star, an irregular silhouette carved inward from the nominal sphere (so it always
+stays inside its bounding box), quartic-sharpened craters over low-frequency
+mottling, and a deterministic tumble that rotates the surface noise about the rock's
+spin axis. To bound the number of texture locks in a dense belt, only rocks larger
+than a few pixels get the shader; smaller ones stay cheap phase-lit discs, and the
+whole path is gated on the perspective view so the orthographic map is untouched.
 
 ## Source Map
 
@@ -403,7 +415,7 @@ occludes both — no separate billboard or depth pass.
 | `local.h` | Local-mode data structures (`LocalScene`, `LocalInput`) and the `buildLocalCamera` helper. |
 | `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). |
 | `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior. |
-| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, and perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow) — all perspective view only. |
+| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), and lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble) — all perspective view only. |
 | `shot_test.cpp` | Headless screenshot harness for local-mode scenarios (`make shots`). |
 | `soak_test.cpp` | Headless long-run soak harness for the local simulation (`make soak`). |
 | `architecture.md` | High-level architecture and data-oriented rules. |
@@ -455,6 +467,10 @@ Important rules from the project documents:
   no vertical ring thickness at the edge-on grazing angle, no moon-resonance gap
   structure, and no ring-cast shadow back onto the planet — only the planet's shadow
   onto the rings.
+- Asteroids are lit ray-sphere boulders only when they are close enough to fill more
+  than a few pixels; smaller and distant belt rocks are still phase-lit discs. The
+  boulders are spheres carved *inward* for an irregular silhouette, so there are no
+  true concavities, overhangs, or contact-binary shapes yet.
 - Non-player faction memory overlays are not exposed through a debug selector.
 - The active build is POSIX/SDL2 via `sdl2-config`; the old platform makefiles
   are not synchronized with the current source list.
