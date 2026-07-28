@@ -26,6 +26,21 @@ The current executable prototype contains:
 - SDL2 map rendering, HUD panels, draggable system/trade/contract windows, and
   a smoke mode for short launch checks.
 
+It also contains a **local flight mode** ("microworld") entered from the cluster
+map. Inside a chosen star system the camera switches to a first-person / chase
+perspective (the only place in the game that uses a perspective projection; the
+cluster map stays orthographic) and the player flies a ship in 3D around:
+
+- a procedurally generated system: one central star, rocky/gas/ice planets on
+  Keplerian orbits, moons, an asteroid belt, a station, and radio sources;
+- a giant star rendered as a real sphere of plasma by a per-pixel analytic
+  ray-sphere **software shader** (isotropic — correct from every view direction,
+  animated turbulence, limb darkening, corona), not a flat sprite or a fill;
+- local NPC ships (traders, pirates), mining, docking, and scooping interactions.
+
+The local mode is fully deterministic and self-contained: it draws its own seeded
+RNG and never perturbs the global cluster simulation's RNG stream.
+
 The prototype is still early. Some documents describe target systems that are
 only partially implemented, especially full combat modules, ship upgrades,
 diplomatic UI, OpenGL rendering, and large-scale performance passes.
@@ -48,11 +63,14 @@ brew install sdl2
 sudo apt install build-essential libsdl2-dev
 ```
 
-The active build path is the root `Makefile`. It compiles:
+The active build path is the root `Makefile`. It compiles (C++11, `-O3`, warnings
+clean):
 
 ```text
 main.cpp game.cpp cluster.cpp resource.cpp market.cpp ship.cpp agent.cpp
-colony.cpp faction.cpp ui.cpp
+colony.cpp faction.cpp ui.cpp mining.cpp combat.cpp spaceevents.cpp
+anomaly.cpp modules.cpp chromo.cpp render2d.cpp localgen.cpp localsim.cpp
+localdraw.cpp
 ```
 
 Build and run:
@@ -68,13 +86,28 @@ Clean generated executable:
 make clean
 ```
 
-Smoke launch:
+### Smoke And Test Targets
 
 ```bash
+# short launch check of the macro simulation
 ./game --smoke
+
+# short launch check of the local flight mode (generation + a few sim frames)
+./game --localsmoke
 
 # useful on headless machines
 SDL_VIDEODRIVER=dummy ./game --smoke
+
+# AddressSanitizer + UBSan build; then run both smokes under it
+make asan
+./game_asan --smoke && ./game_asan --localsmoke
+
+# long headless soak (120k frames of local sim over many generated systems)
+make soak
+
+# render a set of local-mode screenshots to PNG (headless, dummy video driver;
+# BMP is converted to PNG via `sips` on macOS)
+make shots
 ```
 
 `0mac_make/Makefile` and `0windows_make/Makefile` are legacy build sketches that
@@ -118,6 +151,26 @@ still reference `uni.cpp`; they are not the current project build path.
 System windows expose route, trade, and contract actions through mouse buttons.
 The trade window uses the periodic table layout for element selection and an
 amount field; an empty amount means `MAX`.
+
+### Local Flight Mode ("microworld")
+
+- `L`: enter local flight mode at the selected (or anchor) star; press `L` again
+  or `Esc` to leave and return to the cluster map.
+- `W`: thrust forward. `S`: brake / reverse thrust.
+- `A` / `D`: yaw left / right.
+- `R` / `F`: pitch up / down.
+- `Q` / `E`: roll left / right.
+- `Mouse`: free-look (shooter-style relative aim) while in the 3D cockpit; the
+  pointer is captured and hidden. In map view the normal cursor returns.
+- `Left Shift` / `Right Shift`: warp / boost.
+- `Space` (or left mouse): fire.
+- `M`: mine the targeted asteroid. `K`: dock at the targeted station.
+- `Tab`: cycle the locked target.
+- `C`: toggle between the 3D cockpit and the top-down system map.
+- `+` / `-`: zoom the system map.
+
+An on-screen action bar shows the currently available local actions (fire, mine,
+dock, target, view, exit) and greys out the ones that are not applicable.
 
 ## Game Model
 
@@ -282,6 +335,21 @@ an SDL2 2D orthographic map:
 SDL_image and SDL_ttf binaries/frameworks exist in the repository folder, but
 the active code path draws text with its own bitmap glyphs and links only SDL2.
 
+The **local flight mode** renders differently. It is the one place that uses a
+perspective camera (a shared projection helper in `camera.h`; the macro map stays
+bit-for-bit orthographic). Bodies, orbits, the station, belt rocks, NPC ships,
+and projectiles are drawn in `localdraw.cpp`. The central star is not a sprite: it
+is produced by a per-pixel analytic **ray-sphere software shader**
+(`renderStarPlasma`) that, for each screen pixel, reconstructs a world-space ray
+from the eye, intersects the star sphere analytically, and shades from geometry —
+multi-octave domain-warped turbulence, limb darkening, and a soft corona. Because
+the shading is a pure function of the ray and the star's centre/radius, it is
+isotropic: the star looks like a real ball of plasma from every direction, with no
+"fill the screen yellow" shortcut. The shader writes into a half-resolution
+streaming `SDL_Texture` (bounding-box limited when the star is far away), so it
+stays SDL2-only and keeps the deterministic headless screenshot harness working —
+there is still no OpenGL path.
+
 ## Source Map
 
 | File | Responsibility |
@@ -296,7 +364,21 @@ the active code path draws text with its own bitmap glyphs and links only SDL2.
 | `faction.h`, `faction.cpp` | Faction identity, budgets, relations, strategic fields and orders. |
 | `colony.h`, `colony.cpp` | Colony state, construction effects, damage, shipyard capacity. |
 | `contract.h` | Contract types and storage. |
+| `mining.cpp` | Manual ore mining near a star while docked. |
+| `combat.cpp` | In-transit skirmishes and hull repair (instant resolution). |
+| `spaceevents.cpp` | Dynamic market events as transient price multipliers. |
+| `anomaly.cpp` | Anomalies / derelicts and scanning rewards. |
+| `modules.h`, `modules.cpp` | Ship module slots and the upgrade model. |
+| `chromo.cpp` | "Chromocore" research cores and accumulation. |
 | `ui.h`, `ui.cpp` | HUD, custom text, panels, trade window, contract window, mouse/keyboard UI handling. |
+| `render2d.h`, `render2d.cpp` | Low-level 2D primitives and the 5x7 bitmap font, shared by `ui.cpp` and `localdraw.cpp`. |
+| `camera.h` | Shared camera/projection: orthographic macro path plus the perspective path used only by local flight mode. |
+| `local.h` | Local-mode data structures (`LocalScene`, `LocalInput`) and the `buildLocalCamera` helper. |
+| `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). |
+| `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior. |
+| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, and the per-pixel ray-sphere software star shader. |
+| `shot_test.cpp` | Headless screenshot harness for local-mode scenarios (`make shots`). |
+| `soak_test.cpp` | Headless long-run soak harness for the local simulation (`make soak`). |
 | `architecture.md` | High-level architecture and data-oriented rules. |
 | `lore.md` | Physical/economic canon and setting constraints. |
 | `agents.md`, `merge_plan.md` | Early project identity and migration notes. |
@@ -332,10 +414,16 @@ Important rules from the project documents:
 
 ## Known Gaps
 
-- Full ship modules, weapons, armor, sensors, and upgrade UI are still planned.
-- Combat exists through piracy, bounty, raid, threat, and capture pressure
-  mechanics, but not as a detailed ship-module combat simulator.
-- OpenGL is an architectural target, not the active renderer.
+- Ship modules and an upgrade model exist (`modules.*`), but the full weapons,
+  armor, and sensor progression with UI is still early.
+- Combat exists through piracy, bounty, raid, threat, capture pressure, and
+  instant in-transit skirmish resolution, but not as a detailed ship-module
+  combat simulator.
+- OpenGL is an architectural target, not the active renderer. Even the local
+  flight mode's star is a *software* shader drawn into an SDL streaming texture.
+- In local flight mode there is no physical collision with the star or bodies
+  (flying "into" the star is cosmetic; only HP can end a flight); planets and gas
+  giants are still drawn as flat discs while only the star is a full sphere.
 - Non-player faction memory overlays are not exposed through a debug selector.
 - The active build is POSIX/SDL2 via `sdl2-config`; the old platform makefiles
   are not synchronized with the current source list.

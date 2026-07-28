@@ -16,8 +16,18 @@ Core taste: physmath, data-driven, data-oriented, procedural, modular, elegant, 
 - `ship.*`: physical ship state, 3D position/velocity, max speed, acceleration, cargo.
 - `agent.*`: simulation actors: player, traders, military fleets, colonizers.
 - `game.*`: simulation composition and systems update order.
-- `main.cpp`: SDL2 window, mouse input, 3D orthographic map projection, debug/visible map rendering.
+- `main.cpp`: SDL2 window, mouse input, 3D orthographic map projection, debug/visible map rendering, and entry into local flight mode.
 - `ui.*`: SDL2 HUD primitives and panels.
+- `render2d.*`: shared low-level 2D primitives and 5x7 bitmap font used by both `ui.*` and `localdraw.cpp`.
+- `mining.*`/`combat.*`/`spaceevents.*`/`anomaly.*`/`modules.*`/`chromo.*`: incremental gameplay systems (ore mining, skirmish/repair, market events, anomalies/derelicts, ship modules, research cores).
+
+Local flight mode ("microworld") — a first-person / chase flight inside one star system, entered from the map:
+
+- `camera.h`: shared camera/projection; the orthographic macro path plus the perspective path used *only* by local mode.
+- `local.h`: local-mode data (`LocalScene`, `LocalInput`) and the camera-build helper.
+- `localgen.cpp`: procedural generation of the system (star, planets, moons, belt, station, radio sources, NPCs) from a local seeded RNG that never touches the global simulation RNG.
+- `localsim.cpp`: local flight simulation (flight, thrust, projectiles, mining/docking, NPC behavior).
+- `localdraw.cpp`: local rendering, including the per-pixel ray-sphere software star shader.
 
 Legacy `civ.*`, `galaxy.*`, and `graphic.*` are not the active simulation path.
 
@@ -238,6 +248,8 @@ Avoid:
 ## Rendering
 
 The game simulation is 3D. SDL2 owns the current window/input/HUD path and renders a 2D orthographic projection of the 3D cluster. OpenGL is the intended renderer for high-density maps and effects when SDL2 primitives become limiting.
+
+The macro/cluster map projection is strictly orthographic. The one exception is **local flight mode**, which uses a perspective camera (both share `camera.h`; the orthographic branch is bit-for-bit unchanged from the original macro projection). Local mode draws its own scene in `localdraw.cpp`. The central star is not a sprite or a screen fill: it is a per-pixel analytic **ray-sphere software shader** (`renderStarPlasma`) that, for each pixel, reconstructs a world-space ray from the eye, intersects the star sphere analytically, and shades from geometry (domain-warped turbulence, limb darkening, corona). Being a pure function of the ray and the star centre/radius, it is isotropic — a correct ball of plasma from every direction, with no hardcoded view-dependent shortcut. It writes into a half-resolution streaming `SDL_Texture` (bounding-box limited when far), which keeps the renderer SDL2-only and preserves the deterministic headless screenshot harness (`shot_test.cpp`). There is still no active OpenGL path.
 
 Current map projection:
 
