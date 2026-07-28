@@ -1119,6 +1119,30 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                                     wx, wy, wz, 0.0, 0.0, 0.0, scene.starRadius);
     };
 
+    // (§5.13.29) ЦЕЛЬ ПОГОНИ ЗАКОНА — чистый рендер-вывод: для патруля, ведущего охоту
+    //   (kind==CK_PATROL && defending, §5.13.28), ПЕРЕВЫВОДИМ его розыскную жертву тем же
+    //   сканом, что и localsim (priority-0, localsim.cpp:393-402): ближайший ЖИВОЙ пират
+    //   с wanted в радиусе PATROL_DISTRESS_R, строгий '<' ⇒ тай-брейк на меньший индекс.
+    //   Т.к. priority-0 перебивает всё, defending-патруль с розыскным в радиусе ГАРАНТИРОВАННО
+    //   целится именно в него ⇒ вывод рендера ТОЧНО совпадает с выбором sim (нет розыскного ⇒
+    //   defending поставил рейд §5.13.12, вернём -1 и подсказку не рисуем). Читаем только живые
+    //   поля (x/y/z/kind/wanted/defending/hullHP) — ни нового поля, ни RNG, ни шага sim.
+    auto pursuitQuarry = [&](int ci) -> int {
+        const LocalCraft& c = scene.craft[ci];
+        if (c.kind != CK_PATROL || !c.defending || c.hullHP <= 0.0) return -1;
+        int best = -1;
+        double bestD2 = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
+        for (size_t j = 0; j < scene.craft.size(); ++j) {
+            if ((int)j == ci) continue;
+            const LocalCraft& o = scene.craft[j];
+            if (o.hullHP <= 0.0 || o.kind != CK_PIRATE || !o.wanted) continue;
+            double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+            double d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < bestD2) { bestD2 = d2; best = (int)j; }
+        }
+        return best;
+    };
+
     // (2) ОРБИТАЛЬНЫЕ КОЛЬЦА — плоские окружности, осмысленны только в орто-карте
     //     (в перспективе орбита проецируется в эллипс; пропускаем).
     if (scene.hasStar && !view.perspective) {
@@ -1443,6 +1467,50 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             }
         }
         fillRect(renderer, p.x - 1, p.y - 1, 2, 2, col);
+    }
+
+    // (7б, §5.13.29) ВЕКТОР ПЕРЕХВАТА ЗАКОНА — золотая «маршевая» пунктирная трасса от патруля,
+    //   ведущего охоту (§5.13.28), к его РОЗЫСКНОЙ жертве (pursuitQuarry). Прежние подсказки
+    //   (зелёное кольцо defending §5.13.12, чип ESCORT, зелёный блип §5.13.27) говорят ЧТО патруль
+    //   на перехвате, но не КОГО он преследует — трасса дорисовывает недостающую связь. Чистый
+    //   рендер: перевывод цели из живых полей, ноль состояния/RNG/шага sim. Штрихи бегут
+    //   патруль→жертва (направление погони), альфа пульсирует в темпе розыска (5.2) — родство с
+    //   золотым кольцом «в розыске». Рисуем поверх кораблей/снарядов, но под HUD.
+    for (size_t i = 0; i < scene.craft.size(); ++i) {
+        int q = pursuitQuarry((int)i);
+        if (q < 0) continue;
+        const LocalCraft& pc = scene.craft[i];
+        const LocalCraft& qc = scene.craft[q];
+        if (occ(pc.x, pc.y, pc.z) || occ(qc.x, qc.y, qc.z)) continue;   // конец за звездой — не тянем сквозь неё
+        ProjectedPoint pa = projectPointWithBasis(pc.x, pc.y, pc.z, winW, winH, view, basis);
+        ProjectedPoint pb = projectPointWithBasis(qc.x, qc.y, qc.z, winW, winH, view, basis);
+        if (view.perspective && (pa.behind || pb.behind)) continue;    // конец за ближней плоскостью
+        double lx = double(pb.x - pa.x), ly = double(pb.y - pa.y);
+        double llen = std::sqrt(lx * lx + ly * ly);
+        if (llen < 2.0) continue;
+        double ux = lx / llen, uy = ly / llen;
+        double pulse = 0.55 + 0.45 * std::sin(scene.fxClock * 5.2);
+        SDL_Color gold = rgba(255, 205, 60, 70 + int(pulse * 150.0));
+        SDL_SetRenderDrawColor(renderer, gold.r, gold.g, gold.b, gold.a);
+        // маршевые штрихи patrol→quarry (период 18 px, штрих 9 px), фаза бежит от fxClock
+        const double period = 18.0, dash = 9.0;
+        double phase = std::fmod(scene.fxClock * 34.0, period);
+        int guard = 0;
+        for (double s = -phase; s < llen && guard < 240; s += period, ++guard) {
+            double a0 = s < 0.0 ? 0.0 : s;
+            double a1 = std::min(s + dash, llen);
+            if (a1 <= 0.0) continue;
+            SDL_RenderDrawLine(renderer,
+                int(pa.x + ux * a0), int(pa.y + uy * a0),
+                int(pa.x + ux * a1), int(pa.y + uy * a1));
+        }
+        // остриё стрелки, вклинивающееся в жертву (подчёркивает направление погони)
+        const double ah = 11.0, spread = 0.5;
+        double cs = std::cos(spread), sn = std::sin(spread);
+        SDL_RenderDrawLine(renderer, pb.x, pb.y,
+            int(pb.x - (ux * cs - uy * sn) * ah), int(pb.y - (ux * sn + uy * cs) * ah));
+        SDL_RenderDrawLine(renderer, pb.x, pb.y,
+            int(pb.x - (ux * cs + uy * sn) * ah), int(pb.y - (-ux * sn + uy * cs) * ah));
     }
 
     // (7a) ЛУЧ ДОБЫЧИ (§5.13.17): пока идёт бурение (miningRock задан и цель В ЗОНЕ — те же
@@ -1861,6 +1929,8 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         const bool wnt = t.wanted;        // (§5.13.25) цель — пират «в розыске»; розыск ставится только пиратам ⇒ взаимоискл. с sos/esc
         int ph = hasShield ? 72 : 60;
         if (wnt) ph += 14;                // (§5.13.25) место под строку «BOUNTY N CR» под корпусом
+        const int tPursuit = esc ? pursuitQuarry(scene.targetCraft) : -1;  // (§5.13.29) кого преследует патруль
+        if (tPursuit >= 0) ph += 14;      // место под строку «IN PURSUIT …» под корпусом
         panel(renderer, tx, ty, 224, ph);
         if (sos) {   // пульсирующая SOS-красная рамка вокруг панели — «эта цель под атакой»
             double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 6.0);
@@ -1908,6 +1978,13 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         if (wnt) {   // (§5.13.25) сумма награды за розыск (золото, §2.6 %.0F) — под корпусом
             by += 12;
             std::snprintf(buf, sizeof(buf), "BOUNTY %.0F CR", t.wantedBounty);
+            drawText(renderer, tx + 8, by, buf, rgba(255, 205, 60, 255), 1);
+        }
+        if (tPursuit >= 0) {   // (§5.13.29) закон ведёт охоту — под корпусом, кого именно преследует патруль
+            by += 12;
+            const LocalCraft& qy = scene.craft[tPursuit];
+            std::snprintf(buf, sizeof(buf), "IN PURSUIT %s",
+                          qy.label.empty() ? "WANTED" : qy.label.c_str());
             drawText(renderer, tx + 8, by, buf, rgba(255, 205, 60, 255), 1);
         }
     }
@@ -1974,6 +2051,30 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         // Тело-относительный базис: right = pfwd × pup; forward = pfwd (вверх радара).
         double rgtX, rgtY, rgtZ;
         localShipRight(scene, rgtX, rgtY, rgtZ);
+
+        // (§5.13.29) ЛИНИЯ ПОГОНИ НА РАДАРЕ: золотая связка блип-патруль → блип-жертва, та же
+        //   перевыведенная цель (pursuitQuarry), тот же тактический базис, что и блипы ниже.
+        //   Рисуем ДО цикла блипов ⇒ точки контактов остаются поверх. Радар бьёт на 1400 LU, так
+        //   что погоня читается даже когда бойцы вне 3D-кадра. Чистый рендер, ноль RNG/полей.
+        auto radarXY = [&](const LocalCraft& c, int& bx, int& by) {
+            double dx = c.x - scene.px, dy = c.y - scene.py, dz = c.z - scene.pz;
+            double rx = dx * rgtX + dy * rgtY + dz * rgtZ;
+            double ry = dx * scene.pfwdX + dy * scene.pfwdY + dz * scene.pfwdZ;
+            double dd = std::sqrt(rx * rx + ry * ry);
+            double kk = (dd > RANGE) ? (double(R) / std::max(1e-6, dd)) : (double(R) / RANGE);
+            bx = rcx + int(rx * kk);
+            by = rcy - int(ry * kk);
+        };
+        for (size_t i = 0; i < scene.craft.size(); ++i) {
+            int q = pursuitQuarry((int)i);
+            if (q < 0) continue;
+            int ax, ay, qx, qy;
+            radarXY(scene.craft[i], ax, ay);
+            radarXY(scene.craft[q], qx, qy);
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 5.2);
+            SDL_SetRenderDrawColor(renderer, 255, 205, 60, 45 + int(pl * 120.0));
+            SDL_RenderDrawLine(renderer, ax, ay, qx, qy);
+        }
 
         // Корабли: мелкие точки (враг красный, иначе серый).
         for (size_t i = 0; i < scene.craft.size(); ++i) {
