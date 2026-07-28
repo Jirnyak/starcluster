@@ -27,6 +27,7 @@ int main() {
 
     const int stars[] = {-1, 0, 1, 2, 3, 5, 7, 11, 23, 99};
     long totalFrames = 0, invariantFails = 0, deaths = 0, claims = 0, kills = 0;
+    long rocksSeen = 0, rocksShiny = 0;   // (§5.13.15) счётчик пород + блестящих (лёд/металл)
     const double dtReal = 0.05; // 50 мс/кадр
 
     for (int starIdx : stars) {
@@ -35,6 +36,20 @@ int main() {
         LocalScene scene;
         buildLocalScene(game, starIdx, scene);
         scene.active = true;
+
+        // (§5.13.15) Инвариант внешнего вида пород: spec ∈ [0,1] и конечен (r/g/b — байты
+        // по типу). Заодно считаем блестящие (лёд/металл, spec>0.5) для сводки разнообразия.
+        for (size_t k = 0; k < scene.rocks.size(); ++k) {
+            const double sp = scene.rocks[k].spec;
+            if (!std::isfinite(sp) || sp < 0.0 || sp > 1.0) {
+                std::printf("INVARIANT FAIL: rock spec out of range star=%d k=%d spec=%f\n",
+                            starIdx, (int)k, sp);
+                ++invariantFails;
+            } else {
+                ++rocksSeen;
+                if (sp > 0.5) ++rocksShiny;
+            }
+        }
 
         const int radioTotal = (int)scene.radio.size();
         const int craftStart = (int)scene.craft.size();
@@ -186,8 +201,9 @@ int main() {
     }
     if (!writeBackOk) { std::printf("INVARIANT FAIL: §5.13.14 macro write-back did not fire\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s\n",
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s rocks=%ld shiny=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
-                deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED");
+                deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
+                rocksSeen, rocksShiny);
     return invariantFails ? 1 : 0;
 }

@@ -51,7 +51,11 @@ cluster map stays orthographic) and the player flies a ship in 3D around:
   Lambert day/night terminator, an irregular chipped silhouette (carved inward so it
   never overflows its sprite), craters and surface mottling, and a slow tumble that
   turns the surface detail with the rock — distant rocks fall back to cheap phase-lit
-  discs;
+  discs. Each boulder is also **typed by its element's composition**: `rockAppearance`
+  sorts it into ice/volatile, carbonaceous, metallic, or silicate by atomic number and
+  metallicity, giving it a distinct palette and a specularity value — ice and metal
+  catch a Blinn-Phong glint on their lit side, carbon and silicate stay matte (silicate
+  is the default and matches the belt's prior tan look, so it is a zero-regression base);
 - **a volumetric nebula backdrop** in perspective: a per-pixel gas field painted on the
   celestial sphere (color and density are a function of the world ray direction, so it
   turns in lockstep with the skybox stars), built from multi-octave product noise (puffy
@@ -422,9 +426,19 @@ occludes both — no separate billboard or depth pass. Nearby asteroids
 star, an irregular silhouette carved inward from the nominal sphere (so it always
 stays inside its bounding box), quartic-sharpened craters over low-frequency
 mottling, and a deterministic tumble that rotates the surface noise about the rock's
-spin axis. To bound the number of texture locks in a dense belt, only rocks larger
-than a few pixels get the shader; smaller ones stay cheap phase-lit discs, and the
-whole path is gated on the perspective view so the orthographic map is untouched.
+spin axis. Each rock's base color and specularity come from `rockAppearance(element)`,
+a pure function that classifies the boulder by its element's atomic number and
+metallicity into one of four real asteroid classes — ice/volatile (bright bluish
+white, shiny), carbonaceous (dark charcoal, matte), metallic (steel grey, shiny), or
+silicate (tan-brown matte, the default that preserves the old belt look). Shiny
+classes add a Blinn-Phong highlight (`pow(N·H, 24)·spec`, star at the origin, view
+along the eye ray) on the lit side; matte classes get none. The per-rock brightness
+jitter is drawn from a deterministic index hash rather than the local RNG stream, so
+adding material types left the generation stream byte-identical (stations, radio, and
+craft still spawn exactly as before). To bound the number of texture locks in a dense
+belt, only rocks larger than a few pixels get the shader; smaller ones stay cheap
+phase-lit discs (which read the same typed base color), and the whole path is gated on
+the perspective view so the orthographic map is untouched.
 
 The nebula backdrop (`renderNebula`) uses the same idea one more time, on the sky
 itself: for each pixel the world ray direction is fed to multi-octave product noise
@@ -462,10 +476,10 @@ flat tint plus three hashed blobs, byte-for-byte.
 | `ui.h`, `ui.cpp` | HUD, custom text, panels, trade window, contract window, mouse/keyboard UI handling. |
 | `render2d.h`, `render2d.cpp` | Low-level 2D primitives and the 5x7 bitmap font, shared by `ui.cpp` and `localdraw.cpp`. |
 | `camera.h` | Shared camera/projection: orthographic macro path plus the perspective path used only by local flight mode. |
-| `local.h` | Local-mode data structures (`LocalScene`, `LocalInput`) and the `buildLocalCamera` helper. |
-| `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). Seeds non-combat NPCs with an opening market-bound errand and randomizes the arrival timer. |
+| `local.h` | Local-mode data structures (`LocalScene`, `LocalInput`, and `LocalRock` with its material `spec`) and the `buildLocalCamera` helper. Declares `rockAppearance` (asteroid palette/specularity by element). |
+| `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). Seeds non-combat NPCs with an opening market-bound errand and randomizes the arrival timer. Defines `rockAppearance(element)` — a pure classification of each asteroid into ice/carbon/metal/silicate (base RGB + specularity), baked into the belt with a deterministic index-hash brightness jitter that does not perturb the RNG stream. |
 | `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior, and the living-traffic lifecycle (errand state machine, edge-despawn of departing ships, timed arrivals up to a population cap). Emits a cyan "warp" FX signature (`emitWarp`) on arrival/departure and a thruster puff when a ship leaves a berth. Marks convoy distress: a pre-pass clears the flags, then a pirate attacking a non-pirate flags the victim `underAttack` and itself `threatConvoy`; raid onset raises a `CONVOY RAID` toast, and killing a threatening pirate grants a bonus + research + `CONVOY SAVED` toast + positive faction rep bump (strictly additive — pirates are not weakened). Escort patrols (`CK_PATROL`) hear raids from a wide awareness radius and prioritise intercepting the *raider* (a pirate near a non-pirate, detected from raw positions so it is order-independent), flagging themselves `defending`; firing is still gated by weapon range, so their awareness grew, not their guns. When the player destroys a local ship that mirrors a macro agent (`agentIndex >= 0`), it writes back to the persistent world via the shared `downgradeAgentToEscapePod` helper: the macro agent's ship becomes an Escape Pod with its cargo cleared (credits kept). The faction reprisal is already applied in that same kill block, so the write-back only downgrades — it does not re-touch relations. |
-| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader (with a deterministic corona flare-cycle: two drifting active regions that periodically erupt — brighter, bulging, hot blue-white — with zero effect at rest), lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble), and a volumetric nebula backdrop (`renderNebula` — per-pixel gas field on the celestial sphere: multi-octave noise, domain warp, density gradient, translucent) — all perspective view only. Also draws the pulsing amber berth ring for docked ships, the radar-panel `IN / DOCK` traffic tally, the convoy-distress cues (pulsing red SOS ring on an `underAttack` victim, off-screen SOS edge marker to the nearest victim, and a distinct SOS target-panel state), and the escort cues (pulsing green ring on a `defending` patrol drawn outside the cyan target box, off-screen green edge marker to the nearest defender, and an `ESCORT` target-panel state). |
+| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader (with a deterministic corona flare-cycle: two drifting active regions that periodically erupt — brighter, bulging, hot blue-white — with zero effect at rest), lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble, and a Blinn-Phong glint on shiny ice/metal types while carbon/silicate stay matte), and a volumetric nebula backdrop (`renderNebula` — per-pixel gas field on the celestial sphere: multi-octave noise, domain warp, density gradient, translucent) — all perspective view only. Also draws the pulsing amber berth ring for docked ships, the radar-panel `IN / DOCK` traffic tally, the convoy-distress cues (pulsing red SOS ring on an `underAttack` victim, off-screen SOS edge marker to the nearest victim, and a distinct SOS target-panel state), and the escort cues (pulsing green ring on a `defending` patrol drawn outside the cyan target box, off-screen green edge marker to the nearest defender, and an `ESCORT` target-panel state). |
 | `shot_test.cpp` | Headless screenshot harness for local-mode scenarios (`make shots`). |
 | `soak_test.cpp` | Headless long-run soak harness for the local simulation (`make soak`). |
 | `architecture.md` | High-level architecture and data-oriented rules. |
@@ -520,7 +534,9 @@ Important rules from the project documents:
 - Asteroids are lit ray-sphere boulders only when they are close enough to fill more
   than a few pixels; smaller and distant belt rocks are still phase-lit discs. The
   boulders are spheres carved *inward* for an irregular silhouette, so there are no
-  true concavities, overhangs, or contact-binary shapes yet.
+  true concavities, overhangs, or contact-binary shapes yet. Rocks are now typed by
+  composition (ice/carbon/metal/silicate palette and specular glint), but the type only
+  drives appearance — it does not yet affect mining yield, resource output, or value.
 - The nebula backdrop is a single translucent layer painted on the celestial sphere:
   it does not yet have dust lanes that absorb light, emission brightening around the
   bright skybox stars embedded in it, or multiple parallax layers for a sense of depth.

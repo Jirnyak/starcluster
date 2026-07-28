@@ -16,6 +16,35 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+// (§5.13.15) Внешний вид астероида по элементу → базовая палитра (0..255) + зеркальность.
+// Классы «пород» повторяют реальную таксономию астероидов, ключ — атомный номер/металличность
+// элемента (elementDefinitions()): лёд/летучие (H,He,N,O) — яркая голубовато-белая, блестит;
+// углеродистые (C,S) — тёмный уголь, матовый; металлические (Fe/Co/Ni + тяжёлые металлы/актиниды
+// с metallicTrait>0.35) — стальной, яркий блик; силикаты (всё прочее: Mg/Al/Si/Ca/Ti…) — тёпло-
+// бурый камень, матовый (≈ прежний вид пояса — безопасный дефолт). ЧИСТАЯ арифметика: без RNG,
+// без global rng (§2.3); клэмп индекса — переносит мусор без падения.
+void rockAppearance(int element, double& baseR, double& baseG, double& baseB, double& spec) {
+    const std::vector<ElementDefinition>& defs = elementDefinitions();
+    const int n = int(defs.size());
+    if (n <= 0) { baseR = 150.0; baseG = 140.0; baseB = 130.0; spec = 0.0; return; } // старый серо-бурый
+    if (element < 0) element = 0; else if (element > n - 1) element = n - 1;
+    const ElementDefinition& e = defs[element];
+    const int    z     = e.atomicNumber;
+    const double metal = e.metallicTrait;
+    if (z == 1 || z == 2 || z == 7 || z == 8) {           // лёд/летучие — яркий, голубовато-белый
+        baseR = 198.0; baseG = 214.0; baseB = 236.0; spec = 0.55;
+    } else if (z == 6 || z == 16) {                       // углеродистый — тёмный уголь, матовый
+        baseR = 56.0;  baseG = 52.0;  baseB = 49.0;  spec = 0.05;
+    } else if ((z >= 26 && z <= 28) || metal > 0.35) {    // металлический — стальной, яркий блик
+        baseR = 150.0 + metal * 28.0;                     // тяжёлые/благородные металлы чуть теплее
+        baseG = 150.0;
+        baseB = 158.0 - metal * 22.0;
+        spec  = 0.62;
+    } else {                                              // силикат (S-тип) — тёпло-бурый, матовый
+        baseR = 150.0; baseG = 128.0; baseB = 102.0; spec = 0.08;
+    }
+}
+
 void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
     // --- Сброс сцены (векторы очищаются свежим конструированием) ---
     scene = LocalScene();
@@ -295,10 +324,19 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         }
         rock.element = elem;
 
-        double mt = (elem >= 0 && elem < int(defs.size())) ? defs[elem].metallicTrait : 0.0;
-        rock.r = col(130.0 + mt * 40.0);
-        rock.g = col(120.0);
-        rock.b = col(110.0);
+        // (§5.13.15) Палитра/зеркальность по классу породы элемента; лёгкая вариация яркости
+        // камень-к-камню — из ДЕТЕРМИНИРОВАННОГО хэша индекса, а НЕ из lrng: не сдвигаем поток
+        // генерации, поэтому станция/радио/корабли спавнятся ровно как прежде (строго аддитивно,
+        // §2.3) — меняется только цвет/блеск камня. Без порогов: гладкий множитель ≈[0.86,1.10].
+        double br, bg, bb, sp;
+        rockAppearance(elem, br, bg, bb, sp);
+        double h = std::sin(double(i) * 12.9898 + 3.14159) * 43758.5453;
+        h -= std::floor(h);                          // [0,1)
+        const double jit = 0.86 + 0.24 * h;          // ≈[0.86, 1.10)
+        rock.r = col(br * jit);
+        rock.g = col(bg * jit);
+        rock.b = col(bb * jit);
+        rock.spec = sp;
 
         scene.rocks.push_back(rock);
     }

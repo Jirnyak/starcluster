@@ -788,6 +788,25 @@ static bool renderRockLit(SDL_Renderer* renderer, const LocalScene& scene,
             double cg = baseG * surf * lightF;
             double cb = baseB * surf * lightF;
 
+            // (§5.13.15) Зеркальный блик Блинна–Фонга — только для блестящих материалов
+            // (лёд/металл, rk.spec>0) и на освещённой стороне. Свет из (0,0,0): L=−S/|S|,
+            // взгляд V=−dir (нормированный луч из глаза). Аддитивно к диффузному цвету,
+            // общий клэмп ниже; матовые породы (углерод/силикат, spec≈0) блика не дают.
+            if (rk.spec > 0.0 && lam > 0.0 && sl > 1e-9) {
+                const double Lx = -sx / sl, Ly = -sy / sl, Lz = -sz / sl;
+                double hx = Lx - dx, hy = Ly - dy, hz = Lz - dz;   // H = L + V, V = −dir
+                const double hl = std::sqrt(hx * hx + hy * hy + hz * hz);
+                if (hl > 1e-9) {
+                    const double ndh = (nx * hx + ny * hy + nz * hz) / hl;
+                    if (ndh > 0.0) {
+                        const double spc = std::pow(ndh, 24.0) * rk.spec * lightF;
+                        cr += spc * (0.72 * 255.0 + 0.28 * baseR);   // блик — в осн. белый,
+                        cg += spc * (0.72 * 255.0 + 0.28 * baseG);   //  с лёгким оттенком
+                        cb += spc * (0.72 * 255.0 + 0.28 * baseB);   //  материала
+                    }
+                }
+            }
+
             // Попиксельная окклюзия веществом звезды (камень частично за лимбом).
             if (hasStar) {
                 if (csStar < 0.0) continue;              // глаз внутри звезды — всё за веществом

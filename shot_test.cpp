@@ -361,6 +361,45 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_belt_near.bmp");
     }
 
+    // (13+) ТИПЫ ПОРОД (§5.13.15): четыре камня в ряд — по одному на класс материала
+    //       (лёд O / углерод C / металл Fe / силикат Si), палитра/зеркальность взяты РОВНО
+    //       из rockAppearance() (та же ф-я, что печёт цвета пояса в localgen). Свет — звезда
+    //       в (0,0,0); группа вынесена вне оси, глаз с освещённой стороны и чуть сверху ⇒ на
+    //       каждом видна дневная сторона + терминатор, а на льду/металле — зеркальный блик,
+    //       тогда как углерод/силикат матовы. QA per-element палитры и specular-ветки.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        s.rocks.clear(); s.craft.clear(); s.loot.clear(); s.radio.clear(); s.miningRock = -1;
+        const int    reps[4] = {7, 5, 25, 13};       // индексы элементов = Z−1: O, C, Fe, Si
+        const double R = 6.5;                         // > ROCK_SHADE_MIN ⇒ лит-шейдер, не фолбэк
+        const double c0x = 300.0, c0y = 300.0;        // центр группы вне оси — свет под ~45°
+        const double ll = std::sqrt(c0x * c0x + c0y * c0y);
+        const double ux = c0x / ll, uy = c0y / ll;    // −(ux,uy,0) = направление на звезду у камня
+        const double perpx = -uy, perpy = ux;         // ⟂ свету в плоскости XY — вдоль ряда
+        const double step = R * 3.4;
+        for (int k = 0; k < 4; ++k) {
+            LocalRock rk;
+            rk.x = c0x + perpx * (k - 1.5) * step;
+            rk.y = c0y + perpy * (k - 1.5) * step;
+            rk.z = 0.0;
+            rk.radius = R;
+            rk.orbitAng = 0.7 * k;                    // разный сид силуэта/шума на каждом
+            rk.spin = 0.5 * k;
+            rk.element = reps[k];
+            double br, bg, bb, sp; rockAppearance(reps[k], br, bg, bb, sp);
+            rk.r = (uint8_t)br; rk.g = (uint8_t)bg; rk.b = (uint8_t)bb; rk.spec = sp;
+            s.rocks.push_back(rk);
+        }
+        // Глаз с освещённой стороны (сдвиг к звезде вдоль −u) и приподнят по Z; нос — на центр ряда.
+        s.px = c0x - ux * 30.0; s.py = c0y - uy * 30.0; s.pz = 40.0;
+        s.pvx = s.pvy = s.pvz = 0.0;
+        localSetForward(s, c0x - s.px, c0y - s.py, 0.0 - s.pz);
+        std::printf("  [belt-types] rocks=%d elems=O/C/Fe/Si specs=%.2f/%.2f/%.2f/%.2f\n",
+                    (int)s.rocks.size(), s.rocks[0].spec, s.rocks[1].spec, s.rocks[2].spec, s.rocks[3].spec);
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_belt_types.bmp");
+    }
+
     // (14) ТУМАННОСТЬ изолированно: глубокий космос (звезды НЕТ), туманность включена
     //      принудительно (QA рендера renderNebula — газовое поле на небесной сфере: клочья/
     //      волокна, крупная «банка», медленный дрейф; без диска/короны звезды, чтобы не путать
