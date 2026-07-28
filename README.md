@@ -46,7 +46,9 @@ cluster map stays orthographic) and the player flies a ship in 3D around:
 - **gas-giant rings in perspective**, drawn as a per-pixel ray↔plane annulus in the
   planet's equatorial plane: Cassini gaps, radial banding, a soft planet shadow cast
   on the rings, edge-on opacity gain, and a depth composite so the near arc passes in
-  front of the planet while the far arc is occluded behind it;
+  front of the planet while the far arc is occluded behind it — and, reciprocally, the
+  rings now cast their own soft shadow band back across the planet's lit face, with the
+  Cassini gap letting a bright sliver of light through (a full Saturn light model);
 - **lit asteroid boulders**: nearby belt rocks use the same ray-sphere technique with a
   Lambert day/night terminator, an irregular chipped silhouette (carved inward so it
   never overflows its sprite), craters and surface mottling, and a slow tumble that
@@ -439,7 +441,11 @@ Gas-giant rings are drawn in the same `renderBodySphere` pass: each pixel's ray 
 intersected with the annulus lying in the planet's equatorial plane (its normal is
 the same spin axis that orients the latitude bands), giving Cassini gaps, radial
 banding, a soft impact-parameter planet shadow on the rings, and an edge-on opacity
-gain. The sphere and ring roots are compared per pixel, so the near ring arc blends
+gain. The reciprocal shadow is cast too: each lit surface point traces a ray back to the
+star and, if it crosses the opaque annulus between surface and star, is darkened by the
+same density model — so the rings lay a soft shadow band across the planet's face, broken
+by a bright sliver where the Cassini gap lets light through (§5.13.21).
+The sphere and ring roots are compared per pixel, so the near ring arc blends
 over the planet while the far arc is occluded behind it, and the star's sphere
 occludes both — no separate billboard or depth pass. Nearby asteroids
 (`renderRockLit`) reuse the same machinery: a Lambert terminator from the origin
@@ -558,10 +564,11 @@ Important rules from the project documents:
 - In local flight mode there is no physical collision with the star or bodies
   (flying "into" the star is cosmetic; only HP can end a flight).
 - Gas-giant rings are now projected in first person (a Saturn-like ellipse with the
-  back arc occluded by the planet), but treated as an infinitely thin plane: there is
-  no vertical ring thickness at the edge-on grazing angle, no moon-resonance gap
-  structure, and no ring-cast shadow back onto the planet — only the planet's shadow
-  onto the rings.
+  back arc occluded by the planet) and cast a soft shadow band back onto the planet's
+  lit face — with the Cassini gap letting light through — completing the reciprocal of
+  the planet's own shadow on the rings (§5.13.21). Still treated as an infinitely thin
+  plane, though: there is no vertical ring thickness at the edge-on grazing angle, and
+  no moon-resonance gap structure beyond the Cassini division.
 - Asteroids are lit ray-sphere boulders only when they are close enough to fill more
   than a few pixels; smaller and distant belt rocks are still phase-lit discs. The
   boulders are spheres carved *inward* for an irregular silhouette, so there are no

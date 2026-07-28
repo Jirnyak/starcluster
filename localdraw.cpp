@@ -589,6 +589,37 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
                 if (sl > 1e-9) lam = -(nx * sx + ny * sy + nz * sz) / sl;
                 double diff = (lam + 0.10) / 1.10;              // wrap-lighting: мягче кромка
                 if (diff < 0.0) diff = 0.0; else if (diff > 1.0) diff = 1.0;
+                // (§5.13.21) Тень КОЛЕЦ на планете — обратная к тени тела на кольцах (см. выше).
+                // Из точки поверхности S луч к звезде (в 0,0,0): если он пересекает аннулус колец
+                // МЕЖДУ поверхностью и звездой, кольца гасят прямой свет (тёмная полоса поперёк
+                // диска, как у Сатурна). Плотность кольца в точке пересечения — ТА ЖЕ модель
+                // (кромки/деления Кассини/полосы), поэтому сквозь щель тени нет. Детерминированно,
+                // без rng; исполняется ТОЛЬКО при hasRing ⇒ у прочих тел 0 регресса (diff цел).
+                if (hasRing && diff > 0.0 && sl > 1e-9) {
+                    const double dSA = -(sx * axX + sy * axY + sz * axZ) / sl;    // (луч→звезда)·A
+                    if (std::fabs(dSA) > 1e-6) {
+                        const double SCA = (sx - cx) * axX + (sy - cy) * axY + (sz - cz) * axZ;
+                        const double tRp = -SCA / dSA;                            // t до плоскости колец
+                        if (tRp > 1e-4 && tRp < sl) {
+                            const double qf = 1.0 - tRp / sl;                     // Q = S·qf (звезда в 0)
+                            const double rvx = sx * qf - cx, rvy = sy * qf - cy, rvz = sz * qf - cz;
+                            const double rad2 = rvx * rvx + rvy * rvy + rvz * rvz;
+                            if (rad2 >= Ri2 && rad2 <= Ro2) {
+                                const double rad = std::sqrt(rad2);
+                                const double u = (rad - Ri) * invSpan;
+                                double edge = 1.0;
+                                if (u < 0.10) edge = u / 0.10; else if (u > 0.90) edge = (1.0 - u) / 0.10;
+                                double gap;
+                                { const double g = (u - 0.52) / 0.055; gap  = 1.0 - 0.85 * std::exp(-g * g); }
+                                { const double g = (u - 0.80) / 0.030; gap *= 1.0 - 0.55 * std::exp(-g * g); }
+                                const double bands = 0.72 + 0.28 * std::sin(rad * 0.85 + seed * 2.0);
+                                double occ = edge * gap * bands * 0.80;           // как ralpha (до graze)
+                                if (occ < 0.0) occ = 0.0; else if (occ > 0.85) occ = 0.85;
+                                diff *= (1.0 - occ);                              // кольца затеняют планету
+                            }
+                        }
+                    }
+                }
                 const double lightF = ambient + (1.0 - ambient) * diff;
                 double cr = baseR, cg = baseG, cb = baseB;
                 if (kind == LB_GASGIANT) {
