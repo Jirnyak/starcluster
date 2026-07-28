@@ -572,6 +572,32 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         SDL_RenderDrawLine(renderer, rx, ry - 8, rx, ry - 3);
         SDL_RenderDrawLine(renderer, rx, ry + 3, rx, ry + 8);
     } else {
+        // (8a) ОРИЕНТИР ЭКЛИПТИКИ (искусственный горизонт). Плоскость системы — мировая
+        //      X-Y (нормаль +Z; см. localgen: x=r·cosφ, y=r·sinφ·cosI, z=r·sinφ·sinI).
+        //      Её «линия схода» на экране: НАКЛОН линии = крен корабля, СМЕЩЕНИЕ вверх/вниз
+        //      относительно мушки = тангаж относительно диска системы. Даёт чувство
+        //      ориентации в 6DOF-полёте. Строим как проекцию НАПРАВЛЕНИЙ в плоскости
+        //      (точки на бесконечности) тем же projectDirectionWithBasis, что и скайбокс:
+        //      d(θ)=(cosθ,sinθ,0). В глубоком космосе опорной плоскости нет — пропускаем.
+        if (scene.hasStar) {
+            const int N = 84;
+            const double kTwoPi = 6.28318530717958648;
+            const SDL_Color ec = rgba(120, 150, 190, 70);   // тусклый холодный ориентир
+            SDL_SetRenderDrawColor(renderer, ec.r, ec.g, ec.b, ec.a);
+            ProjectedPoint prev; bool havePrev = false;
+            for (int i = 0; i <= N; ++i) {
+                const double th = (double(i) / double(N)) * kTwoPi;
+                ProjectedPoint d = projectDirectionWithBasis(std::cos(th), std::sin(th), 0.0,
+                                                             winW, winH, view, basis);
+                // camZ>0.06: отсекаем почти-рёберные направления (линия уходит в бесконечность
+                // у горизонта) — иначе focal/camZ раздувает координату в штрих на весь экран.
+                const bool ok = (!d.behind) && (d.camZ > 0.06) &&
+                                d.x > -winW && d.x < 2 * winW && d.y > -winH && d.y < 2 * winH;
+                if (ok && havePrev)
+                    SDL_RenderDrawLine(renderer, prev.x, prev.y, d.x, d.y);
+                prev = d; havePrev = ok;
+            }
+        }
         // Мушка по курсу стрельбы: точка далеко вдоль носа (~центр экрана при нулевом сносе).
         ProjectedPoint pa = projectPointWithBasis(scene.px + scene.pfwdX * 600.0,
                                                   scene.py + scene.pfwdY * 600.0,
