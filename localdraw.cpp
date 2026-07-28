@@ -1281,6 +1281,12 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             int sha = int(70.0 * c.shield / c.maxShield); // бледный синеватый щит
             strokeCircle(renderer, p.x, p.y, int(sz) + 4, rgba(120, 180, 255, sha));
         }
+        if (c.errand == 1) { // «у причала»: пульсирующее янтарное кольцо-швартовка (§5.13.10)
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 3.0 + double(i) * 1.7);
+            int da = 60 + int(pl * 120.0);                 // 60..180 — мягкий «дыхательный» пульс
+            strokeCircle(renderer, p.x, p.y, int(sz) + 7, rgba(255, 190, 60, da));
+            strokeCircle(renderer, p.x, p.y, int(sz) + 10, rgba(255, 190, 60, da / 3));
+        }
         if (c.hullHP < c.maxHullHP) {
             double frac = c.hullHP / std::max(1.0, c.maxHullHP);
             bar(renderer, p.x - 8, p.y - int(sz) - 6, 16, 2, frac, c.hostile ? P.red : P.green);
@@ -1719,9 +1725,9 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     // Низ-СПРАВА: РАДАР / ДЕТЕКТОР. Тактический вид от кабины: ось вперёд (pfwd) —
     // ВВЕРХ радара, ось right (pfwd×pup) — вправо. Контакт впереди по курсу -> вверх.
     {
-        int rw = 154, rh = 158;
+        int rw = 154, rh = 178;     // rh: +20 под строку трафика над счётчиком SIG (§5.13.10)
         int rpx = winW - rw - 12;   // левый край панели  = winW-166
-        int rpy = winH - rh - 52;   // верхний край       = winH-210
+        int rpy = winH - rh - 52;   // верхний край       = winH-230
         panel(renderer, rpx, rpy, rw, rh);
         int rcx = rpx + rw / 2;
         int rcy = rpy + 80;         // центр радара (место под заголовок сверху и счётчик снизу)
@@ -1788,6 +1794,19 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
 
         // Игрок — крошечный треугольник в центре, нос ВВЕРХ.
         headingTriangle(renderer, rcx, rcy, -1.5707963, 5.0, rgba(255, 230, 120, 255), true);
+
+        // Тальник трафика (§5.13.10): сколько неагрессивных бортов идут к рынку (IN) и стоят
+        // у причала (DOCK). Делает живую популяцию §5.13.9 читаемой из кабины (scale 1, над SIG).
+        int inbound = 0, docked = 0;
+        for (size_t i = 0; i < scene.craft.size(); ++i) {
+            const LocalCraft& c = scene.craft[i];
+            if (c.hostile) continue;
+            if (c.errand == 1) ++docked;
+            else if (c.errand == 0 && c.errandBody >= 0) ++inbound;
+        }
+        std::snprintf(buf, sizeof(buf), "IN %d  DOCK %d", inbound, docked);
+        SDL_Color trafCol = (inbound + docked > 0) ? rgba(120, 200, 220, 255) : P.dim;
+        drawText(renderer, rcx - textWidth(buf, 1) / 2, rpy + rh - 36, buf, trafCol, 1);
 
         // Счётчик сигналов внизу панели (scale 2). Показываем всегда (виден тир детектора).
         std::snprintf(buf, sizeof(buf), "%d SIG", sigCount);

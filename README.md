@@ -61,7 +61,11 @@ cluster map stays orthographic) and the player flies a ship in 3D around:
   patrols) run errands — cruise to a market body, linger "docked" around it, then pick a
   new errand — while purely-local ships occasionally depart to the system edge and despawn,
   and fresh traders warp in from the edge on a timer up to a population cap, so traffic flows
-  in and out and the system stays alive (pirates keep hunting — their aggression is untouched);
+  in and out and the system stays alive (pirates keep hunting — their aggression is untouched).
+  This traffic is **legible from the cockpit**: arrivals and departures fire a cyan warp
+  flash (expanding ring + bright core + sparks), a ship leaving a berth puffs its thrusters,
+  a docked ship wears a pulsing amber station-keeping ring, and the radar panel shows an
+  `IN / DOCK` tally of how many ships are inbound to a market versus parked;
 - local NPC ships (traders, pirates), mining, docking, and scooping interactions.
 
 The local mode is fully deterministic and self-contained: it draws its own seeded
@@ -437,8 +441,8 @@ flat tint plus three hashed blobs, byte-for-byte.
 | `camera.h` | Shared camera/projection: orthographic macro path plus the perspective path used only by local flight mode. |
 | `local.h` | Local-mode data structures (`LocalScene`, `LocalInput`) and the `buildLocalCamera` helper. |
 | `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). Seeds non-combat NPCs with an opening market-bound errand and randomizes the arrival timer. |
-| `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior, and the living-traffic lifecycle (errand state machine, edge-despawn of departing ships, timed arrivals up to a population cap). |
-| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble), and a volumetric nebula backdrop (`renderNebula` — per-pixel gas field on the celestial sphere: multi-octave noise, domain warp, density gradient, translucent) — all perspective view only. |
+| `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior, and the living-traffic lifecycle (errand state machine, edge-despawn of departing ships, timed arrivals up to a population cap). Emits a cyan "warp" FX signature (`emitWarp`) on arrival/departure and a thruster puff when a ship leaves a berth. |
+| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble), and a volumetric nebula backdrop (`renderNebula` — per-pixel gas field on the celestial sphere: multi-octave noise, domain warp, density gradient, translucent) — all perspective view only. Also draws the pulsing amber berth ring for docked ships and the radar-panel `IN / DOCK` traffic tally. |
 | `shot_test.cpp` | Headless screenshot harness for local-mode scenarios (`make shots`). |
 | `soak_test.cpp` | Headless long-run soak harness for the local simulation (`make soak`). |
 | `architecture.md` | High-level architecture and data-oriented rules. |
@@ -497,10 +501,12 @@ Important rules from the project documents:
 - The nebula backdrop is a single translucent layer painted on the celestial sphere:
   it does not yet have dust lanes that absorb light, emission brightening around the
   bright skybox stars embedded in it, or multiple parallax layers for a sense of depth.
-- Local NPC traffic is now goal-driven (errands to markets, timed arrivals and departures),
-  but it is not yet wired back to the macro simulation: killing or despawning a local ship
-  that mirrors a macro agent does not affect that agent, and NPC trading moves no real cargo
-  or credits — the errands are behavioral, not yet economic.
+- Local NPC traffic is now goal-driven (errands to markets, timed arrivals and departures)
+  and legible from the cockpit (warp-in/out FX, berth ring, `IN / DOCK` tally), but it is not
+  yet wired back to the macro simulation: killing or despawning a local ship that mirrors a
+  macro agent does not affect that agent, and NPC trading moves no real cargo or credits — the
+  errands are behavioral, not yet economic. Convoys also do not yet react to being attacked
+  (no distress call or defense payoff — that is the next planned slice).
 - Non-player faction memory overlays are not exposed through a debug selector.
 - The active build is POSIX/SDL2 via `sdl2-config`; the old platform makefiles
   are not synchronized with the current source list.

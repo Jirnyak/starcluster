@@ -157,6 +157,41 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         }
     };
 
+    // emitWarp: сигнатура «прыжка» — циан-кольцо + яркая аддитивная вспышка-ядро + горсть искр.
+    //   Ставится на ПРИЛЁТЕ (вход торговца с края) и на ОТЛЁТЕ (деспаун за краем). §5.13.10.
+    //   Голубой тон намеренно отличается от тёплых взрывов, чтобы читаться как «варп», а не гибель.
+    //   Локальный сид (fx.size/localHours/позиция) — global rng не трогаем (§2.3). Уважаем FX_MAX.
+    auto emitWarp = [&scene](double x, double y, double z) {
+        std::mt19937 lr((uint32_t)(scene.fx.size() * 2654435761u)
+                        ^ (uint32_t)(uint64_t)(scene.localHours * 977.0)
+                        ^ (uint32_t)(uint64_t)(std::fabs(x) * 8.0 + std::fabs(y) * 2.0 + std::fabs(z)));
+        std::uniform_real_distribution<double> us(-1.0, 1.0);
+        std::uniform_real_distribution<double> u01(0.0, 1.0);
+        if ((int)scene.fx.size() < LocalCfg::FX_MAX) { // кольцо-ударная (растёт в draw)
+            LocalFx f; f.x = x; f.y = y; f.z = z; f.vx = 0.0; f.vy = 0.0; f.vz = 0.0;
+            f.kind = FX_RING; f.size = 26.0; f.life = 0.9; f.maxLife = 0.9;
+            f.r = 90; f.g = 210; f.b = 255; f.a = 255;
+            scene.fx.push_back(f);
+        }
+        if ((int)scene.fx.size() < LocalCfg::FX_MAX) { // ядро-вспышка (аддитивная)
+            LocalFx f; f.x = x; f.y = y; f.z = z; f.vx = 0.0; f.vy = 0.0; f.vz = 0.0;
+            f.kind = FX_MUZZLE; f.size = 2.6; f.life = 0.5; f.maxLife = 0.5;
+            f.r = 150; f.g = 230; f.b = 255; f.a = 255;
+            scene.fx.push_back(f);
+        }
+        for (int k = 0; k < 8; ++k) { // горсть циан-искр
+            if ((int)scene.fx.size() >= LocalCfg::FX_MAX) break;
+            LocalFx f; f.x = x; f.y = y; f.z = z;
+            double sp = 20.0 + u01(lr) * 40.0;
+            f.vx = us(lr) * sp; f.vy = us(lr) * sp; f.vz = us(lr) * sp * 0.6;
+            f.kind = FX_SPARK;
+            f.size = 1.0 + u01(lr) * 1.2;
+            f.life = 0.4 + u01(lr) * 0.4; f.maxLife = f.life;
+            f.r = 120; f.g = 220; f.b = 255; f.a = 255;
+            scene.fx.push_back(f);
+        }
+    };
+
     // ---- Ориентация корабля: ТЕЛО-ОТНОСИТЕЛЬНОЕ вращение базиса (полное 3D, по РЕАЛЬНОМУ времени) ----
     //  yaw (A/D) — вокруг pup; pitch (R/F) — вокруг right (крутит И нос, И «вверх»); roll (Q/E) — вокруг pfwd.
     //  Знаки: yawL=+, pitchU=+ — как в прежней Эйлеровой схеме. Крен: rollR (E) = +TURN_RATE => КРЕН ВПРАВО
@@ -461,6 +496,15 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                     c.ty = std::sin(a) * (edgeR + 120.0);
                     c.tz = (u01(wr) - 0.5) * edgeR * 0.3;
                     c.errand = 2; c.errandBody = -1; c.boost = 1.5; // короткий форсаж «на выход»
+                    for (int k = 0; k < 4; ++k) { // синеватый пуфф форсажа у причала — «отчаливаю» (§5.13.10)
+                        if ((int)scene.fx.size() >= LocalCfg::FX_MAX) break;
+                        LocalFx f; f.x = c.x; f.y = c.y; f.z = c.z;
+                        f.vx = (u01(wr)-0.5)*10.0; f.vy = (u01(wr)-0.5)*10.0; f.vz = (u01(wr)-0.5)*6.0;
+                        f.kind = FX_SMOKE; f.size = 2.0 + u01(wr)*2.0;
+                        f.life = 0.8 + u01(wr)*0.6; f.maxLife = f.life;
+                        f.r = 120; f.g = 160; f.b = 200; f.a = 150;
+                        scene.fx.push_back(f);
+                    }
                 } else {
                     int bi = pickMarketBody(wr);
                     c.errand = 0; c.errandBody = bi;
@@ -724,6 +768,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
             if (d2 > despawnR2) departed = true;
         }
         if (dead || departed) {
+            if (departed) emitWarp(c.x, c.y, c.z); // вспышка «ушёл в прыжок» (гибель уже даёт wreck)
             scene.craft[i] = scene.craft.back();
             scene.craft.pop_back();
         } else {
@@ -766,6 +811,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                 double il = 1.0 / std::max(1e-6, std::sqrt(idx*idx + idy*idy + idz*idz));
                 c.vx = idx*il*c.maxSpeed*0.6; c.vy = idy*il*c.maxSpeed*0.6; c.vz = idz*il*c.maxSpeed*0.6;
                 scene.craft.push_back(c);
+                emitWarp(c.x, c.y, c.z); // вспышка «вышел из прыжка» у края (§5.13.10)
             }
             std::mt19937 tr((uint32_t)(scene.craft.size() * 40503u)
                             ^ (uint32_t)(uint64_t)(scene.localHours * 50.0 + 7.0));

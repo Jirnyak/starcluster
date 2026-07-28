@@ -364,6 +364,43 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_nebula.bmp");
     }
 
+    // (15) ТРАФИК (§5.13.10): пришвартованный торговец у рынка — пульсирующее ЯНТАРНОЕ кольцо
+    //      швартовки (errand==1) — плюс циан-вспышка «варпа» (прилёт: FX_RING + FX_MUZZLE) рядом,
+    //      и HUD-тальник трафика (IN/DOCK) в панели радара покажет DOCK>=1. Проверяет berth-
+    //      индикатор, счётчик и рендер warp-FX разом. Кадр сбоку от рыночного тела.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        int mi = -1;
+        for (size_t i = 0; i < s.bodies.size(); ++i)
+            if (s.bodies[i].hasMarket) { mi = (int)i; break; }
+        if (mi < 0)                                    // фолбэк: крупнейшее не-станционное тело
+            for (size_t i = 0; i < s.bodies.size(); ++i)
+                if (s.bodies[i].kind != LB_STATION && (mi < 0 || s.bodies[i].radius > s.bodies[mi].radius)) mi = (int)i;
+        if (mi >= 0 && !s.craft.empty()) {
+            const LocalBody& b = s.bodies[mi];
+            LocalCraft& t = s.craft[0];                // пришвартованный торговец у причала
+            t.hostile = false; t.kind = CK_TRADER; t.label = "TRADER";
+            t.r = 90; t.g = 200; t.b = 235;
+            t.errand = 1; t.errandBody = mi; t.errandTimer = 6.0;
+            t.x = b.x + b.radius + 12.0; t.y = b.y; t.z = b.z + 3.0;
+            t.vx = t.vy = t.vz = 0.0;
+            t.hullHP = t.maxHullHP; t.shield = t.maxShield;
+            const double D = std::max(60.0, b.radius * 4.0);   // камера сбоку: тело + причал в кадре
+            s.px = b.x + D; s.py = b.y; s.pz = b.z + D * 0.35;
+            s.pvx = s.pvy = s.pvz = 0.0;
+            localSetForward(s, b.x - s.px, b.y - s.py, b.z - s.pz);
+            s.targetCraft = 0;
+            double wx = b.x - b.radius - 20.0, wy = b.y + 10.0, wz = b.z; // циан-варп рядом (прилёт)
+            { LocalFx f; f.x=wx; f.y=wy; f.z=wz; f.vx=f.vy=f.vz=0.0; f.kind=FX_RING;
+              f.size=26.0; f.life=0.6; f.maxLife=0.9; f.r=90; f.g=210; f.b=255; f.a=255; s.fx.push_back(f); }
+            { LocalFx f; f.x=wx; f.y=wy; f.z=wz; f.vx=f.vy=f.vz=0.0; f.kind=FX_MUZZLE;
+              f.size=2.6; f.life=0.35; f.maxLife=0.5; f.r=150; f.g=230; f.b=255; f.a=255; s.fx.push_back(f); }
+            std::printf("  [traffic] market body=%d R=%.1f docked TRADER at berth + warp-FX beside\n", mi, b.radius);
+        }
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_traffic_dock.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);
