@@ -88,6 +88,15 @@ namespace LocalCfg {
     constexpr double MINE_YIELD_CARBON   = 0.65;  // углеродистый (медленно)
     constexpr double MINE_YIELD_METAL    = 1.60;  // металлический (богато/быстро)
 
+    // (§5.13.22) Множитель КОЛИЧЕСТВА руды в камне по классу — ОТДЕЛЬНАЯ ось от скорости выше
+    // (MINE_YIELD_* = темп; здесь = запас тоннажа). Металл — плотная богатая глыба, лёд/углерод
+    // беднее рудой. Средневзвешенно ≈1.0 ⇒ общий тоннаж пояса не раздувается, а ПЕРЕРАСПРЕДЕЛЯется
+    // к металлу в богатых системах. Силикат=1.0 ⇒ дефолт-класс без регресса.
+    constexpr double ORE_QTY_SILICATE = 1.00;
+    constexpr double ORE_QTY_ICE      = 0.90;
+    constexpr double ORE_QTY_CARBON   = 0.80;
+    constexpr double ORE_QTY_METAL    = 1.50;
+
     // --- FX / juice ---
     constexpr int    FX_MAX = 3600;             // потолок частиц (безопасность/пейсинг)
 }
@@ -107,6 +116,26 @@ inline double rockYieldMult(int rc) {
     case ROCK_METAL:  return LocalCfg::MINE_YIELD_METAL;
     default:          return LocalCfg::MINE_YIELD_SILICATE;   // ROCK_SILICATE / неизвестное
     }
+}
+
+// (§5.13.22) Множитель КОЛИЧЕСТВА руды в камне: класс породы × насыщенность системы.
+// star.miningRichness ∈ [0.45,1.95] (cluster.cpp) прежде влияла ТОЛЬКО на макро-добычу
+// (mining.cpp) — локальный пояс её игнорировал; здесь она наконец правит запас руды пояса.
+// Обе компоненты нормированы к среднему ≈1.0 ⇒ чистое ПЕРЕРАСПРЕДЕЛЕНИЕ тоннажа, не инфляция.
+// Чистая функция без RNG (§2.3); в localgen применяется как множитель УЖЕ разыгранного frand,
+// поэтому поток lrng не сдвигается (стрим-якорь §5.13.20) — спавн/soak побитово прежние.
+inline double oreRichnessMult(int rc, double miningRichness) {
+    double qty;
+    switch (rc) {
+    case ROCK_ICE:    qty = LocalCfg::ORE_QTY_ICE;    break;
+    case ROCK_CARBON: qty = LocalCfg::ORE_QTY_CARBON; break;
+    case ROCK_METAL:  qty = LocalCfg::ORE_QTY_METAL;  break;
+    default:          qty = LocalCfg::ORE_QTY_SILICATE; break;   // ROCK_SILICATE / неизвестное
+    }
+    double rNorm = (miningRichness - 0.45) / 1.5;      // [0.45,1.95] → [0,1]
+    if (rNorm < 0.0) rNorm = 0.0; else if (rNorm > 1.0) rNorm = 1.0;
+    const double fRich = 0.6 + 0.8 * rNorm;            // [0.6,1.4], среднее ≈1.0
+    return qty * fRich;
 }
 
 // Короткое имя класса для HUD (UPPERCASE, §2.6).
