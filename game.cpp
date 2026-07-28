@@ -1709,7 +1709,8 @@ bool buyFuel(Game& game, Agent& agent, int starIndex, double targetFuel) {
     const int fuelIndex = agent.ship.fuelElement;
     if (fuelIndex < 0 || fuelIndex >= int(market.supply.size()) || fuelIndex >= int(market.prices.size())) return false;
 
-    const double tariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.014);
+    double tariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.014);
+    if (agent.playerControlled) tariff /= std::max(1.0, game.tech.charisma);
     const double unitCost = market.prices[fuelIndex] * (1.0 + tariff);
     if (unitCost <= 0.0) return false;
 
@@ -1752,7 +1753,8 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
     const double amount = std::min(cargoAmount, requestedAmount);
     if (amount <= 0.01) return false;
     const double gross = amount * market.prices[resourceIndex];
-    const double tariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.026);
+    double tariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.026);
+    if (agent.playerControlled) tariff /= std::max(1.0, game.tech.charisma);
     const double fee = gross * tariff;
     const int owner = game.cluster.stars[starIndex].ownerFaction;
     const double costShare = agent.cargoCost * (amount / std::max(0.001, cargoAmount));
@@ -1786,7 +1788,8 @@ void buyCargo(Game& game, Agent& agent, int starIndex, const TradePlan& plan) {
     if (amount <= 0.01) return;
 
     const double baseCost = amount * unitCost;
-    const double tariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.014);
+    double tariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.014);
+    if (agent.playerControlled) tariff /= std::max(1.0, game.tech.charisma);
     const double fee = baseCost * tariff;
     const int owner = game.cluster.stars[starIndex].ownerFaction;
 
@@ -2604,6 +2607,16 @@ bool expectTag(std::istream& in, const char* expectedTag) {
 
 Game::Game() : time(0.0) {}
 
+void Game::pushNews(const std::string& text, int kind) {
+    NewsItem item;
+    item.text = text;
+    item.time = time;
+    item.kind = kind;
+    news.push_back(item);
+    const size_t cap = 64;
+    if (news.size() > cap) news.erase(news.begin(), news.begin() + (news.size() - cap));
+}
+
 bool Game::saveToFile(const std::string& path) {
     std::ofstream out(path.c_str());
     if (!out) {
@@ -2611,7 +2624,7 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 5 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 6 " << cluster.stars.size() << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
         << nextContractId << ' ' << playerAgent << ' ' << playerFaction << ' '
@@ -2710,9 +2723,14 @@ bool Game::saveToFile(const std::string& path) {
             << ship.acceleration << ' ' << ship.dryMass << ' ' << ship.driveThrust << ' '
             << ship.driveEfficiency << ' ' << ship.fuelElement << ' ' << ship.fuel << ' '
             << ship.fuelCapacity << ' ' << ship.cargoCapacity << ' ' << ship.ownerFaction << ' '
-            << ship.targetStar << ' ' << int(ship.enRoute) << '\n';
+            << ship.targetStar << ' ' << int(ship.enRoute) << ' '
+            << ship.heavyWeapons << ' ' << ship.lightWeapons << ' ' << ship.armor << ' '
+            << ship.utility << ' ' << ship.hullHP << ' ' << ship.maxHullHP << '\n';
         out << "CARGO ";
         writeResourceList(out, ship.cargo);
+        out << '\n';
+        out << "MODULES ";
+        writeIntList(out, ship.modules);
         out << '\n';
     }
 
@@ -2793,6 +2811,34 @@ bool Game::saveToFile(const std::string& path) {
         }
     }
 
+    out << "TECH " << tech.intellect << ' ' << tech.charisma << ' ' << tech.materials << ' '
+        << tech.tactics << ' ' << tech.kinematics << ' ' << tech.sensors << ' ' << tech.luck << ' '
+        << tech.cores << ' ' << tech.research << '\n';
+
+    out << "MARKET_EVENTS " << marketEvents.size() << '\n';
+    for (const MarketEvent& ev : marketEvents) {
+        out << "MEV " << ev.star << ' ' << int(ev.kind) << ' ' << ev.startTime << ' '
+            << ev.endTime << ' ' << ev.magnitude << ' ' << int(ev.announced) << ' ';
+        writeIntList(out, ev.elements);
+        out << '\n';
+    }
+
+    out << "ANOMALIES " << anomalies.size() << '\n';
+    for (const Anomaly& a : anomalies) {
+        out << "ANOM " << a.x << ' ' << a.y << ' ' << a.z << ' ' << int(a.kind) << ' '
+            << int(a.discovered) << ' ' << int(a.resolved) << ' ' << a.lootElement << ' '
+            << a.lootAmount << ' ' << a.credits << ' ' << a.chromocoreStat << ' ' << a.hazard << ' '
+            << a.nearStar << ' ' << saveToken(a.name) << '\n';
+    }
+
+    out << "NEWS " << news.size() << '\n';
+    for (const NewsItem& n : news) {
+        out << "NEWSITEM " << n.time << ' ' << n.kind << ' ' << saveToken(n.text) << '\n';
+    }
+
+    out << "MINING " << int(playerMining) << ' ' << miningTimer << ' ' << miningStar << ' '
+        << miningYieldAccum << '\n';
+
     if (!out) {
         lastEvent = "save failed";
         return false;
@@ -2811,7 +2857,7 @@ bool Game::loadFromFile(const std::string& path) {
     std::string tag;
     int version = 0;
     size_t starCount = 0;
-    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 5) {
+    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 6) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -3059,7 +3105,9 @@ bool Game::loadFromFile(const std::string& path) {
                 agent.ship.acceleration >> agent.ship.dryMass >> agent.ship.driveThrust >>
                 agent.ship.driveEfficiency >> agent.ship.fuelElement >> agent.ship.fuel >>
                 agent.ship.fuelCapacity >> agent.ship.cargoCapacity >> agent.ship.ownerFaction >>
-                agent.ship.targetStar >> enRoute)) {
+                agent.ship.targetStar >> enRoute >>
+                agent.ship.heavyWeapons >> agent.ship.lightWeapons >> agent.ship.armor >>
+                agent.ship.utility >> agent.ship.hullHP >> agent.ship.maxHullHP)) {
             lastEvent = "load failed: ship";
             return false;
         }
@@ -3075,6 +3123,10 @@ bool Game::loadFromFile(const std::string& path) {
         agent.ship.enRoute = enRoute != 0;
         if (!expectTag(in, "CARGO") || !readResourceList(in, agent.ship.cargo)) {
             lastEvent = "load failed: cargo";
+            return false;
+        }
+        if (!expectTag(in, "MODULES") || !readIntList(in, agent.ship.modules)) {
+            lastEvent = "load failed: modules";
             return false;
         }
         loaded.agents.push_back(agent);
@@ -3254,6 +3306,85 @@ bool Game::loadFromFile(const std::string& path) {
         }
     }
 
+    if (!expectTag(in, "TECH") ||
+        !(in >> loaded.tech.intellect >> loaded.tech.charisma >> loaded.tech.materials >>
+            loaded.tech.tactics >> loaded.tech.kinematics >> loaded.tech.sensors >>
+            loaded.tech.luck >> loaded.tech.cores >> loaded.tech.research)) {
+        lastEvent = "load failed: tech";
+        return false;
+    }
+
+    if (!expectTag(in, "MARKET_EVENTS") || !(in >> count)) {
+        lastEvent = "load failed: market events";
+        return false;
+    }
+    loaded.marketEvents.clear();
+    for (size_t i = 0; i < count; ++i) {
+        MarketEvent ev;
+        int kind = 0;
+        int announced = 0;
+        if (!expectTag(in, "MEV") ||
+            !(in >> ev.star >> kind >> ev.startTime >> ev.endTime >> ev.magnitude >> announced)) {
+            lastEvent = "load failed: market event";
+            return false;
+        }
+        if (!readIntList(in, ev.elements)) {
+            lastEvent = "load failed: market event elements";
+            return false;
+        }
+        ev.kind = MarketEventKind(kind);
+        ev.announced = announced != 0;
+        loaded.marketEvents.push_back(ev);
+    }
+
+    if (!expectTag(in, "ANOMALIES") || !(in >> count)) {
+        lastEvent = "load failed: anomalies";
+        return false;
+    }
+    loaded.anomalies.clear();
+    for (size_t i = 0; i < count; ++i) {
+        Anomaly a;
+        int kind = 0;
+        int discovered = 0;
+        int resolved = 0;
+        std::string nameToken;
+        if (!expectTag(in, "ANOM") ||
+            !(in >> a.x >> a.y >> a.z >> kind >> discovered >> resolved >> a.lootElement >>
+                a.lootAmount >> a.credits >> a.chromocoreStat >> a.hazard >> a.nearStar >> nameToken)) {
+            lastEvent = "load failed: anomaly";
+            return false;
+        }
+        a.kind = AnomalyKind(kind);
+        a.discovered = discovered != 0;
+        a.resolved = resolved != 0;
+        a.name = loadToken(nameToken);
+        loaded.anomalies.push_back(a);
+    }
+
+    if (!expectTag(in, "NEWS") || !(in >> count)) {
+        lastEvent = "load failed: news";
+        return false;
+    }
+    loaded.news.clear();
+    for (size_t i = 0; i < count; ++i) {
+        NewsItem n;
+        std::string textToken;
+        if (!expectTag(in, "NEWSITEM") || !(in >> n.time >> n.kind >> textToken)) {
+            lastEvent = "load failed: news item";
+            return false;
+        }
+        n.text = loadToken(textToken);
+        loaded.news.push_back(n);
+    }
+
+    int playerMiningInt = 0;
+    if (!expectTag(in, "MINING") ||
+        !(in >> playerMiningInt >> loaded.miningTimer >> loaded.miningStar >> loaded.miningYieldAccum)) {
+        lastEvent = "load failed: mining";
+        return false;
+    }
+    loaded.playerMining = playerMiningInt != 0;
+
     if (!in) {
         lastEvent = "load failed";
         return false;
@@ -3369,6 +3500,16 @@ void Game::init(size_t num_stars) {
     playerFaction = -1;
     foundedColonies = 0;
     capturedSystems = 0;
+    tech = TechState();
+    marketEvents.clear();
+    anomalies.clear();
+    news.clear();
+    marketEventTimer = 0.0;
+    anomalyTimer = 0.0;
+    playerMining = false;
+    miningTimer = 0.0;
+    miningStar = -1;
+    miningYieldAccum = 0.0;
     lastEvent = "cluster seeded";
     if (num_stars == 0) return;
 
@@ -3459,6 +3600,10 @@ void Game::init(size_t num_stars) {
     playerAgent = int(agents.size());
     agents.push_back(player);
     registerFactionAgent(*this, playerAgent);
+
+    seedAnomalies();
+    pushNews("Welcome, Captain. Trade, mine, and grow your fleet.", 0);
+    pushNews("Press M in a system to mine ore, then sell it for credits.", 0);
 
     resizeFactionKnowledge();
     for (size_t factionIndex = 0; factionIndex < factions.size(); ++factionIndex) {
@@ -3610,11 +3755,15 @@ void Game::update(double dt) {
         rebuildRouteCache();
     }
     updateMarkets(dt);
+    updateMarketEvents(dt);
     updateColonies(dt);
+    updateMining(dt);
     updateFactions(dt);
     updateContracts(dt);
     updateAgents(dt);
     processSignals();
+    updateAnomalies(dt);
+    updateEncounters(dt);
     if (playerAgent >= 0 && playerAgent < int(agents.size()) && !agents[playerAgent].ship.enRoute) {
         observeStar(agents[playerAgent].currentStar);
         agentCompleteContracts(playerAgent);

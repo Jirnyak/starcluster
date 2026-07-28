@@ -4,6 +4,7 @@
 #include "colony.h"
 #include "contract.h"
 #include "faction.h"
+#include "features.h"
 #include "market.h"
 #include <random>
 #include <string>
@@ -152,6 +153,18 @@ public:
     int capturedSystems = 0;
     std::string lastEvent;
 
+    // --- Расширения геймплея (вертикальный срез) ---
+    TechState tech;                     // хромокоры игрока
+    std::vector<MarketEvent> marketEvents;
+    std::vector<Anomaly> anomalies;
+    std::vector<NewsItem> news;         // скользящая лента новостей
+    double marketEventTimer = 0.0;
+    double anomalyTimer = 0.0;
+    bool playerMining = false;
+    double miningTimer = 0.0;
+    int miningStar = -1;
+    double miningYieldAccum = 0.0;
+
     Game();
     void init(size_t num_stars);
     void update(double dt);
@@ -250,5 +263,24 @@ public:
     double playerKnownDemandPressure(int starIndex, int elementIndex) const;
     double playerKnownMarketAge(int starIndex) const;
     double playerKnownMarketConfidence(int starIndex, int elementIndex) const;
+
+    // --- Срез: новые системы (реализованы в отдельных .cpp) ---
+    void pushNews(const std::string& text, int kind = 0);   // game.cpp
+    void updateMining(double dt);                           // mining.cpp
+    bool playerToggleMining();                              // mining.cpp
+    void updateMarketEvents(double dt);                     // spaceevents.cpp
+    void spawnMarketEvent();                                // spaceevents.cpp
+    void seedAnomalies();                                   // anomaly.cpp
+    void updateAnomalies(double dt);                        // anomaly.cpp
+    bool playerScanAnomaly();                               // anomaly.cpp
+    void updateEncounters(double dt);                       // combat.cpp
+    bool playerRepairHull();                                // combat.cpp
+    void grantChromocore(int stat);                         // chromo.cpp
+    void addResearch(double amount);                        // chromo.cpp
+    bool installModule(int agentIndex, int defIndex);       // modules.cpp
+    int shipyardLevelAtStar(int starIndex) const;           // modules.cpp
+
     void render(); // TODO: добавить SDL2
 };
+
+const char* chromocoreStatLabel(int stat); // chromo.cpp

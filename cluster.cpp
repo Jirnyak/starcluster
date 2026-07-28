@@ -52,6 +52,9 @@ void Cluster::generate(size_t num_stars) {
         const double metallicity = 0.22 + unit(rng) * 0.95;
         const double rarePocket = unit(rng) < 0.08 ? 3.5 + unit(rng) * 5.0 : 1.0;
         const double volatilePocket = unit(rng) < 0.18 ? 1.8 + unit(rng) * 2.5 : 1.0;
+        star.miningRichness = richness;
+        star.metallicity = metallicity;
+        star.stellarClass = unit(rng) < 0.008 ? 1 : 0;
         star.resources.reserve(elements.size());
         star.demandBias.assign(elements.size(), 0.35);
         std::vector<double> supplyBias(elements.size(), 1.0);

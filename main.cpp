@@ -1,6 +1,8 @@
 #define SDL_MAIN_HANDLED
 #include "game.h"
 #include "ui.h"
+#include "camera.h"
+#include "local.h"
 #include <SDL.h>
 #include <algorithm>
 #include <cmath>
@@ -10,28 +12,6 @@
 #include <iostream>
 #include <string>
 #include <vector>
-
-struct View3D {
-    double centerX = 0.0;
-    double centerY = 0.0;
-    double centerZ = 0.0;
-    double yaw = 0.0;
-    double pitch = 0.0;
-    double scale = 4.2;
-};
-
-struct ProjectedPoint {
-    int x = 0;
-    int y = 0;
-    double depth = 0.0;
-};
-
-struct CameraBasis {
-    double cy = 1.0;
-    double sy = 0.0;
-    double cp = 1.0;
-    double sp = 0.0;
-};
 
 struct InfluenceSource {
     int x = 0;
@@ -88,40 +68,6 @@ void invalidateInfluenceOverlayCache() {
 
 double clampDouble(double value, double lo, double hi) {
     return std::max(lo, std::min(hi, value));
-}
-
-CameraBasis makeCameraBasis(const View3D& view) {
-    CameraBasis basis;
-    basis.cy = std::cos(view.yaw);
-    basis.sy = std::sin(view.yaw);
-    basis.cp = std::cos(view.pitch);
-    basis.sp = std::sin(view.pitch);
-    return basis;
-}
-
-ProjectedPoint projectPointWithBasis(double x, double y, double z, int w, int h, const View3D& view, const CameraBasis& basis) {
-    const double dx = x - view.centerX;
-    const double dy = y - view.centerY;
-    const double dz = z - view.centerZ;
-
-    const double rx = dx * basis.cy - dy * basis.sy;
-    const double ry = dx * basis.sy + dy * basis.cy;
-    const double screenY = ry * basis.cp - dz * basis.sp;
-    const double depth = ry * basis.sp + dz * basis.cp;
-
-    ProjectedPoint p;
-    p.x = int(w / 2 + rx * view.scale);
-    p.y = int(h / 2 - screenY * view.scale);
-    p.depth = depth;
-    return p;
-}
-
-ProjectedPoint projectPoint(double x, double y, double z, int w, int h, const View3D& view) {
-    return projectPointWithBasis(x, y, z, w, h, view, makeCameraBasis(view));
-}
-
-double depthFade(double depth) {
-    return clampDouble(1.0 - std::abs(depth) / 130.0, 0.25, 1.0);
 }
 
 void panView(View3D& view, double screenDx, double screenDy) {
@@ -517,8 +463,10 @@ void resetSelectionAfterLoad(Game& game, View3D& view, UI::WindowState& ui, int 
 
 int main(int argc, char** argv) {
     bool smoke = false;
+    bool localSmoke = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--smoke") == 0) smoke = true;
+        if (std::strcmp(argv[i], "--localsmoke") == 0) { smoke = true; localSmoke = true; }
     }
     const char* smokeEnv = std::getenv("STARCLUSTER_SMOKE");
     if (smokeEnv && std::strcmp(smokeEnv, "0") != 0) smoke = true;
@@ -572,6 +520,25 @@ int main(int argc, char** argv) {
     double simSpeed = 1.0;
     UI::WindowState ui;
     if (selectedStar >= 0) UI::openSystemWindow(ui, selectedStar, winW, winH);
+
+    // --- Локальный режим полёта ("микромир") ---
+    LocalScene localScene;
+    View3D localView;              // follow-cam сверху; центр = игрок, scale = зум
+    double localZoom = 0.8;        // пикселей на LU (регулируется +/-)
+    bool localMineEdge = false;    // фронт нажатия E за кадр
+    bool localDockEdge = false;    // фронт нажатия K за кадр
+    bool localTargetEdge = false;  // фронт нажатия Tab за кадр
+    if (localSmoke) {
+        buildLocalScene(game, selectedStar >= 0 ? selectedStar : 0, localScene);
+        localScene.active = true;
+        // Headless-покрытие: ставим игрока вплотную к первому астероиду, чтобы
+        // инъекция ввода реально прогнала путь добычи (поиск+начисление+трюм).
+        if (!localScene.rocks.empty()) {
+            localScene.px = localScene.rocks[0].x + 4.0;
+            localScene.py = localScene.rocks[0].y;
+            localScene.pz = localScene.rocks[0].z;
+        }
+    }
 
     const Uint64 perfFrequency = SDL_GetPerformanceFrequency();
     Uint64 lastCounter = SDL_GetPerformanceCounter();
@@ -672,6 +639,38 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 if (UI::handleKeyDown(ui, e.key.keysym.sym)) continue;
+                // L — вход/выход из локального режима полёта (работает в обоих режимах)
+                if (e.key.keysym.sym == SDLK_l) {
+                    if (localScene.active) {
+                        localScene.active = false;
+                        game.lastEvent = "exited local flight";
+                    } else {
+                        int anchor = -1;
+                        if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()) &&
+                            !game.agents[game.playerAgent].ship.enRoute) {
+                            anchor = game.agents[game.playerAgent].currentStar;
+                        } else if (selectedStar >= 0) {
+                            anchor = selectedStar;
+                        }
+                        buildLocalScene(game, anchor, localScene);
+                        localScene.active = true;
+                        game.lastEvent = "entered local flight";
+                    }
+                    titleTick = 11;
+                    continue;
+                }
+                if (localScene.active) {
+                    // Локальный режим: клавиши обрабатываем здесь, макро-обработчики ниже пропускаем.
+                    if (e.key.keysym.sym == SDLK_ESCAPE) { localScene.active = false; continue; }
+                    if (e.key.keysym.sym == SDLK_e) localMineEdge = true;
+                    if (e.key.keysym.sym == SDLK_k) localDockEdge = true;
+                    if (e.key.keysym.sym == SDLK_TAB) localTargetEdge = true;
+                    if (e.key.keysym.sym == SDLK_EQUALS || e.key.keysym.sym == SDLK_PLUS)
+                        localZoom = clampDouble(localZoom * 1.2, 0.05, 40.0);
+                    if (e.key.keysym.sym == SDLK_MINUS)
+                        localZoom = clampDouble(localZoom / 1.2, 0.05, 40.0);
+                    continue;
+                }
                 if (e.key.keysym.sym == SDLK_SPACE) paused = !paused;
                 if (e.key.keysym.sym == SDLK_ESCAPE) quit = true;
                 if (e.key.keysym.sym == SDLK_1) simSpeed = 1.0;
@@ -725,6 +724,29 @@ int main(int argc, char** argv) {
                     game.playerHireShip();
                     selectedAgent = game.playerAgent;
                 }
+                if (e.key.keysym.sym == SDLK_m && game.playerToggleMining()) {
+                    selectedAgent = game.playerAgent;
+                    titleTick = 11;
+                }
+                if (e.key.keysym.sym == SDLK_j && game.playerRepairHull()) {
+                    selectedAgent = game.playerAgent;
+                    titleTick = 11;
+                }
+                if (e.key.keysym.sym == SDLK_k && game.playerScanAnomaly()) {
+                    selectedAgent = game.playerAgent;
+                    titleTick = 11;
+                }
+                if (e.key.keysym.sym == SDLK_u) {
+                    int syStar = selectedStar;
+                    if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()) &&
+                        !game.agents[game.playerAgent].ship.enRoute) {
+                        syStar = game.agents[game.playerAgent].currentStar;
+                    }
+                    if (syStar >= 0) {
+                        selectedStar = syStar;
+                        UI::openShipyardWindow(ui, syStar, std::max(20, winW / 2 - 235), 40);
+                    }
+                }
                 if (e.key.keysym.sym == SDLK_LEFT) {
                     panView(view, -18.0, 0.0);
                     followAgent = false;
@@ -758,12 +780,62 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (!ui.tradeAmountEditing) {
+        if (!localScene.active && !ui.tradeAmountEditing) {
             updateCameraRotation(view, SDL_GetKeyboardState(nullptr), std::min(realDt, MAX_CAMERA_DT_SECONDS));
         }
 
         const double simYearsPerSecond = BASE_SIM_YEARS_PER_SECOND * simSpeed;
-        if (!paused) advanceGame(game, realDt * simYearsPerSecond);
+        if (localScene.active) {
+            // Локальный режим: собираем ввод и продвигаем сцену; макро-симуляция заморожена.
+            const Uint8* ks = SDL_GetKeyboardState(nullptr);
+            LocalInput li;
+            li.thrust = ks[SDL_SCANCODE_W] != 0;
+            li.brake  = ks[SDL_SCANCODE_S] != 0;
+            li.yawL   = ks[SDL_SCANCODE_A] != 0;
+            li.yawR   = ks[SDL_SCANCODE_D] != 0;
+            li.pitchU = ks[SDL_SCANCODE_R] != 0;
+            li.pitchD = ks[SDL_SCANCODE_F] != 0;
+            li.fire   = ks[SDL_SCANCODE_SPACE] != 0;
+            li.warp   = ks[SDL_SCANCODE_LSHIFT] != 0 || ks[SDL_SCANCODE_RSHIFT] != 0;
+            li.mineToggle = localMineEdge;
+            li.dock   = localDockEdge;
+            li.cycleTarget = localTargetEdge;
+            if (localSmoke) {
+                // Синтетический ввод для headless-прогона всех веток:
+                li.fire = true;                 // снаряды: спавн/интеграция/коллизии
+                li.mineToggle = (frames == 0);  // фронт: включить добычу у астероида
+                li.thrust = (frames >= 4);      // позже — инерционный полёт
+                li.warp   = (frames >= 6);      // позже — субшаги/клэмп N при большом dt
+            }
+            const int dockStar = updateLocalScene(game, localScene, li, realDt);
+            localView = View3D();
+            localView.centerX = localScene.px;
+            localView.centerY = localScene.py;
+            localView.centerZ = localScene.pz;
+            localView.scale = localZoom;
+            if (localScene.playerDestroyed) {
+                // Корпус разрушен в микромире — аварийный прыжок (не терминально):
+                // корабль восстанавливается частично, штраф за спасение/ремонт.
+                localScene.active = false;
+                if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
+                    Ship& ps = game.agents[game.playerAgent].ship;
+                    ps.hullHP = std::max(1.0, ps.maxHullHP * 0.30);
+                    double& m = game.agents[game.playerAgent].money;
+                    m -= m * 0.20;
+                    if (m < 0.0) m = 0.0;
+                }
+                game.lastEvent = "hull destroyed — emergency jump";
+                game.pushNews("Emergency jump: hull rebuilt at cost of credits", 3);
+            } else if (dockStar >= 0) {
+                localScene.active = false;
+                selectedStar = dockStar;
+                UI::openTradeWindow(ui, dockStar, winW, winH);
+                game.lastEvent = "docked — market open";
+            }
+        } else if (!paused) {
+            advanceGame(game, realDt * simYearsPerSecond);
+        }
+        localMineEdge = localDockEdge = localTargetEdge = false;
         if (selectedAgent >= 0 && selectedAgent < int(game.agents.size())) {
             if (!game.playerCanSeeAgent(selectedAgent)) {
                 selectedAgent = game.playerAgent;
@@ -778,6 +850,20 @@ int main(int argc, char** argv) {
 
         SDL_SetRenderDrawColor(renderer, 3, 5, 14, 255);
         SDL_RenderClear(renderer);
+        if (localScene.active) {
+            const CameraBasis localBasis = makeCameraBasis(localView);
+            renderLocalScene(renderer, game, localScene, localView, localBasis, winW, winH);
+            SDL_RenderPresent(renderer);
+            if (smoke && ++frames >= 12) quit = true;
+            if (!quit) {
+                const Uint64 frameEndLocal = SDL_GetPerformanceCounter();
+                const double frameElapsedLocal = double(frameEndLocal - frameStart) / double(perfFrequency);
+                if (frameElapsedLocal < TARGET_FRAME_SECONDS) {
+                    SDL_Delay(Uint32(std::ceil((TARGET_FRAME_SECONDS - frameElapsedLocal) * 1000.0)));
+                }
+            }
+            continue;
+        }
         const CameraBasis cameraBasis = makeCameraBasis(view);
         if (showInfluenceOverlay) {
             drawInfluenceOverlay(renderer, game, winW, winH, view, cameraBasis);
@@ -858,6 +944,30 @@ int main(int argc, char** argv) {
             const int agentSize = agent.playerControlled || agent.type == "player" ? 7 : (agent.type == "military" ? 6 : 5);
             SDL_Rect r = {sx - agentSize / 2, sy - agentSize / 2, agentSize, agentSize};
             SDL_RenderFillRect(renderer, &r);
+        }
+
+        // Аномалии — только обнаруженные и ещё не обследованные
+        for (size_t i = 0; i < game.anomalies.size(); ++i) {
+            const Anomaly& a = game.anomalies[i];
+            if (!a.discovered || a.resolved) continue;
+            const ProjectedPoint p = projectPointWithBasis(a.x, a.y, a.z, winW, winH, view, cameraBasis);
+            const int sx = p.x;
+            const int sy = p.y;
+            if (sx < -6 || sx > winW + 6 || sy < -6 || sy > winH + 6) continue;
+            Uint8 ar = 180, ag = 180, ab = 190;
+            switch (a.kind) {
+                case AnomalyKind::DerelictShip: ar = 170; ag = 170; ab = 180; break;
+                case AnomalyKind::AncientCache: ar = 230; ag = 190; ab = 90; break;
+                case AnomalyKind::ChromocoreVault: ar = 210; ag = 120; ab = 235; break;
+                case AnomalyKind::NebulaEcho: ar = 110; ag = 170; ab = 230; break;
+                case AnomalyKind::IonStorm: ar = 230; ag = 90; ab = 90; break;
+            }
+            const double pulse = 0.6 + 0.4 * std::sin(game.time * 3.0 + double(i) * 2.1);
+            const Uint8 alpha = Uint8(150.0 + 90.0 * pulse);
+            SDL_SetRenderDrawColor(renderer, ar, ag, ab, alpha);
+            const int d = 5;
+            SDL_Point diamond[5] = {{sx, sy - d}, {sx + d, sy}, {sx, sy + d}, {sx - d, sy}, {sx, sy - d}};
+            SDL_RenderDrawLines(renderer, diamond, 5);
         }
 
         if (++titleTick % 12 == 0) {

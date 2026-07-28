@@ -1,4 +1,6 @@
 #include "ui.h"
+#include "modules.h"
+#include "render2d.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -9,20 +11,6 @@
 
 namespace UI {
 namespace {
-
-struct Palette {
-    SDL_Color panel = {12, 18, 34, 218};
-    SDL_Color panel2 = {22, 30, 52, 230};
-    SDL_Color border = {84, 112, 150, 210};
-    SDL_Color text = {214, 228, 238, 255};
-    SDL_Color dim = {116, 136, 158, 255};
-    SDL_Color cyan = {82, 222, 246, 255};
-    SDL_Color amber = {245, 191, 78, 255};
-    SDL_Color red = {238, 88, 82, 255};
-    SDL_Color green = {90, 220, 132, 255};
-};
-
-const Palette P;
 
 struct TradeLayout {
     int x = 0;
@@ -164,106 +152,6 @@ TradeLayout tradeLayoutForWindow(const Window& window) {
     return layout;
 }
 
-void color(SDL_Renderer* renderer, SDL_Color c) {
-    SDL_SetRenderDrawColor(renderer, c.r, c.g, c.b, c.a);
-}
-
-void fillRect(SDL_Renderer* renderer, int x, int y, int w, int h, SDL_Color c) {
-    SDL_Rect r = {x, y, w, h};
-    color(renderer, c);
-    SDL_RenderFillRect(renderer, &r);
-}
-
-void strokeRect(SDL_Renderer* renderer, int x, int y, int w, int h, SDL_Color c) {
-    SDL_Rect r = {x, y, w, h};
-    color(renderer, c);
-    SDL_RenderDrawRect(renderer, &r);
-}
-
-void panel(SDL_Renderer* renderer, int x, int y, int w, int h) {
-    fillRect(renderer, x, y, w, h, P.panel);
-    strokeRect(renderer, x, y, w, h, P.border);
-    fillRect(renderer, x + 1, y + 1, w - 2, 1, {128, 174, 210, 65});
-}
-
-const char* glyph(char ch) {
-    switch (ch) {
-    case 'A': return "01110100011000111111100011000110001";
-    case 'B': return "111101000111110100011000111110";
-    case 'C': return "01111100001000010000100001000001111";
-    case 'D': return "11110100011000110001100011000111110";
-    case 'E': return "11111100001111010000100001000011111";
-    case 'F': return "11111100001111010000100001000010000";
-    case 'G': return "01111100001000010111100011000101111";
-    case 'H': return "10001100011000111111100011000110001";
-    case 'I': return "11111001000010000100001000010011111";
-    case 'J': return "00111000100001000010100101001001100";
-    case 'K': return "10001100101010011000101001001010001";
-    case 'L': return "10000100001000010000100001000011111";
-    case 'M': return "10001110111010110101100011000110001";
-    case 'N': return "10001110011010110011100011000110001";
-    case 'O': return "01110100011000110001100011000101110";
-    case 'P': return "11110100011000111110100001000010000";
-    case 'Q': return "01110100011000110001101011001001101";
-    case 'R': return "11110100011000111110101001001010001";
-    case 'S': return "01111100001000001110000010000111110";
-    case 'T': return "11111001000010000100001000010000100";
-    case 'U': return "10001100011000110001100011000101110";
-    case 'V': return "10001100011000110001100010101000100";
-    case 'W': return "10001100011000110101101011101110001";
-    case 'X': return "10001100010101000100010101000110001";
-    case 'Y': return "10001100010101000100001000010000100";
-    case 'Z': return "11111000010001000100010001000011111";
-    case '0': return "01110100011001110101110011000101110";
-    case '1': return "00100011000010000100001000010001110";
-    case '2': return "01110100010000100010001000100011111";
-    case '3': return "11110000010000101110000010000111110";
-    case '4': return "00010001100101010010111110001000010";
-    case '5': return "11111100001111000001000010000111110";
-    case '6': return "00110010001000011110100011000101110";
-    case '7': return "11111000010001000100010000100001000";
-    case '8': return "01110100011000101110100011000101110";
-    case '9': return "01110100011000101111000010001001100";
-    case '-': return "00000000000000011111000000000000000";
-    case '+': return "00000001000010011111001000010000000";
-    case '.': return "00000000000000000000000000110001100";
-    case ':': return "00000011000110000000011000110000000";
-    case '/': return "00001000010001000100010001000010000";
-    case '%': return "11001000010001000100010001000010011";
-    case '[': return "01110010000100001000010000100001110";
-    case ']': return "01110000100001000010000100001001110";
-    case '>': return "10000010000010000010001001000010000";
-    case '<': return "00001000100010001000001000010000001";
-    case ' ': return "00000000000000000000000000000000000";
-    default: return "11111000010001000100010000000000100";
-    }
-}
-
-void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, SDL_Color c, int scale = 2) {
-    color(renderer, c);
-    int penX = x;
-    int penY = y;
-    for (char raw : text) {
-        if (raw == '\n') {
-            penX = x;
-            penY += 8 * scale;
-            continue;
-        }
-        char ch = raw;
-        if (ch >= 'a' && ch <= 'z') ch = char(ch - 'a' + 'A');
-        const char* bits = glyph(ch);
-        for (int row = 0; row < 7; ++row) {
-            for (int col = 0; col < 5; ++col) {
-                if (bits[row * 5 + col] == '1') {
-                    SDL_Rect r = {penX + col * scale, penY + row * scale, scale, scale};
-                    SDL_RenderFillRect(renderer, &r);
-                }
-            }
-        }
-        penX += 6 * scale;
-    }
-}
-
 std::string fmt(const char* format, double value) {
     char text[64];
     std::snprintf(text, sizeof(text), format, value);
@@ -278,13 +166,6 @@ std::string fmtInt(const char* label, int value) {
 
 double clamp01(double v) {
     return std::max(0.0, std::min(1.0, v));
-}
-
-void bar(SDL_Renderer* renderer, int x, int y, int w, int h, double value, SDL_Color c) {
-    fillRect(renderer, x, y, w, h, {8, 12, 22, 230});
-    const int filled = std::max(0, std::min(w, int(std::round(w * clamp01(value)))));
-    if (filled > 0) fillRect(renderer, x, y, filled, h, c);
-    strokeRect(renderer, x, y, w, h, {76, 96, 124, 220});
 }
 
 void labelBar(SDL_Renderer* renderer, int x, int y, int w, const std::string& label, double value, SDL_Color c) {
@@ -767,6 +648,10 @@ void drawControlHints(SDL_Renderer* renderer, int screenW, int screenH) {
         "B BUY",
         "V SELL",
         "T AUTO TRADE",
+        "U SHIPYARD",
+        "M MINE ORE",
+        "J REPAIR HULL",
+        "K SCAN ANOMALY",
         "H HIRE SHIP",
         "C COL/REINF",
         "F5 SAVE",
@@ -1181,7 +1066,7 @@ void openShipyardWindow(WindowState& state, int starIndex, int x, int y) {
     w.id = state.nextId++;
     w.kind = WindowKind::Shipyard;
     w.star = starIndex;
-    w.rect = {x, std::max(20, std::min(y, 40)), 450, 660};
+    w.rect = {x, std::max(20, std::min(y, 40)), 470, 700};
     state.windows.push_back(w);
     state.activeId = w.id;
 }
@@ -1194,29 +1079,35 @@ bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window&
     for (auto& win : state.windows) if (win.id == window.id) { w = &win; break; }
     if (!w) return true;
 
-    const auto& classes = shipClasses();
-    const int maxRows = 15;
-    const int startIdx = std::min(w->scrollOffset, std::max(0, int(classes.size()) - maxRows));
-    const int endIdx = std::min(int(classes.size()), startIdx + maxRows);
-    
+    const int nShips = int(shipClasses().size());
+    const int nMods = int(moduleDefs().size());
+    const int total = nShips + 1 + nMods;   // ships, divider, modules
+    const int maxRows = 16;
+    const int startIdx = std::min(w->scrollOffset, std::max(0, total - maxRows));
+    const int endIdx = std::min(total, startIdx + maxRows);
+
     SDL_Rect upBtn = {window.rect.x + window.rect.w - 50, window.rect.y + TITLE_H + 4, 40, 20};
     SDL_Rect downBtn = {window.rect.x + window.rect.w - 50, window.rect.y + window.rect.h - 26, 40, 20};
-    
+
     if (contains(upBtn, mouseX, mouseY) && startIdx > 0) {
         w->scrollOffset = std::max(0, w->scrollOffset - 5);
         return true;
     }
-    if (contains(downBtn, mouseX, mouseY) && endIdx < int(classes.size())) {
-        w->scrollOffset = std::min(int(classes.size()) - maxRows, w->scrollOffset + 5);
+    if (contains(downBtn, mouseX, mouseY) && endIdx < total) {
+        w->scrollOffset = std::min(std::max(0, total - maxRows), w->scrollOffset + 5);
         return true;
     }
 
-    int listY = window.rect.y + TITLE_H + 30;
+    const int listY = window.rect.y + TITLE_H + 30;
     for (int i = startIdx; i < endIdx; ++i) {
-        int row = i - startIdx;
-        SDL_Rect btn = {window.rect.x + 360, listY + row * 36 - 6, 80, 24};
+        const int row = i - startIdx;
+        SDL_Rect btn = {window.rect.x + window.rect.w - 96, listY + row * 36 - 6, 80, 24};
         if (contains(btn, mouseX, mouseY)) {
-            game.buyShip(game.playerAgent, dockedStar, i);
+            if (i < nShips) {
+                game.buyShip(game.playerAgent, dockedStar, i);
+            } else if (i > nShips) {
+                game.installModule(game.playerAgent, i - nShips - 1);
+            }
             return true;
         }
     }
@@ -1231,40 +1122,59 @@ void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& 
 
     const int topX = window.rect.x + WINDOW_PAD;
     const int topY = window.rect.y + TITLE_H + 12;
+    const int syLevel = game.shipyardLevelAtStar(window.star);
     if (liveShipyard && star) {
-        drawText(renderer, topX, topY, "SELECT A SHIP CLASS TO PURCHASE", P.green, 1);
+        char hdr[96];
+        std::snprintf(hdr, sizeof(hdr), "BUY SHIPS / FIT MODULES     SHIPYARD LVL %d", syLevel);
+        drawText(renderer, topX, topY, hdr, P.green, 1);
     } else {
         drawText(renderer, topX, topY, "NO LIVE SHIPYARD - DOCK IN THIS SYSTEM", P.red, 1);
         return;
     }
-    
+
+    const double cash = (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()))
+                            ? game.agents[game.playerAgent].money : 0.0;
+
     const auto& classes = shipClasses();
-    const int maxRows = 15;
-    const int startIdx = std::min(window.scrollOffset, std::max(0, int(classes.size()) - maxRows));
-    const int endIdx = std::min(int(classes.size()), startIdx + maxRows);
-    
+    const auto& mods = moduleDefs();
+    const int nShips = int(classes.size());
+    const int nMods = int(mods.size());
+    const int total = nShips + 1 + nMods;   // корабли, разделитель, модули
+    const int maxRows = 16;
+    const int startIdx = std::min(window.scrollOffset, std::max(0, total - maxRows));
+    const int endIdx = std::min(total, startIdx + maxRows);
+
     SDL_Rect upBtn = {window.rect.x + window.rect.w - 50, window.rect.y + TITLE_H + 4, 40, 20};
     SDL_Rect downBtn = {window.rect.x + window.rect.w - 50, window.rect.y + window.rect.h - 26, 40, 20};
     drawButton(renderer, upBtn, "UP", P.green, startIdx > 0);
-    drawButton(renderer, downBtn, "DN", P.green, endIdx < int(classes.size()));
+    drawButton(renderer, downBtn, "DN", P.green, endIdx < total);
 
-    int listY = topY + 18;
+    const int listY = topY + 18;
+    char line[160];
     for (int i = startIdx; i < endIdx; ++i) {
-        int row = i - startIdx;
-        const ShipClass& sc = classes[i];
-        char line[128];
-        std::snprintf(line, sizeof(line), "%s", sc.name.c_str());
-        drawText(renderer, topX, listY + row * 36, line, P.cyan, 1);
-        
-        std::snprintf(line, sizeof(line), "CR%.0F | CG:%.0F HW:%.0F LW:%.0F AR:%.0F U:%.0F", sc.price, sc.cargoCapacity, sc.heavyWeapons, sc.lightWeapons, sc.armor, sc.utility);
-        drawText(renderer, topX, listY + row * 36 + 14, line, P.text, 1);
-        
-        SDL_Rect btn = {window.rect.x + 360, listY + row * 36 - 6, 80, 24};
-        bool canAfford = false;
-        if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
-            if (game.agents[game.playerAgent].money >= sc.price) canAfford = true;
+        const int row = i - startIdx;
+        const int rowY = listY + row * 36;
+        SDL_Rect btn = {window.rect.x + window.rect.w - 96, rowY - 6, 80, 24};
+        if (i < nShips) {
+            const ShipClass& sc = classes[i];
+            drawText(renderer, topX, rowY, sc.name.c_str(), P.cyan, 1);
+            std::snprintf(line, sizeof(line), "CR%.0F | CG:%.0F HW:%.0F LW:%.0F AR:%.0F U:%.0F", sc.price, sc.cargoCapacity, sc.heavyWeapons, sc.lightWeapons, sc.armor, sc.utility);
+            drawText(renderer, topX, rowY + 14, line, P.text, 1);
+            drawButton(renderer, btn, "BUY", P.green, cash >= sc.price);
+        } else if (i == nShips) {
+            fillRect(renderer, topX, rowY + 7, window.rect.w - 2 * WINDOW_PAD, 1, P.border);
+            drawText(renderer, topX, rowY + 13, "-- SHIP MODULES (FIT WHILE DOCKED) --", P.amber, 1);
+        } else {
+            const int m = i - nShips - 1;
+            const ModuleDef& def = mods[m];
+            std::snprintf(line, sizeof(line), "%s [%s]", def.name.c_str(), moduleSlotLabel(def.slot));
+            drawText(renderer, topX, rowY, line, P.cyan, 1);
+            std::snprintf(line, sizeof(line), "CR%.0F  SY%d  %s", def.price, def.minShipyard, def.blurb.c_str());
+            const bool locked = syLevel < def.minShipyard;
+            drawText(renderer, topX, rowY + 14, line, locked ? P.dim : P.text, 1);
+            const bool canFit = liveShipyard && !locked && cash >= def.price;
+            drawButton(renderer, btn, locked ? "LVL" : "FIT", canFit ? P.green : P.dim, canFit);
         }
-        drawButton(renderer, btn, "BUY", P.green, canAfford);
     }
 }
 
@@ -1570,6 +1480,111 @@ void drawWindows(SDL_Renderer* renderer, const Game& game, int, int, const HudSe
     }
 }
 
+// --- Vertical-slice HUD additions: hull/mining/chromocore, objectives, news log ---
+static SDL_Color hullColor(double frac) {
+    if (frac > 0.5) return P.green;
+    if (frac > 0.25) return P.amber;
+    return P.red;
+}
+
+static void drawShipTechPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w) {
+    panel(renderer, x, y, w, 120);
+    drawText(renderer, x + 10, y + 9, "SHIP SYSTEMS", P.cyan, 1);
+
+    char line[160];
+    double hull = 0.0, hullMax = 1.0;
+    if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
+        const Ship& sh = game.agents[game.playerAgent].ship;
+        hull = sh.hullHP;
+        hullMax = std::max(1.0, sh.maxHullHP);
+    }
+    const double hf = clamp01(hull / hullMax);
+    drawText(renderer, x + 10, y + 26, "HULL", P.dim, 1);
+    bar(renderer, x + 46, y + 25, w - 120, 7, hf, hullColor(hf));
+    std::snprintf(line, sizeof(line), "%.0F/%.0F", hull, hullMax);
+    drawText(renderer, x + w - 66, y + 26, line, P.text, 1);
+
+    if (game.playerMining) {
+        const char* nm = (game.miningStar >= 0 && game.miningStar < int(game.cluster.stars.size()))
+            ? game.cluster.stars[game.miningStar].name.c_str() : "-";
+        std::snprintf(line, sizeof(line), "MINING @ %s  +%.0F", nm, game.miningYieldAccum);
+        drawText(renderer, x + 10, y + 40, line, P.green, 1);
+    } else {
+        drawText(renderer, x + 10, y + 40, "MINING OFF  (DOCK + M)", P.dim, 1);
+    }
+
+    const double threshold = 100.0 + game.tech.cores * 40.0;
+    const double rprog = clamp01(threshold > 0.0 ? game.tech.research / threshold : 0.0);
+    std::snprintf(line, sizeof(line), "CORES %d", game.tech.cores);
+    drawText(renderer, x + 10, y + 54, line, P.amber, 1);
+    drawText(renderer, x + 92, y + 54, "RSCH", P.dim, 1);
+    bar(renderer, x + 128, y + 53, w - 138, 7, rprog, P.cyan);
+
+    const char* codes[7] = {"IN", "CH", "MA", "TA", "KI", "SE", "LU"};
+    const double vals[7] = {game.tech.intellect, game.tech.charisma, game.tech.materials,
+        game.tech.tactics, game.tech.kinematics, game.tech.sensors, game.tech.luck};
+    for (int i = 0; i < 7; ++i) {
+        const int col = i % 4, rowi = i / 4;
+        char cell[24];
+        std::snprintf(cell, sizeof(cell), "%s%.2F", codes[i], vals[i]);
+        const SDL_Color cc = vals[i] > 1.0001 ? P.green : P.dim;
+        drawText(renderer, x + 10 + col * 78, y + 72 + rowi * 12, cell, cc, 1);
+    }
+}
+
+static void drawObjectivesPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w) {
+    struct Obj { const char* text; bool done; };
+    std::vector<Obj> objs;
+    if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
+        const Agent& p = game.agents[game.playerAgent];
+        const Ship& sh = p.ship;
+        objs.push_back({"TRADE: BUY (B) / SELL (V)", p.trades > 0});
+        objs.push_back({"MINE ORE: DOCK + PRESS M", game.miningYieldAccum > 0.0 || game.playerMining});
+        objs.push_back({"UPGRADE: SHIPYARD (U)", !sh.modules.empty()});
+        objs.push_back({"RESEARCH A CHROMOCORE", game.tech.cores > 0});
+        bool anomalyKnown = false;
+        for (size_t i = 0; i < game.anomalies.size(); ++i) {
+            if (game.anomalies[i].discovered && !game.anomalies[i].resolved) { anomalyKnown = true; break; }
+        }
+        if (anomalyKnown) objs.push_back({"SCAN ANOMALY: PRESS K", false});
+        if (sh.hullHP < sh.maxHullHP - 0.5) objs.push_back({"REPAIR HULL: DOCK + PRESS J", false});
+    }
+    const int rows = std::min(6, int(objs.size()));
+    const int h = 30 + rows * 13;
+    panel(renderer, x, y, w, h);
+    drawText(renderer, x + 10, y + 9, "OBJECTIVES", P.amber, 1);
+    for (int i = 0; i < rows; ++i) {
+        const int ry = y + 26 + i * 13;
+        drawText(renderer, x + 10, ry, objs[i].done ? "[X]" : "[ ]", objs[i].done ? P.green : P.dim, 1);
+        drawText(renderer, x + 34, ry, objs[i].text, objs[i].done ? P.dim : P.text, 1);
+    }
+}
+
+static SDL_Color newsColor(int kind) {
+    switch (kind) {
+        case 1: return P.cyan;   // market
+        case 2: return P.red;    // combat
+        case 3: return P.green;  // discovery
+        case 4: return P.amber;  // progress
+        default: return P.text;  // info
+    }
+}
+
+static void drawNewsFeed(SDL_Renderer* renderer, const Game& game, int x, int y, int w, int maxLines) {
+    const int h = 26 + maxLines * 12;
+    panel(renderer, x, y, w, h);
+    drawText(renderer, x + 10, y + 9, "LOG", P.cyan, 1);
+    const int n = int(game.news.size());
+    const int shown = std::min(maxLines, n);
+    const int maxChars = std::max(8, (w - 20) / 6);
+    for (int i = 0; i < shown; ++i) {
+        const NewsItem& it = game.news[size_t(n - 1 - i)];
+        std::string t = it.text;
+        if (int(t.size()) > maxChars) t = t.substr(0, size_t(maxChars - 1)) + "~";
+        drawText(renderer, x + 10, y + 24 + i * 12, t, newsColor(it.kind), 1);
+    }
+}
+
 void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH, const HudSelection& selection) {
     const int leftW = std::min(330, std::max(250, screenW / 3));
     int y = 12;
@@ -1602,12 +1617,27 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
         y += 54;
     }
 
+    drawShipTechPanel(renderer, game, 12, y, leftW);
+    y += 130;
+
     drawStarPanel(renderer, game, selection.star, selection.element, 12, y, leftW);
     y += 160;
     drawAgentPanel(renderer, game, selection.agent, 12, y, leftW);
 
     drawFactionPanel(renderer, game, screenW - 260, 12, 248);
+    {
+        const int facH = 44 + std::min(6, int(game.factions.size())) * 19;
+        drawObjectivesPanel(renderer, game, screenW - 260, 12 + facH + 10, 248);
+    }
     drawControlHints(renderer, screenW, screenH);
+
+    {
+        const int newsLines = screenH < 780 ? 8 : 14;
+        const int newsH = 26 + newsLines * 12;
+        const int newsW = std::min(620, std::max(280, screenW - 12 - 168));
+        const int newsY = std::max(y + 8, screenH - newsH - 52);
+        drawNewsFeed(renderer, game, 12, newsY, newsW, newsLines);
+    }
 
     if (!game.lastEvent.empty()) {
         const int w = std::min(screenW - 24, 640);

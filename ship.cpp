@@ -169,4 +169,6 @@ void shipAutofit(Ship& ship) {
     ship.driveThrust = std::max(1.0, ship.dryMass * ship.acceleration * (1.05 + ship.speed * 1.4));
     ship.fuelCapacity = std::max(800.0, 1500.0 + ship.cargoCapacity * 18.0 + ship.speed * 1800.0);
     ship.fuel = ship.fuelCapacity * 0.84;
+    ship.maxHullHP = std::max(20.0, 30.0 + ship.armor * 3.0 + ship.dryMass * 0.30);
+    ship.hullHP = ship.maxHullHP;
 }

@@ -25,6 +25,9 @@ public:
     double lightWeapons = 5.0;
     double armor = 5.0;
     double utility = 0.0;
+    double hullHP = 60.0;       // текущая целостность корпуса
+    double maxHullHP = 60.0;    // максимум целостности (корпус + модули)
+    std::vector<int> modules;   // установленные модули (индексы в moduleDefs)
     int ownerFaction; // -1 если свободный
     int targetStar = -1; // Индекс звезды назначения
     bool enRoute = false; // В пути ли корабль

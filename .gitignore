@@ -2,6 +2,9 @@
 
 # Build outputs and local runtime state
 /game
+/game_asan
+/soak_asan
+*.dSYM/
 *.o
 *.out
 *.exe
@@ -18,6 +21,8 @@
 /SDL2_image.framework/
 /SDL2_ttf.framework/
 /mingw_dev_lib/
+SDL2-*.dmg
+/test_app/
 
 # Unused local font asset in the current SDL2 renderer.
 /Roboto-Black.ttf

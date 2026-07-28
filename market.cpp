@@ -93,8 +93,10 @@ void Market::updatePrices() {
         const double localSupply = i < productionRate.size() ? productionRate[i] * 70.0 : 1.0;
         const double scarcity = (demandAmt + localDemand + 1.0) / (supplyAmt + localSupply + 1.0);
         double price = elements[i].basePrice * std::pow(scarcity, 0.62);
+        const double ev = i < eventMul.size() ? eventMul[i] : 1.0;
+        price *= ev;
         const double minPrice = std::max(0.1, elements[i].basePrice * 0.08);
-        const double maxPrice = elements[i].basePrice * 80.0;
+        const double maxPrice = elements[i].basePrice * 80.0 * std::max(1.0, ev);
         prices[i] = std::min(maxPrice, std::max(minPrice, price));
     }
 }

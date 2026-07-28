@@ -29,6 +29,9 @@ public:
     double captureProgress = 0.0;
     double capturePressure = 0.0;
     double contestedAt = -1.0;
+    double miningRichness = 1.0;     // насыщенность руды (для ручной добычи)
+    double metallicity = 0.5;        // металличность (тип руды)
+    int stellarClass = 0;            // 0 обычная звезда, 1 нейтронная/пульсар
     std::vector<Resource> resources; // Ресурсы в системе
     std::vector<double> demandBias; // Процедурный спрос системы по элементам
     std::vector<int> resourceFocus; // Элементы, которыми система богата
