@@ -407,6 +407,47 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_belt_types.bmp");
     }
 
+    // (14+) ЛУЧ ДОБЫЧИ (§5.13.17): майнинг-лазер из кокпита к глыбе, ОКРАШЕННЫЙ в цвет КЛАССА
+    //       породы. Берём крупнейший камень пояса, ПРИНУДИТЕЛЬНО делаем его металлическим
+    //       (element=Fe ⇒ ROCK_METAL) и перепекаем палитру ⇒ луч выйдет сталь-серым; ставим глаз
+    //       В ЗОНЕ добычи (< radius+MINE_RANGE) и включаем miningRock ⇒ рисуется луч + точка удара.
+    //       fxClock подобран так, что пульс близок к пику. QA: гейт луча «в зоне» + окраска по классу.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        s.craft.clear(); s.loot.clear(); s.radio.clear();
+        int big = -1; double bigR = 0.0;
+        for (size_t i = 0; i < s.rocks.size(); ++i)
+            if (s.rocks[i].radius > bigR) { bigR = s.rocks[i].radius; big = (int)i; }
+        if (big >= 0) {
+            LocalRock& rk = s.rocks[big];
+            rk.element = 25;                             // Fe (Z=26) ⇒ ROCK_METAL — сталь-серый луч
+            double br, bg, bb, sp; rockAppearance(rk.element, br, bg, bb, sp);
+            rk.r = (uint8_t)br; rk.g = (uint8_t)bg; rk.b = (uint8_t)bb; rk.spec = sp;
+            rk.ore = 80.0;                               // есть что добывать
+            const double dl = std::sqrt(rk.x*rk.x + rk.y*rk.y + rk.z*rk.z);
+            const double ux = dl>1e-6 ? rk.x/dl : 1.0, uy = dl>1e-6 ? rk.y/dl : 0.0;
+            double perpx = -uy, perpy = ux;              // ⟂ свету в плоскости XY
+            double pl = std::sqrt(perpx*perpx + perpy*perpy);
+            if (pl < 1e-6) { perpx = 1.0; perpy = 0.0; pl = 1.0; }
+            perpx/=pl; perpy/=pl;
+            const double off = rk.radius + LocalCfg::MINE_RANGE * 0.45;   // < radius+MINE_RANGE ⇒ В ЗОНЕ
+            s.px = rk.x + perpx*off - ux*off*0.3;
+            s.py = rk.y + perpy*off - uy*off*0.3;
+            s.pz = rk.z + rk.radius*0.8 + 3.0;
+            s.pvx = s.pvy = s.pvz = 0.0;
+            localSetForward(s, rk.x - s.px, rk.y - s.py, rk.z - s.pz);    // нос на глыбу
+            s.miningRock = big; s.miningAccum = 42.0;
+            s.fxClock = 0.08;                            // фаза ⇒ луч у пика пульса
+            const double dd = std::sqrt((rk.x-s.px)*(rk.x-s.px)+(rk.y-s.py)*(rk.y-s.py)+(rk.z-s.pz)*(rk.z-s.pz));
+            std::printf("  [mining-beam] rock=%d R=%.2f class=%s dist=%.1f range=%.1f inRange=%s beamRGB=%d,%d,%d\n",
+                        big, rk.radius, rockClassName(rockClass(rk.element)), dd,
+                        rk.radius + LocalCfg::MINE_RANGE, (dd <= rk.radius + LocalCfg::MINE_RANGE ? "YES" : "no"),
+                        rk.r, rk.g, rk.b);
+        }
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_mining_beam.bmp");
+    }
+
     // (14) ТУМАННОСТЬ изолированно: глубокий космос (звезды НЕТ), туманность включена
     //      принудительно (QA рендера renderNebula — газовое поле на небесной сфере: клочья/
     //      волокна, крупная «банка», медленный дрейф; без диска/короны звезды, чтобы не путать

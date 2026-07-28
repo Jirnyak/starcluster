@@ -1391,6 +1391,51 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         fillRect(renderer, p.x - 1, p.y - 1, 2, 2, col);
     }
 
+    // (7a) ЛУЧ ДОБЫЧИ (§5.13.17): пока идёт бурение (miningRock задан и цель В ЗОНЕ — те же
+    //      условия, при которых localsim реально извлекает руду), из кокпитного «дула» к глыбе
+    //      тянется майнинг-лазер, ОКРАШЕННЫЙ в цвет КЛАССА породы (`rk.r/g/b` из §5.13.15):
+    //      сталь-серый металл, бело-голубой лёд, тёмный углерод — луч связывает ВИД (§5.13.15)
+    //      и ВЫХОД (§5.13.16) в одном действии («блестит ⇒ богато ⇒ яркий луч»). Дуло берём как
+    //      у вспышки выстрела (localsim: нос·5 − верх·1.6). Пульс/мерцание — детерминированно по
+    //      fxClock (без RNG, §2.3). ТОЛЬКО перспектива; вне зоны/не бурим — не рисуется ⇒ нулевой
+    //      регресс (в т.ч. shot_belt_near: там глаз дальше MINE_RANGE, луч не появляется).
+    if (view.perspective && scene.miningRock >= 0 && scene.miningRock < (int)scene.rocks.size()) {
+        const LocalRock& mr = scene.rocks[scene.miningRock];
+        const double dxr = mr.x - scene.px, dyr = mr.y - scene.py, dzr = mr.z - scene.pz;
+        const double rng = mr.radius + LocalCfg::MINE_RANGE;    // луч = «идёт добыча», как в localsim
+        if (dxr*dxr + dyr*dyr + dzr*dzr <= rng*rng && !occ(mr.x, mr.y, mr.z)) {
+            const double ox = scene.px + scene.pfwdX * 5.0 - scene.pupX * 1.6;   // «дуло» майнера
+            const double oy = scene.py + scene.pfwdY * 5.0 - scene.pupY * 1.6;
+            const double oz = scene.pz + scene.pfwdZ * 5.0 - scene.pupZ * 1.6;
+            ProjectedPoint pm = projectPointWithBasis(ox, oy, oz, winW, winH, view, basis);
+            ProjectedPoint pr = projectPointWithBasis(mr.x, mr.y, mr.z, winW, winH, view, basis);
+            if (!pm.behind && !pr.behind) {
+                const double pulse = 0.72 + 0.28 * std::sin(scene.fxClock * 20.0);   // хум лазера
+                SDL_Color glow = rgba(mr.r, mr.g, mr.b, (int)(150.0 * pulse));       // ореол = цвет класса
+                SDL_Color core = rgba((int)std::min(255.0, mr.r * 0.4 + 153.0),      // сердцевина к бело-горячему
+                                      (int)std::min(255.0, mr.g * 0.4 + 153.0),
+                                      (int)std::min(255.0, mr.b * 0.4 + 153.0),
+                                      (int)(235.0 * pulse));
+                double ex = double(pr.x - pm.x), ey = double(pr.y - pm.y);
+                double el = std::sqrt(ex * ex + ey * ey);
+                double nxp = (el > 1e-6) ? -ey / el : 0.0, nyp = (el > 1e-6) ? ex / el : 0.0;
+                for (int o = -2; o <= 2; ++o) {                 // мягкая толщина ореола ⟂ лучу
+                    if (o == 0) continue;
+                    SDL_SetRenderDrawColor(renderer, glow.r, glow.g, glow.b,
+                                           (Uint8)(glow.a * (1.0 - std::fabs((double)o) / 3.0)));
+                    SDL_RenderDrawLine(renderer, pm.x + int(nxp * o), pm.y + int(nyp * o),
+                                                 pr.x + int(nxp * o), pr.y + int(nyp * o));
+                }
+                SDL_SetRenderDrawColor(renderer, core.r, core.g, core.b, core.a);    // горячая сердцевина
+                SDL_RenderDrawLine(renderer, pm.x, pm.y, pr.x, pr.y);
+                int hot = std::max(2, (int)(3.0 + 2.0 * pulse));                      // точка удара на глыбе
+                fillCircle(renderer, pr.x, pr.y, hot, core);
+                strokeCircle(renderer, pr.x, pr.y, hot + 2, glow);
+                fillCircle(renderer, pm.x, pm.y, 2, core);                            // вспышка у дула
+            }
+        }
+    }
+
     // (7b) ЧАСТИЦЫ ПОВЕРХ: искры попаданий, ударные кольца, вспышки дул.
     for (size_t i = 0; i < scene.fx.size(); ++i) {
         const LocalFx& fx = scene.fx[i];
