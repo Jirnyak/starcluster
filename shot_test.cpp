@@ -401,6 +401,40 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_traffic_dock.bmp");
     }
 
+    // (16) БЕДСТВИЕ КОНВОЯ (§5.13.11): пират в дальности оружия у торговца-жертвы. Жертва помечена
+    //      underAttack -> красный SOS-маяк (кольцо у борта) + рамка/чип «SOS» в панели цели (наводим
+    //      на жертву). Пират рядом — красный враждебный треугольник + красный muzzle к жертве.
+    //      Проверяет маяк, панель бедствия и краевой маркер разом. Инсценируется в открытом космосе
+    //      вдали от светила (без окклюзии). underAttack форсируем — sim в headless не запускается.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 2) { LocalCraft c; s.craft.push_back(c); } // гарантируем 2 борта
+        LocalCraft& v = s.craft[0];                    // ЖЕРТВА-торговец
+        v.hostile = false; v.kind = CK_TRADER; v.label = "TRADER"; v.faction = 1;
+        v.r = 90; v.g = 200; v.b = 235;
+        v.errand = 0; v.errandBody = -1;
+        v.underAttack = true;                          // ФОРСИРУЕМ разметку бедствия
+        v.x = 600.0; v.y = 0.0; v.z = 180.0; v.vx = v.vy = v.vz = 0.0;
+        v.maxHullHP = 60.0; v.hullHP = v.maxHullHP * 0.55; v.maxShield = 0.0; v.shield = 0.0;
+        LocalCraft& pir = s.craft[1];                  // АТАКУЮЩИЙ пират
+        pir.hostile = true; pir.kind = CK_PIRATE; pir.label = "PIRATE"; pir.faction = -1;
+        pir.r = 230; pir.g = 90; pir.b = 80;
+        pir.aiState = 1; pir.errand = 0; pir.errandBody = -1;
+        pir.threatConvoy = true; pir.threatVictimFaction = v.faction;
+        pir.x = 600.0; pir.y = 50.0; pir.z = 175.0; pir.vx = pir.vy = pir.vz = 0.0; // ~50 LU (< WEAPON_RANGE)
+        pir.maxHullHP = 45.0; pir.hullHP = pir.maxHullHP;
+        s.px = 510.0; s.py = -20.0; s.pz = 235.0; s.pvx = s.pvy = s.pvz = 0.0; // камера сзади-сбоку
+        localSetForward(s, v.x - s.px, v.y - s.py, v.z - s.pz);               // нос на жертву
+        s.targetCraft = 0;                             // цель — жертва -> панель покажет SOS
+        s.fxClock = 0.26;                              // фаза пульса -> яркое SOS-кольцо
+        { double dx=v.x-pir.x, dy=v.y-pir.y, dz=v.z-pir.z, d=std::sqrt(dx*dx+dy*dy+dz*dz), inv=(d>1e-6)?1.0/d:0.0;
+          LocalFx f; f.x=pir.x+dx*inv*4.0; f.y=pir.y+dy*inv*4.0; f.z=pir.z+dz*inv*4.0; f.vx=f.vy=f.vz=0.0;
+          f.kind=FX_MUZZLE; f.size=2.2; f.life=0.05; f.maxLife=0.05; f.r=255; f.g=90; f.b=70; f.a=255; s.fx.push_back(f); }
+        std::printf("  [distress] pirate 50 LU from victim TRADER (underAttack), targeting victim -> SOS beacon+panel\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_convoy_distress.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);

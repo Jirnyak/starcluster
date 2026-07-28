@@ -66,6 +66,12 @@ cluster map stays orthographic) and the player flies a ship in 3D around:
   flash (expanding ring + bright core + sparks), a ship leaving a berth puffs its thrusters,
   a docked ship wears a pulsing amber station-keeping ring, and the radar panel shows an
   `IN / DOCK` tally of how many ships are inbound to a market versus parked;
+- **convoy raids you can act on**: when a pirate presses an attack on a trader or other
+  non-pirate, the victim raises a distress beacon — a pulsing red **SOS** ring, an off-screen
+  edge marker pointing to it, a `CONVOY RAID` toast, and a distinct target-panel state — and
+  destroying a pirate while it is threatening a convoy pays out a bonus, research, a
+  `CONVOY SAVED` toast, and a positive reputation bump with the victim's faction. Purely
+  additive: pirates are **not** nerfed, so the choice to intervene stays a real risk;
 - local NPC ships (traders, pirates), mining, docking, and scooping interactions.
 
 The local mode is fully deterministic and self-contained: it draws its own seeded
@@ -441,8 +447,8 @@ flat tint plus three hashed blobs, byte-for-byte.
 | `camera.h` | Shared camera/projection: orthographic macro path plus the perspective path used only by local flight mode. |
 | `local.h` | Local-mode data structures (`LocalScene`, `LocalInput`) and the `buildLocalCamera` helper. |
 | `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). Seeds non-combat NPCs with an opening market-bound errand and randomizes the arrival timer. |
-| `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior, and the living-traffic lifecycle (errand state machine, edge-despawn of departing ships, timed arrivals up to a population cap). Emits a cyan "warp" FX signature (`emitWarp`) on arrival/departure and a thruster puff when a ship leaves a berth. |
-| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble), and a volumetric nebula backdrop (`renderNebula` — per-pixel gas field on the celestial sphere: multi-octave noise, domain warp, density gradient, translucent) — all perspective view only. Also draws the pulsing amber berth ring for docked ships and the radar-panel `IN / DOCK` traffic tally. |
+| `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior, and the living-traffic lifecycle (errand state machine, edge-despawn of departing ships, timed arrivals up to a population cap). Emits a cyan "warp" FX signature (`emitWarp`) on arrival/departure and a thruster puff when a ship leaves a berth. Marks convoy distress: a pre-pass clears the flags, then a pirate attacking a non-pirate flags the victim `underAttack` and itself `threatConvoy`; raid onset raises a `CONVOY RAID` toast, and killing a threatening pirate grants a bonus + research + `CONVOY SAVED` toast + positive faction rep bump (strictly additive — pirates are not weakened). |
+| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble), and a volumetric nebula backdrop (`renderNebula` — per-pixel gas field on the celestial sphere: multi-octave noise, domain warp, density gradient, translucent) — all perspective view only. Also draws the pulsing amber berth ring for docked ships, the radar-panel `IN / DOCK` traffic tally, and the convoy-distress cues (pulsing red SOS ring on an `underAttack` victim, off-screen SOS edge marker to the nearest victim, and a distinct SOS target-panel state). |
 | `shot_test.cpp` | Headless screenshot harness for local-mode scenarios (`make shots`). |
 | `soak_test.cpp` | Headless long-run soak harness for the local simulation (`make soak`). |
 | `architecture.md` | High-level architecture and data-oriented rules. |
@@ -502,11 +508,13 @@ Important rules from the project documents:
   it does not yet have dust lanes that absorb light, emission brightening around the
   bright skybox stars embedded in it, or multiple parallax layers for a sense of depth.
 - Local NPC traffic is now goal-driven (errands to markets, timed arrivals and departures)
-  and legible from the cockpit (warp-in/out FX, berth ring, `IN / DOCK` tally), but it is not
-  yet wired back to the macro simulation: killing or despawning a local ship that mirrors a
-  macro agent does not affect that agent, and NPC trading moves no real cargo or credits — the
-  errands are behavioral, not yet economic. Convoys also do not yet react to being attacked
-  (no distress call or defense payoff — that is the next planned slice).
+  and legible from the cockpit (warp-in/out FX, berth ring, `IN / DOCK` tally). Pirate raids on
+  traders are now a readable, actionable event: victims raise a distress beacon (SOS ring +
+  off-screen edge marker + `CONVOY RAID` toast), and killing the attacking pirate pays a
+  `CONVOY SAVED` bonus plus a faction-standing bump. What is still missing is a write-back to the
+  macro simulation: killing or despawning a local ship that mirrors a macro agent does not affect
+  that agent, and NPC trading moves no real cargo or credits — the errands are behavioral, not yet
+  economic.
 - Non-player faction memory overlays are not exposed through a debug selector.
 - The active build is POSIX/SDL2 via `sdl2-config`; the old platform makefiles
   are not synchronized with the current source list.

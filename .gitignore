@@ -5,6 +5,7 @@
 /game_asan
 /soak_asan
 /shot_test
+/shot_test_asan
 shot_*.bmp
 shot_*.png
 *.dSYM/

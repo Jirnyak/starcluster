@@ -331,6 +331,15 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         return (marketPick >= 0) ? marketPick : anyPick;
     };
 
+    // (§5.13.11) Пре-проход сброса разметки бедствия. Жертва может иметь индекс БОЛЬШЕ пирата,
+    //   поэтому чистим ОТДЕЛЬНЫМ проходом до ИИ — иначе очистка в начале обработки жертвы затёрла бы
+    //   флаг, только что выставленный пиратом с меньшим индексом.
+    for (size_t i = 0; i < scene.craft.size(); ++i) {
+        scene.craft[i].underAttack = false;
+        scene.craft[i].threatConvoy = false;
+        scene.craft[i].threatVictimFaction = -1;
+    }
+
     // ---- (F) Умный ИИ NPC (раз в кадр: реген, выбор цели, состояние, путевая точка, огонь) ----
     //  Цели пересчитываются КАЖДЫЙ кадр (индексы не устаревают между кадрами); удаление
     //  мёртвых кораблей вынесено за субшаги (см. L), поэтому индексы стабильны здесь и в бою.
@@ -423,6 +432,17 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         if (fleeing)      c.aiState = 2;
         else if (haveAtk) c.aiState = 1;
         else              c.aiState = 0;
+
+        // (§5.13.11) Разметка бедствия: пират в состоянии атаки на КОНКРЕТНЫЙ не-пиратский борт
+        //   (atkCraft>=0, не игрок). Флаги очищены в пре-проходе выше, ставим здесь — на решения ИИ
+        //   не влияют, поэтому порядок обработки безопасен. Индекс жертвы стабилен (удаление отложено
+        //   за субшаги), c.threatConvoy читается на убийстве игроком (см. блок L2 — «CONVOY SAVED»).
+        if (c.kind == CK_PIRATE && c.aiState == 1 && atkCraft >= 0) {
+            LocalCraft& victim = scene.craft[atkCraft];
+            victim.underAttack = true;
+            c.threatConvoy = true;
+            c.threatVictimFaction = victim.faction;
+        }
 
         if (c.aiState == 2) {
             // Бегство: путевая точка в направлении (self - threat) на 400 LU + короткий форсаж.
@@ -590,6 +610,30 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         }
     }
 
+    // (§5.13.11) Событие рейда: считаем жертв «под атакой» и на фронте рейда (после устойчивого затишья,
+    //   с дебаунсом ниже) бросаем toast «CONVOY RAID» — нудж к действию (парен с «CONVOY SAVED» на выплате).
+    //   Текст НАРОЧНО отличается от POI-радиоисточника RS_DISTRESS (label «DISTRESS CALL») — это РАЗНЫЕ
+    //   сущности. Красные маяки (localdraw) несут детализацию по каждой жертве, поэтому toast не стомпит
+    //   активное событие (ставим только на чистый слот).
+    {
+        int distressNow = 0;
+        for (size_t i = 0; i < scene.craft.size(); ++i)
+            if (scene.craft[i].hullHP > 0.0 && scene.craft[i].underAttack) ++distressNow;
+        // Дебаунс: пират может дёргаться attack↔flee у порога низкого HP, роняя счётчик до 0 на кадр-другой.
+        //   Это ТОТ ЖЕ рейд — не переобъявляем. Держим cooldown, пока есть жертвы, и даём ему сгореть только
+        //   после устойчивого затишья; toast бросаем лишь на «холодном» слоте (edge из спокойствия в рейд).
+        if (distressNow > 0) {
+            if (scene.distressCooldown <= 0.0 && scene.toastTimer <= 0.0) {
+                scene.toast = "CONVOY RAID";
+                scene.toastTimer = 3.5;
+            }
+            scene.distressCooldown = 6.0;
+        } else {
+            scene.distressCooldown = std::max(0.0, scene.distressCooldown - dtReal);
+        }
+        scene.distressPrev = distressNow;
+    }
+
     // ---- Субшаговая физика: полёт, движение NPC, снаряды, столкновения ----
     for (int step = 0; step < N; ++step) {
         // Полёт игрока (инерционный).
@@ -671,6 +715,22 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                             scene.toastTimer = 2.5;
                             spawnWreck(c.x, c.y, c.z, c.vx, c.vy, c.vz, c.r, c.g, c.b);
                             scene.shake = std::min(40.0, std::max(scene.shake, 14.0));
+                            // (§5.13.11) Спасение конвоя: сбитый борт — пират, атаковавший НЕ-пиратскую
+                            //   жертву в этом кадре (threatConvoy выставлен проходом ИИ). Бонус ПОВЕРХ
+                            //   награды: доп. кредиты + исследование + перебитый toast «CONVOY SAVED» +
+                            //   положительный rep-бамп фракции жертвы. Строго ADDITIVE — пиратов НЕ трогали.
+                            if (c.kind == CK_PIRATE && c.threatConvoy) {
+                                double convoyBonus = 200.0;
+                                game.agents[game.playerAgent].money += convoyBonus;
+                                game.addResearch(2.0);
+                                scene.toast = "CONVOY SAVED +" + std::to_string((int)(bounty + convoyBonus)) + " CR";
+                                scene.toastTimer = 3.0;
+                                scene.shake = std::min(40.0, std::max(scene.shake, 18.0));
+                                if (c.threatVictimFaction >= 0 && game.playerFaction >= 0) {
+                                    game.adjustFactionRelation(game.playerFaction, c.threatVictimFaction, 6);
+                                    game.pushNews("Convoy saved: pirate destroyed", 2);
+                                }
+                            }
                             if (c.faction >= 0 && !c.hostile && game.playerFaction >= 0) {
                                 int fac = c.faction;
                                 game.adjustFactionRelation(game.playerFaction, fac, -8);

@@ -1287,6 +1287,12 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             strokeCircle(renderer, p.x, p.y, int(sz) + 7, rgba(255, 190, 60, da));
             strokeCircle(renderer, p.x, p.y, int(sz) + 10, rgba(255, 190, 60, da / 3));
         }
+        if (c.underAttack) { // (§5.13.11) маяк бедствия: быстрый красный «SOS»-пульс вокруг жертвы
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 6.0 + double(i)); // быстрее/ярче швартовки
+            int da = 90 + int(pl * 140.0);                 // 90..230 — тревожный
+            strokeCircle(renderer, p.x, p.y, int(sz) + 9,  rgba(238, 88, 82, da));
+            strokeCircle(renderer, p.x, p.y, int(sz) + 13, rgba(238, 88, 82, da / 3));
+        }
         if (c.hullHP < c.maxHullHP) {
             double frac = c.hullHP / std::max(1.0, c.maxHullHP);
             bar(renderer, p.x - 8, p.y - int(sz) - 6, 16, 2, frac, c.hostile ? P.red : P.green);
@@ -1517,6 +1523,14 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                        (lt.z - scene.pz) * (lt.z - scene.pz);
             if (d < bestLoot) { bestLoot = d; nearLoot = (int)i; }
         }
+        int nearVic = -1; double bestVic = 1e18; // (§5.13.11) ближайшая жертва бедствия
+        for (size_t i = 0; i < scene.craft.size(); ++i) {
+            if (!scene.craft[i].underAttack || scene.craft[i].hullHP <= 0.0) continue;
+            const LocalCraft& c = scene.craft[i];
+            double d = (c.x - scene.px) * (c.x - scene.px) + (c.y - scene.py) * (c.y - scene.py) +
+                       (c.z - scene.pz) * (c.z - scene.pz);
+            if (d < bestVic) { bestVic = d; nearVic = (int)i; }
+        }
         if (nearMkt >= 0) {
             const LocalBody& bd = scene.bodies[nearMkt];
             drawEdgeMarker(renderer, cx, cy, winW, winH, bd.x, bd.y, bd.z, view, basis, P.green);
@@ -1524,6 +1538,10 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         if (nearHos >= 0) {
             const LocalCraft& c = scene.craft[nearHos];
             drawEdgeMarker(renderer, cx, cy, winW, winH, c.x, c.y, c.z, view, basis, P.red);
+        }
+        if (nearVic >= 0) { // (§5.13.11) краевой маркер бедствия — ведёт к жертве за кадром (SOS-красный)
+            const LocalCraft& c = scene.craft[nearVic];
+            drawEdgeMarker(renderer, cx, cy, winW, winH, c.x, c.y, c.z, view, basis, rgba(238, 88, 82, 255));
         }
         if (nearLoot >= 0) {
             const LocalLoot& lt = scene.loot[nearLoot];
@@ -1670,11 +1688,20 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                                 (t.z - scene.pz) * (t.z - scene.pz));
         int tx = winW - 236, ty = 12;
         const bool hasShield = t.maxShield > 0.0;
+        const bool sos = t.underAttack;   // (§5.13.11) цель — жертва бедствия
         panel(renderer, tx, ty, 224, hasShield ? 72 : 60);
+        if (sos) {   // пульсирующая SOS-красная рамка вокруг панели — «эта цель под атакой»
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 6.0);
+            int ph = hasShield ? 72 : 60;
+            strokeRect(renderer, tx - 2, ty - 2, 224 + 4, ph + 4, rgba(238, 88, 82, 120 + int(pl * 135.0)));
+            strokeRect(renderer, tx - 3, ty - 3, 224 + 6, ph + 6, rgba(238, 88, 82, 60));
+        }
         drawText(renderer, tx + 8, ty + 8, t.label.empty() ? std::string("CONTACT") : t.label,
-                 t.hostile ? P.red : P.text, 1);
+                 sos ? rgba(238, 88, 82, 255) : (t.hostile ? P.red : P.text), 1);
         if (scene.lockTarget >= 0 && scene.lockTarget == scene.targetCraft) {
             drawText(renderer, tx + 224 - 8 - textWidth("LOCK", 1), ty + 8, "LOCK", P.cyan, 1);
+        } else if (sos) {   // «SOS»-чип, если панель не занята значком захвата
+            drawText(renderer, tx + 224 - 8 - textWidth("SOS", 1), ty + 8, "SOS", rgba(238, 88, 82, 255), 1);
         }
         std::snprintf(buf, sizeof(buf), "DIST %.0F LU", dist);
         drawText(renderer, tx + 8, ty + 22, buf, P.dim, 1);
