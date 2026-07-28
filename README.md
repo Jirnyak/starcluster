@@ -36,6 +36,10 @@ cluster map stays orthographic) and the player flies a ship in 3D around:
 - a giant star rendered as a real sphere of plasma by a per-pixel analytic
   ray-sphere **software shader** (isotropic — correct from every view direction,
   animated turbulence, limb darkening, corona), not a flat sprite or a fill;
+- lit planets and moons drawn by the **same ray-sphere technique**, with the star
+  at the system origin as the light source: a real day/night terminator gives them
+  phases and crescents, plus per-type surfaces (gas-giant bands, rocky mottling,
+  icy poles and albedo, lunar maria) and an atmospheric limb glow;
 - local NPC ships (traders, pirates), mining, docking, and scooping interactions.
 
 The local mode is fully deterministic and self-contained: it draws its own seeded
@@ -348,7 +352,13 @@ isotropic: the star looks like a real ball of plasma from every direction, with 
 "fill the screen yellow" shortcut. The shader writes into a half-resolution
 streaming `SDL_Texture` (bounding-box limited when the star is far away), so it
 stays SDL2-only and keeps the deterministic headless screenshot harness working —
-there is still no OpenGL path.
+there is still no OpenGL path. The same ray-sphere method now lights the planets
+and moons (`renderBodySphere`): the star at the system origin acts as the light, so
+each body shows a real day/night terminator (phases and crescents) with a per-type
+surface (gas-giant latitude bands, rocky mottling, icy poles, lunar maria) and an
+atmospheric limb glow. Each body's shading is seeded deterministically from its
+orbit, so the screenshots stay reproducible; only small or map-view bodies fall
+back to flat discs, and the orthographic map is left bit-for-bit unchanged.
 
 ## Source Map
 
@@ -376,7 +386,7 @@ there is still no OpenGL path.
 | `local.h` | Local-mode data structures (`LocalScene`, `LocalInput`) and the `buildLocalCamera` helper. |
 | `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). |
 | `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior. |
-| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, and the per-pixel ray-sphere software star shader. |
+| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, and lit ray-sphere planet/moon spheres (perspective view only). |
 | `shot_test.cpp` | Headless screenshot harness for local-mode scenarios (`make shots`). |
 | `soak_test.cpp` | Headless long-run soak harness for the local simulation (`make soak`). |
 | `architecture.md` | High-level architecture and data-oriented rules. |
@@ -422,8 +432,11 @@ Important rules from the project documents:
 - OpenGL is an architectural target, not the active renderer. Even the local
   flight mode's star is a *software* shader drawn into an SDL streaming texture.
 - In local flight mode there is no physical collision with the star or bodies
-  (flying "into" the star is cosmetic; only HP can end a flight); planets and gas
-  giants are still drawn as flat discs while only the star is a full sphere.
+  (flying "into" the star is cosmetic; only HP can end a flight).
+- Planets and moons are now lit ray-sphere spheres in the perspective view, but
+  their rings are still only drawn on the orthographic map — ring geometry is not
+  yet projected around the sphere in first person (a Saturn-like ellipse with the
+  back arc occluded by the planet is a known next step).
 - Non-player faction memory overlays are not exposed through a debug selector.
 - The active build is POSIX/SDL2 via `sdl2-config`; the old platform makefiles
   are not synchronized with the current source list.

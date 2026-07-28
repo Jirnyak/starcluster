@@ -319,6 +319,185 @@ static void renderStarPlasma(SDL_Renderer* renderer, const LocalScene& scene,
     SDL_RenderCopy(renderer, tex, &src, &dst);
 }
 
+// ── Планеты/луны как ИЗОТРОПНЫЕ ОСВЕЩЁННЫЕ СФЕРЫ (тот же ray-sphere «шейдер») ──
+// Продолжение философии звезды на ВСЕ тела системы (playtest #4: «заполнять пространство
+// как функцию от радиуса всех тел», «рендер бедный — используй шейдеры»). Тело задано
+// ТОЛЬКО центром C и радиусом Rb — больше ничего. Для каждого пикселя bbox проекции:
+// восстанавливаем мировой луч из глаза, аналитически пересекаем со сферой (ближний корень
+// t0>0 → видимая поверхность), нормаль N=(S−C)/Rb. Освещение — ЧИСТАЯ ГЕОМЕТРИЯ: звезда в
+// начале координат (0,0,0), направление на свет L=normalize(−S); ламберт N·L даёт настоящий
+// терминатор день/ночь (фазы/серп в зависимости от положения глаза). Поверхность по типу:
+// газовый гигант — широтные полосы с турбулентным варпом (медленный дрейф), скалы — крап,
+// лёд — высокое альбедо + светлые полюса, луна — серые «моря». Мягкий атмосферный лимб на
+// освещённом крае для газа/льда. ПОПИКСЕЛЬНАЯ окклюзия звездой (если её вещество ближе
+// поверхности тела — пиксель пропускаем, там уже плазма). Половинное разрешение (как звезда),
+// bbox вокруг проекции, RenderCopy ×2 (linear). Изотропно ПО ПОСТРОЕНИЮ (функция геометрии).
+// Возвращает true, если сфера отрисована (иначе вызывающий рисует диск-фолбэк).
+static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
+                             const View3D& view, const CameraBasis& basis,
+                             int winW, int winH, const LocalBody& bd,
+                             const ProjectedPoint& pc, double fade01) {
+    const double Rb = bd.radius;
+    if (Rb <= 0.0 || winW <= 0 || winH <= 0) return false;
+    if (pc.behind || pc.depth <= view.nearPlane) return false;
+    const double focal = std::max(1.0, view.focal);
+    const double screenR = Rb * focal / pc.depth;
+    if (screenR < 1.0) return false;    // меньше ~2 полноэкранных px — диск неотличим, фолбэк
+
+    // Персистентная half-res стриминг-текстура (как у звезды, но отдельная).
+    static SDL_Texture*  tex   = nullptr;
+    static SDL_Renderer* texRd = nullptr;
+    static int texW = 0, texH = 0;
+    const int bw = (winW + 1) / 2, bh = (winH + 1) / 2;
+    if (!tex || texRd != renderer || texW != bw || texH != bh) {
+        if (tex) SDL_DestroyTexture(tex);
+        tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                SDL_TEXTUREACCESS_STREAMING, bw, bh);
+        texRd = renderer; texW = bw; texH = bh;
+        if (tex) {
+            SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+            SDL_SetTextureScaleMode(tex, SDL_ScaleModeLinear);
+        }
+    }
+    if (!tex) return false;
+
+    // bbox в координатах half-res буфера вокруг проекции центра (+рамка на атмосферный лимб).
+    const double margin = screenR * 1.14 + 3.0;
+    int bx0 = std::max(0,  (int)std::floor((pc.x - margin) * 0.5));
+    int by0 = std::max(0,  (int)std::floor((pc.y - margin) * 0.5));
+    int bx1 = std::min(bw, (int)std::ceil ((pc.x + margin) * 0.5) + 1);
+    int by1 = std::min(bh, (int)std::ceil ((pc.y + margin) * 0.5) + 1);
+    if (bx0 >= bx1 || by0 >= by1) return false;
+
+    const double ex = view.centerX, ey = view.centerY, ez = view.centerZ;
+    const double cx = bd.x, cy = bd.y, cz = bd.z;
+    const double Rb2 = Rb * Rb;
+    const double Rs = scene.starRadius;                       // радиус звезды (для окклюзии)
+    const bool   hasStar = scene.hasStar && Rs > 0.0;
+    const double Es2 = ex * ex + ey * ey + ez * ez;           // |глаз|²
+    // Инварианты луча по телу (не зависят от пикселя): глаз относительно центра тела.
+    const double ocx = ex - cx, ocy = ey - cy, ocz = ez - cz;
+    const double cBody = ocx * ocx + ocy * ocy + ocz * ocz - Rb2;
+    const double csStar = Es2 - Rs * Rs;                      // <0 => глаз ВНУТРИ звезды
+
+    // База цвета тела и параметры поверхности по типу.
+    const double baseR = (double)bd.r, baseG = (double)bd.g, baseB = (double)bd.b;
+    const int kind = bd.kind;
+    // Детерминированный per-body сдвиг фаз/наклон оси (НЕ rng): из орбиты/радиуса.
+    const double seed = bd.orbitRadius * 0.013 + bd.orbitPhase * 1.7 + Rb * 0.37;
+    // Ось «вращения» (широтные полосы газовых гигантов, полюса льда): в основном мировой +Z
+    // с лёгким детерминированным наклоном (нормаль плоскости орбит — тоже +Z, см. localgen).
+    double axX = 0.20 * std::sin(seed * 1.3);
+    double axY = 0.20 * std::cos(seed * 0.9);
+    double axZ = 1.0;
+    { const double al = 1.0 / std::sqrt(axX * axX + axY * axY + axZ * axZ); axX *= al; axY *= al; axZ *= al; }
+    const double tcl   = scene.fxClock;
+    const double drift = (kind == LB_GASGIANT) ? tcl * 0.05 : 0.0;   // медленный дрейф полос
+    const double ambient = 0.15;                              // подсветка от кластера (тысячи звёзд)
+
+    const double invF  = 1.0 / focal;
+    const double halfW = winW * 0.5, halfH = winH * 0.5;
+
+    void* vpix = nullptr; int pitch = 0;
+    SDL_Rect lockRect = { bx0, by0, bx1 - bx0, by1 - by0 };
+    if (SDL_LockTexture(tex, &lockRect, &vpix, &pitch) != 0) return false;
+    unsigned char* rowbase = (unsigned char*)vpix;
+
+    for (int by = by0; by < by1; ++by) {
+        Uint32* row = (Uint32*)(rowbase + (size_t)(by - by0) * pitch);
+        std::memset(row, 0, (size_t)(bx1 - bx0) * sizeof(Uint32));   // промахи луча = прозрачно
+        const double fy  = (double)(by * 2) + 0.5;
+        const double scy = -(fy - halfH) * invF;
+        for (int bx = bx0; bx < bx1; ++bx) {
+            const double fx  = (double)(bx * 2) + 0.5;
+            const double scx = (fx - halfW) * invF;
+            // Мировой луч: dir = right·scx + up·scy + fwd (нормируем).
+            double dx = basis.rX * scx + basis.uX * scy + basis.fX;
+            double dy = basis.rY * scx + basis.uY * scy + basis.fY;
+            double dz = basis.rZ * scx + basis.uZ * scy + basis.fZ;
+            const double il = 1.0 / std::sqrt(dx * dx + dy * dy + dz * dz);
+            dx *= il; dy *= il; dz *= il;
+            // Пересечение со сферой тела (ближний корень t0).
+            const double b = ocx * dx + ocy * dy + ocz * dz;
+            const double disc = b * b - cBody;
+            if (disc < 0.0) continue;                          // мимо тела → прозрачно
+            const double t0 = -b - std::sqrt(disc);
+            if (t0 <= 0.0) continue;                            // тело позади / глаз внутри → пропуск
+            // Точка/нормаль поверхности.
+            const double sx = ex + dx * t0, sy = ey + dy * t0, sz = ez + dz * t0;
+            const double nx = (sx - cx) / Rb, ny = (sy - cy) / Rb, nz = (sz - cz) / Rb;
+            // Попиксельная окклюзия звездой: её ближнее пересечение раньше t0 → пиксель за плазмой.
+            if (hasStar) {
+                if (csStar < 0.0) continue;                     // глаз внутри звезды — всё за веществом
+                const double bsr = ex * dx + ey * dy + ez * dz; // центр звезды = 0
+                const double dss = bsr * bsr - csStar;
+                if (dss >= 0.0) {
+                    const double ts0 = -bsr - std::sqrt(dss);
+                    if (ts0 > 1e-4 && ts0 < t0) continue;       // звезда ближе тела → перекрыто
+                }
+            }
+            // Освещение: свет из начала координат. L = normalize(−S); ламберт с мягким терминатором.
+            const double sl = std::sqrt(sx * sx + sy * sy + sz * sz);
+            double lam = 1.0;
+            if (sl > 1e-9) lam = -(nx * sx + ny * sy + nz * sz) / sl;
+            double diff = (lam + 0.10) / 1.10;                  // wrap-lighting: чуть мягче кромка
+            if (diff < 0.0) diff = 0.0; else if (diff > 1.0) diff = 1.0;
+            const double lightF = ambient + (1.0 - ambient) * diff;
+
+            // Поверхностный альбедо-паттерн по типу тела.
+            double cr = baseR, cg = baseG, cb = baseB;
+            if (kind == LB_GASGIANT) {
+                const double lat  = nx * axX + ny * axY + nz * axZ;      // [-1,1] «широта»
+                const double warp = 0.35 * std::sin((nx - nz) * 4.0 + drift * 2.0 + seed);
+                const double band = std::sin(lat * 8.0 + warp + seed * 3.0);
+                const double swirl= std::sin(lat * 17.0 - warp * 2.2 + drift * 4.0);
+                const double m = 0.5 + 0.5 * (0.72 * band + 0.28 * swirl);  // 0..1 тёмн/светл пояс
+                const double f2 = 0.74 + 0.46 * m;
+                cr = baseR * f2; cg = baseG * f2; cb = baseB * f2;
+            } else if (kind == LB_ICE) {
+                const double lat = std::fabs(nx * axX + ny * axY + nz * axZ);
+                const double sp1 = std::sin(nx * 13.0 + seed) * std::sin(ny * 11.0 - seed) *
+                                   std::sin(nz * 12.0 + seed * 2.0);
+                const double alb = 1.05 + 0.12 * lat + 0.05 * sp1;      // ярче к полюсам
+                cr = baseR * alb; cg = baseG * alb; cb = std::min(255.0, baseB * alb + 8.0);
+            } else if (kind == LB_MOON) {
+                const double sp1 = std::sin(nx * 15.0 + seed * 2.0) * std::sin(ny * 14.0 - seed) *
+                                   std::sin(nz * 16.0 + seed);
+                const double mare = 0.82 + 0.18 * sp1;                  // тёмные «моря»
+                cr = baseR * mare; cg = baseG * mare; cb = baseB * mare;
+            } else {                                                    // LB_ROCKY
+                const double sp1 = std::sin(nx * 7.0 + seed) * std::sin(ny * 8.0 - seed * 1.3);
+                const double sp2 = std::sin((nx + ny) * 13.0 - seed) * std::sin(nz * 11.0 + seed);
+                const double mott = 0.86 + 0.14 * sp1 + 0.06 * sp2;     // континенты/кратеры
+                cr = baseR * mott; cg = baseG * mott; cb = baseB * mott;
+            }
+            cr *= lightF; cg *= lightF; cb *= lightF;
+
+            // Атмосферный лимб (газ/лёд): мягкое свечение на ОСВЕЩЁННОМ крае (рассеяние).
+            if (kind == LB_GASGIANT || kind == LB_ICE) {
+                double ndv = -(nx * dx + ny * dy + nz * dz);            // к глазу (>0 на ближней грани)
+                if (ndv < 0.0) ndv = 0.0; else if (ndv > 1.0) ndv = 1.0;
+                double rim = 1.0 - ndv; rim *= rim;                     // резче к самому лимбу
+                const double glow = rim * diff * 85.0;                  // виден на дневной стороне
+                if (kind == LB_ICE) { cr += glow * 0.60; cg += glow * 0.80; cb += glow; }
+                else                { cr += glow;        cg += glow * 0.80; cb += glow * 0.50; }
+            }
+
+            cr *= fade01; cg *= fade01; cb *= fade01;                   // глубинный фейд сцены
+            const Uint32 ir = cr > 255.0 ? 255u : (cr < 0.0 ? 0u : (Uint32)cr);
+            const Uint32 ig = cg > 255.0 ? 255u : (cg < 0.0 ? 0u : (Uint32)cg);
+            const Uint32 ib = cb > 255.0 ? 255u : (cb < 0.0 ? 0u : (Uint32)cb);
+            row[bx - bx0] = 0xFF000000u | (ir << 16) | (ig << 8) | ib;
+        }
+    }
+    SDL_UnlockTexture(tex);
+
+    const SDL_Rect src = { bx0, by0, bx1 - bx0, by1 - by0 };
+    const SDL_Rect dst = { bx0 * 2, by0 * 2, (bx1 - bx0) * 2, (by1 - by0) * 2 };
+    SDL_RenderCopy(renderer, tex, &src, &dst);
+    return true;
+}
+
 } // namespace
 
 void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene& scene,
@@ -530,7 +709,15 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                 }
             }
             int r = std::min(1200, std::max(2, radiusPx(bd.radius, p.depth, view)));
-            fillCircle(renderer, p.x, p.y, r, fade(bd.r, bd.g, bd.b, 255, f));
+            // Перспектива: планеты/луны — ОСВЕЩЁННЫЕ ray-sphere сферы (звезда в 0,0,0 даёт
+            // настоящий терминатор день/ночь). Мелкие/орто-карта → простой диск (фолбэк).
+            const bool sphereKind = (bd.kind == LB_ROCKY || bd.kind == LB_GASGIANT ||
+                                     bd.kind == LB_ICE   || bd.kind == LB_MOON);
+            bool drew = false;
+            if (view.perspective && sphereKind)
+                drew = renderBodySphere(renderer, scene, view, basis, winW, winH, bd, p, f);
+            if (!drew)
+                fillCircle(renderer, p.x, p.y, r, fade(bd.r, bd.g, bd.b, 255, f));
             if (bd.hasMarket) {
                 strokeCircle(renderer, p.x, p.y, r + 3, rgba(P.green.r, P.green.g, P.green.b, 150));
                 double bdist = std::sqrt((bd.x - scene.px) * (bd.x - scene.px) +

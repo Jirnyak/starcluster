@@ -228,6 +228,40 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_star_inside.bmp");
     }
 
+    // (11) ПЛАНЕТА КРУПНО (звезда 0), кокпит: подлетаем к газовому гиганту сбоку от линии
+    //      звезда–планета (терминатор по центру диска) — видны широтные ПОЛОСЫ + день/ночь
+    //      грань (ray-sphere шейдер тела). Если гиганта нет — крупнейшее не-станционное тело.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        int gi = -1; double bestR = 0.0;
+        for (size_t i = 0; i < s.bodies.size(); ++i)
+            if (s.bodies[i].kind == LB_GASGIANT && s.bodies[i].radius > bestR) { bestR = s.bodies[i].radius; gi = (int)i; }
+        if (gi < 0)
+            for (size_t i = 0; i < s.bodies.size(); ++i)
+                if (s.bodies[i].kind != LB_STATION && s.bodies[i].radius > bestR) { bestR = s.bodies[i].radius; gi = (int)i; }
+        if (gi >= 0) {
+            const LocalBody& b = s.bodies[gi];
+            double dl = std::sqrt(b.x * b.x + b.y * b.y + b.z * b.z); if (dl < 1e-6) dl = 1.0;
+            const double ux = b.x / dl, uy = b.y / dl, uz = b.z / dl;      // от звезды к планете
+            double perpx = uy, perpy = -ux, perpz = 0.0;                   // ⟂ линии звезда–планета
+            double pl = std::sqrt(perpx * perpx + perpy * perpy);
+            if (pl < 1e-6) { perpx = 1.0; perpy = 0.0; pl = 1.0; }
+            perpx /= pl; perpy /= pl;
+            // Взгляд сбоку с лёгким смещением к звезде => ~3/4 освещённая фаза + полосы.
+            double offx = perpx * 0.9 - ux * 0.35, offy = perpy * 0.9 - uy * 0.35, offz = perpz * 0.9 - uz * 0.35;
+            double ol = std::sqrt(offx * offx + offy * offy + offz * offz); if (ol < 1e-6) ol = 1.0;
+            offx /= ol; offy /= ol; offz /= ol;
+            const double D = b.radius * 3.0;
+            s.px = b.x + offx * D; s.py = b.y + offy * D; s.pz = b.z + offz * D;
+            s.pvx = s.pvy = s.pvz = 0.0;
+            localSetForward(s, b.x - s.px, b.y - s.py, b.z - s.pz);         // нос на планету
+            std::printf("  [planet] kind=%d R=%.1f  view D=%.1f LU (боковая фаза: полосы+терминатор)\n",
+                        b.kind, b.radius, D);
+            total += 1;
+            ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_planet_near.bmp");
+        }
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);
