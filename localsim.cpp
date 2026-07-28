@@ -778,6 +778,16 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                                     if (o.hullHP > 0.0 && o.faction == fac) { o.hostile = true; o.aiState = 1; }
                                 }
                             }
+                            // (§5.13.14) Write-back в макро: сбитый борт-зеркало «умирает» и в
+                            //   постоянном мире — корабль макро-агента деградирует в спас-капсулу, груз
+                            //   сброшен (тот же помощник downgradeAgentToEscapePod, что и в robAgent).
+                            //   Кредиты не трогаем; репрессию фракции уже применили выше — тут ТОЛЬКО
+                            //   даунгрейд. Игрока-агента (agentIndex==playerAgent) в зеркала не берём,
+                            //   но проверяем явно для страховки.
+                            if (c.agentIndex >= 0 && c.agentIndex < (int)game.agents.size()
+                                && c.agentIndex != game.playerAgent) {
+                                downgradeAgentToEscapePod(game.agents[c.agentIndex]);
+                            }
                         }
                         break;                                 // один выстрел — одно попадание
                     }

@@ -4120,6 +4120,28 @@ void Game::updateAgents(double dt) {
     }
 }
 
+// «Смерть» макро-агента: корабль деградирует в спас-капсулу (класс 0), груз сброшен.
+// Кредиты НЕ трогаем (§5.13.14 — «credits immaterial»). Чистая арифметика: без rng, без
+// перезаписи фракции/индекса — агент никогда не стирается, индекс стабилен. Общий помощник
+// для robAgent (макро-бой) и write-back из локального полёта (сбитое борт-зеркало).
+void downgradeAgentToEscapePod(Agent& a) {
+    const std::vector<ShipClass>& classes = shipClasses();
+    const ShipClass& pod = classes[0];
+    a.ship.name = "Escape Pod";
+    a.ship.dryMass = pod.dryMass;
+    a.ship.driveThrust = pod.driveThrust;
+    a.ship.driveEfficiency = pod.driveEfficiency;
+    a.ship.cargoCapacity = pod.cargoCapacity;
+    a.ship.fuelCapacity = pod.fuelCapacity;
+    a.ship.heavyWeapons = pod.heavyWeapons;
+    a.ship.lightWeapons = pod.lightWeapons;
+    a.ship.armor = pod.armor;
+    a.ship.utility = pod.utility;
+    a.ship.cargo.clear();
+    a.cargoCost = 0.0;
+    shipAutofit(a.ship);
+}
+
 bool Game::robAgent(int attackerIndex, int victimIndex) {
     if (attackerIndex < 0 || attackerIndex >= int(agents.size())) return false;
     if (victimIndex < 0 || victimIndex >= int(agents.size()) || attackerIndex == victimIndex) return false;
@@ -4194,21 +4216,7 @@ bool Game::robAgent(int attackerIndex, int victimIndex) {
             lootCargo(attacker, victim);
             
             // Credits are immaterial and cannot be stolen
-            
-            // Downgrade to Escape Pod
-            const auto& classes = shipClasses();
-            const ShipClass& pod = classes[0];
-            victim.ship.name = "Escape Pod";
-            victim.ship.dryMass = pod.dryMass;
-            victim.ship.driveThrust = pod.driveThrust;
-            victim.ship.driveEfficiency = pod.driveEfficiency;
-            victim.ship.cargoCapacity = pod.cargoCapacity;
-            victim.ship.fuelCapacity = pod.fuelCapacity;
-            victim.ship.heavyWeapons = pod.heavyWeapons;
-            victim.ship.lightWeapons = pod.lightWeapons;
-            victim.ship.armor = pod.armor;
-            victim.ship.utility = pod.utility;
-            shipAutofit(victim.ship);
+            downgradeAgentToEscapePod(victim);
         } else {
             // Victim surrenders cargo
             attacker.lastAction = "robbed " + victim.type;
@@ -4225,21 +4233,7 @@ bool Game::robAgent(int attackerIndex, int victimIndex) {
             lootCargo(victim, attacker);
             
             // Credits are immaterial and cannot be stolen
-            
-            // Downgrade attacker to Escape Pod
-            const auto& classes = shipClasses();
-            const ShipClass& pod = classes[0];
-            attacker.ship.name = "Escape Pod";
-            attacker.ship.dryMass = pod.dryMass;
-            attacker.ship.driveThrust = pod.driveThrust;
-            attacker.ship.driveEfficiency = pod.driveEfficiency;
-            attacker.ship.cargoCapacity = pod.cargoCapacity;
-            attacker.ship.fuelCapacity = pod.fuelCapacity;
-            attacker.ship.heavyWeapons = pod.heavyWeapons;
-            attacker.ship.lightWeapons = pod.lightWeapons;
-            attacker.ship.armor = pod.armor;
-            attacker.ship.utility = pod.utility;
-            shipAutofit(attacker.ship);
+            downgradeAgentToEscapePod(attacker);
         } else {
             // Attacker repelled
             attacker.lastAction = "repelled by " + victim.type;

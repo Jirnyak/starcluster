@@ -136,7 +136,58 @@ int main() {
         std::printf("death-path probe: playerDestroyed=%s\n", deathPathOk ? "YES (ok)" : "NO");
     }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s\n",
-                totalFrames, deaths, claims, kills, invariantFails, deathPathOk ? "ok" : "UNTRIGGERED");
+    // --- Детерминированная проверка write-back в макро (§5.13.14) ---
+    // Привязываем локальное зеркало к реальному макро-агенту (не игроку), добиваем его
+    // выстрелом игрока и проверяем, что агент в ПОСТОЯННОМ мире деградировал в спас-капсулу
+    // (корабль=капсула, оружие=0, груз сброшен). Свежий Game — полная изоляция от soak-цикла.
+    // Игроку временно поднимаем оружие, у цели обнуляем корпус/щит — один залп добивает.
+    bool writeBackOk = false;
+    {
+        Game g2; g2.init(1200);
+        const int ai = (g2.playerAgent == 0 ? 1 : 0);        // любой не-игрок агент
+        if (ai < (int)g2.agents.size()) {
+            g2.agents[g2.playerAgent].ship.heavyWeapons = 60.0; // гарантированный урон игрока
+            g2.agents[ai].ship.name = "Test Cruiser";
+            g2.agents[ai].ship.heavyWeapons = 20.0;
+            g2.agents[ai].ship.cargo.clear();
+            g2.agents[ai].ship.cargo.emplace_back("H", 5.0); // немного груза — проверим сброс
+            for (int starIdx : stars) {
+                if (starIdx < 0) continue;                   // нужна реальная звезда с трафиком
+                LocalScene scene;
+                buildLocalScene(g2, starIdx, scene);
+                scene.active = true;
+                if (scene.craft.empty()) continue;
+                if (scene.craft.size() > 1) scene.craft.resize(1); // единственная мишень — выстрел не в чужого
+                scene.craft[0].agentIndex = ai;              // зеркало → наш агент
+                scene.craft[0].faction = -1;                 // без репрессии — изолируем write-back
+                scene.craft[0].kind = CK_TRADER; scene.craft[0].hostile = false;
+                scene.craft[0].armor = 800.0;                // большой радиус попадания (hr=5+armor*0.1) — без туннелирования
+                // Снаряд летит PROJ_SPEED*dtHours = 520*0.05 = 26 LU/кадр; ставим цель ровно на этот шаг.
+                for (int f = 0; f < 3000 && !writeBackOk; ++f) {
+                    if (!scene.craft.empty()) {              // пиним цель как сидячую мишень
+                        LocalCraft& cc = scene.craft[0];
+                        cc.x = scene.px + 26.0; cc.y = scene.py; cc.z = scene.pz;
+                        cc.vx = cc.vy = cc.vz = 0.0;
+                        cc.armor = 800.0;
+                        if (cc.hullHP > 1.0) cc.hullHP = 1.0;
+                        cc.shield = 0.0; cc.shieldRegenTimer = 999.0;
+                        localSetForward(scene, cc.x - scene.px, cc.y - scene.py, cc.z - scene.pz);
+                    }
+                    LocalInput in; in.fire = true;
+                    updateLocalScene(g2, scene, in, dtReal);
+                    if (g2.agents[ai].ship.name == "Escape Pod"
+                        && g2.agents[ai].ship.heavyWeapons == 0.0
+                        && g2.agents[ai].ship.cargo.empty()) writeBackOk = true;
+                }
+                break;                                        // проверили одну систему — достаточно
+            }
+        }
+        std::printf("write-back probe: macroAgentDowngraded=%s\n", writeBackOk ? "YES (ok)" : "NO");
+    }
+    if (!writeBackOk) { std::printf("INVARIANT FAIL: §5.13.14 macro write-back did not fire\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s\n",
+                totalFrames, deaths, claims, kills, invariantFails,
+                deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED");
     return invariantFails ? 1 : 0;
 }

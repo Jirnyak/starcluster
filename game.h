@@ -284,3 +284,4 @@ public:
 };
 
 const char* chromocoreStatLabel(int stat); // chromo.cpp
+void downgradeAgentToEscapePod(Agent& a);   // game.cpp — «смерть» макро-агента: спас-капсула + сброс груза
