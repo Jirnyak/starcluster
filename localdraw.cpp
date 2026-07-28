@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 using namespace UI;
@@ -178,6 +179,146 @@ SDL_Color skyStarColor(unsigned i, int stellarClass) {
     }
 }
 
+// ── Аналитическая звезда как ИЗОТРОПНАЯ СФЕРА (попиксельный ray-sphere «шейдер») ──
+// Тело задано ТОЛЬКО центром (0,0,0) и радиусом R — больше ничего. Для каждого пикселя
+// восстанавливаем мировой луч из глаза, аналитически пересекаем со сферой и красим из
+// ГЕОМЕТРИИ: лимб-даркенинг mu=√(1−(dmin/R)²) + анимированная турбулентность (плазма);
+// корона за лимбом запечена в тот же проход. Никаких порогов и «переключения режима»:
+// смотришь на звезду — плазма, отворачиваешься — космос, влетаешь внутрь — вещество
+// вокруг с направленной структурой (НЕ плоская заливка). Изотропно ПО ПОСТРОЕНИЮ:
+// результат зависит только от R и |eye| относительно луча, одинаков со всех сторон.
+//
+// Рендер в персистентную стриминг-текстуру половинного разрешения (ARGB8888, BLEND):
+// диск непрозрачен (alpha=255 → честно перекрывает скайбокс, согласуясь с occ-окклюзией),
+// корона — полупрозрачное тёплое свечение. Далёкую звезду считаем только в bbox её
+// проекции; вблизи/внутри — весь кадр. Чистый SDL2 (никакого GL) — детерминированные
+// шоты продолжают работать на программном рендерере.
+static void renderStarPlasma(SDL_Renderer* renderer, const LocalScene& scene,
+                             const View3D& view, const CameraBasis& basis,
+                             int winW, int winH) {
+    const double R = scene.starRadius;
+    if (R <= 0.0 || winW <= 0 || winH <= 0) return;
+    const double ex = view.centerX, ey = view.centerY, ez = view.centerZ;
+    const double D2 = ex * ex + ey * ey + ez * ez;
+    const double R2 = R * R;
+    const double focal = std::max(1.0, view.focal);
+
+    // Персистентная стриминг-текстура (полуразрешение). Пересоздаём при смене рендерера/размера.
+    static SDL_Texture*  tex   = nullptr;
+    static SDL_Renderer* texRd = nullptr;
+    static int texW = 0, texH = 0;
+    const int bw = (winW + 1) / 2, bh = (winH + 1) / 2;
+    if (!tex || texRd != renderer || texW != bw || texH != bh) {
+        if (tex) SDL_DestroyTexture(tex);
+        tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                SDL_TEXTUREACCESS_STREAMING, bw, bh);
+        texRd = renderer; texW = bw; texH = bh;
+        if (tex) {
+            SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+            SDL_SetTextureScaleMode(tex, SDL_ScaleModeLinear);
+        }
+    }
+    if (!tex) return;
+
+    // Экранный bbox в координатах буфера (полуразрешение). Далеко (D>R и центр перед
+    // камерой) — квадрат вокруг проекции центра радиусом screenR·coronaK; иначе весь кадр.
+    const double coronaK = 1.55;
+    int bx0 = 0, by0 = 0, bx1 = bw, by1 = bh;
+    if (D2 > R2 * 1.05) {
+        ProjectedPoint sp = projectPointWithBasis(0.0, 0.0, 0.0, winW, winH, view, basis);
+        if (sp.behind) return;                        // центр за камерой и D>R → звезда не в кадре
+        const double screenR = focal * R / std::sqrt(D2 - R2);
+        const double margin  = screenR * coronaK + 4.0;
+        bx0 = std::max(0,  (int)std::floor((sp.x - margin) * 0.5));
+        by0 = std::max(0,  (int)std::floor((sp.y - margin) * 0.5));
+        bx1 = std::min(bw, (int)std::ceil ((sp.x + margin) * 0.5) + 1);
+        by1 = std::min(bh, (int)std::ceil ((sp.y + margin) * 0.5) + 1);
+        if (bx0 >= bx1 || by0 >= by1) return;         // проекция целиком вне экрана
+    }
+
+    // Цвета ядра (горячее/светлее) и лимба (темнее/краснее) из спектрального цвета звезды.
+    const double sR = (double)scene.starR, sG = (double)scene.starG, sB = (double)scene.starB;
+    const double crR = std::min(255.0, sR + 15.0), crG = std::min(255.0, sG + 30.0), crB = std::min(255.0, sB + 60.0); // ядро — бело-горячее
+    const double lmR = sR * 0.92,                  lmG = sG * 0.50,                  lmB = sB * 0.26;                  // лимб — глубокий оранж-красный
+    const double tcl = scene.fxClock;
+
+    void* vpix = nullptr; int pitch = 0;
+    if (SDL_LockTexture(tex, nullptr, &vpix, &pitch) != 0) return;
+    unsigned char* rowbase = (unsigned char*)vpix;
+
+    const double invF  = 1.0 / focal;
+    const double halfW = winW * 0.5, halfH = winH * 0.5;
+    const double coronaR = R * coronaK, coronaR2 = coronaR * coronaR;
+    const double coronaDen = 1.0 / std::max(1e-6, coronaR - R);
+
+    for (int by = by0; by < by1; ++by) {
+        Uint32* row = (Uint32*)(rowbase + (size_t)by * pitch);
+        std::memset(row + bx0, 0, (size_t)(bx1 - bx0) * sizeof(Uint32)); // промахи = прозрачно
+        const double fy  = (double)(by * 2) + 0.5;    // полноэкранный y центра полупикселя
+        const double scy = -(fy - halfH) * invF;      // «вверх»-компонента луча камеры
+        for (int bx = bx0; bx < bx1; ++bx) {
+            const double fx  = (double)(bx * 2) + 0.5;
+            const double scx = (fx - halfW) * invF;   // «вправо»-компонента
+            // Мировой луч: dir = right·scx + up·scy + fwd (затем нормировка).
+            double dx = basis.rX * scx + basis.uX * scy + basis.fX;
+            double dy = basis.rY * scx + basis.uY * scy + basis.fY;
+            double dz = basis.rZ * scx + basis.uZ * scy + basis.fZ;
+            const double il = 1.0 / std::sqrt(dx * dx + dy * dy + dz * dz);
+            dx *= il; dy *= il; dz *= il;
+            const double bb0 = ex * dx + ey * dy + ez * dz;   // O·dir
+            double dmin2 = D2 - bb0 * bb0; if (dmin2 < 0.0) dmin2 = 0.0;
+            if (dmin2 <= R2) {
+                const double sq = std::sqrt(R2 - dmin2);
+                const double t1 = -bb0 + sq;                  // дальний корень
+                if (t1 > 0.0) {                               // сфера хотя бы частично впереди
+                    double mu2 = 1.0 - dmin2 / R2; if (mu2 < 0.0) mu2 = 0.0;
+                    const double mu = std::sqrt(mu2);         // косинус к лимбу (лимб-даркенинг)
+                    const double t0 = -bb0 - sq;
+                    const double te = t0 > 0.0 ? t0 : 0.0;    // точка входа (внутри звезды → глаз)
+                    const double nx = (ex + dx * te) / R;     // нормаль/позиция на поверхности
+                    const double ny = (ey + dy * te) / R;
+                    const double nz = (ez + dz * te) / R;
+                    // Многооктавная турбулентность с доменным варпом → «кипящая» плазма
+                    // (филаменты/гранулы), а не гладкий градиент. Частоты умеренные (полуразрешение).
+                    const double wrp = 0.35 * std::sin(ny * 7.0 - tcl * 0.5);
+                    const double n1  = std::sin(nx * 8.0 + wrp + tcl * 0.6);
+                    const double n2  = std::sin((ny + nz) * 12.0 - wrp * 1.3 - tcl * 0.9);
+                    const double n3  = std::sin((nx - nz) * 19.0 + n1 * 1.6 + tcl * 0.4);
+                    const double turb = 0.50 * n1 + 0.30 * n2 + 0.22 * n3;
+                    double bright = (0.42 + 0.58 * mu) * (1.0 + 0.20 * turb);
+                    if (bright < 0.0) bright = 0.0;
+                    const double m = mu2;                     // ярче к ядру
+                    const double rr = (lmR + (crR - lmR) * m) * bright;
+                    const double gg = (lmG + (crG - lmG) * m) * bright;
+                    const double bb = (lmB + (crB - lmB) * m) * bright;
+                    const Uint32 ir = rr > 255.0 ? 255u : (Uint32)rr;
+                    const Uint32 ig = gg > 255.0 ? 255u : (Uint32)gg;
+                    const Uint32 ib = bb > 255.0 ? 255u : (Uint32)bb;
+                    row[bx] = 0xFF000000u | (ir << 16) | (ig << 8) | ib;
+                    continue;
+                }
+            }
+            // Корона: луч мимо сферы, но проходит рядом и «вперёд» к звезде (bb0<0).
+            if (bb0 < 0.0 && dmin2 < coronaR2) {
+                double g = (coronaR - std::sqrt(dmin2)) * coronaDen;  // 1 у лимба → 0 у края
+                if (g < 0.0) g = 0.0; else if (g > 1.0) g = 1.0;
+                Uint32 ia = (Uint32)(g * g * 0.6 * 255.0); if (ia > 255u) ia = 255u;
+                if (ia) {
+                    const Uint32 ir = (Uint32)std::min(255.0, lmR);
+                    const Uint32 ig = (Uint32)std::min(255.0, lmG * 0.9);
+                    const Uint32 ib = (Uint32)std::min(255.0, lmB * 0.8);
+                    row[bx] = (ia << 24) | (ir << 16) | (ig << 8) | ib;
+                }
+            }
+        }
+    }
+    SDL_UnlockTexture(tex);
+
+    const SDL_Rect src = { bx0, by0, bx1 - bx0, by1 - by0 };
+    const SDL_Rect dst = { bx0 * 2, by0 * 2, (bx1 - bx0) * 2, (by1 - by0) * 2 };
+    SDL_RenderCopy(renderer, tex, &src, &dst);
+}
+
 } // namespace
 
 void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene& scene,
@@ -326,46 +467,13 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         }
     }
 
-    // (3) ЗВЕЗДА — АНАЛИТИЧЕСКАЯ СФЕРА в мировом центре (0,0,0). Рисуем не «модель», а
-    //     геометрию: по дистанции глаза D=|eye| и радиусу R угловой радиус силуэта
-    //     alpha=asin(R/D), экранный радиус = focal·tan(alpha) = focal·R/sqrt(D²−R²).
-    //     При D→R диск раздувается на весь экран (звезда гигантская — влетаем в её
-    //     вещество), при D≤R·1.7 заливаем кадр плазмой целиком (см. ниже). Это и есть
-    //     «умный масштаб»: одна сфера показывает структуру любого размера, а ray-sphere
-    //     окклюзия (occ) честно прячет за ней планеты/корабли.
+    // (3) ЗВЕЗДА — ИЗОТРОПНАЯ АНАЛИТИЧЕСКАЯ СФЕРА (ray-sphere «шейдер», см. renderStarPlasma).
+    //     Тело задано ТОЛЬКО центром (0,0,0) и радиусом R; плазма — функция геометрии луча,
+    //     одинаковая со всех сторон. Никаких порогов/«переключения режима» и заглушек-заливок:
+    //     каждый пиксель, чей мировой луч попадает в сферу, показывает вещество; остальные —
+    //     космос (или корону у лимба). ray-sphere окклюзия (occ) честно прячет за ней тела.
     if (scene.hasStar && view.perspective) {
-        const double R = scene.starRadius;
-        const double D = std::sqrt(view.centerX * view.centerX +
-                                   view.centerY * view.centerY +
-                                   view.centerZ * view.centerZ);
-        const double gp = 1.0 + 0.04 * std::sin(scene.fxClock * 2.0);
-        const int maxDim = 4 * std::max(winW, winH);
-        if (D <= R * 1.7) {
-            // D/R ≤ 1.7: диск и так переполняет экран (полное покрытие уже при ~1.45), поэтому
-            // заливаем кадр плазмой целиком — бесшовно и без тангенциального тёмного зазора,
-            // что возникал у тонкой кромки диска в полосе (1.0,1.7)·R. Тела рисуются ПОСЛЕ
-            // (шаг 4) => близкие планеты перед звездой видны поверх заливки.
-            fillRect(renderer, 0, 0, winW, winH, rgba(scene.starR, scene.starG, scene.starB, 255));
-        } else if (!sp.behind) {
-            double screenR = view.focal * R / std::sqrt(D * D - R * R);
-            int sr = int(screenR); if (sr > maxDim) sr = maxDim; if (sr < 2) sr = 2;
-            // Корона аддитивно, поверх скайбокса, за лимбом.
-            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_ADD);
-            strokeCircle(renderer, sp.x, sp.y, std::min(maxDim, int(sr * 1.9 * gp)),
-                         rgba(scene.starR, scene.starG, scene.starB, 22));
-            strokeCircle(renderer, sp.x, sp.y, std::min(maxDim, int(sr * 1.4 * gp)),
-                         rgba(scene.starR, scene.starG, scene.starB, 46));
-            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-            // Диск с потемнением к лимбу: тёплый/тёмный край -> яркое горячее ядро.
-            fillCircle(renderer, sp.x, sp.y, sr,
-                       rgba(scene.starR, scene.starG * 82 / 100, scene.starB * 60 / 100, 255));
-            fillCircle(renderer, sp.x, sp.y, int(sr * 0.86),
-                       rgba(scene.starR, scene.starG, scene.starB, 255));
-            fillCircle(renderer, sp.x, sp.y, int(sr * 0.52),
-                       rgba(std::min(255, (int)scene.starR + 28),
-                            std::min(255, (int)scene.starG + 20),
-                            std::min(255, (int)scene.starB + 12), 255));
-        }
+        renderStarPlasma(renderer, scene, view, basis, winW, winH);
     } else if (scene.hasStar) {
         // Орто-карта (вид сверху): звезда — простой диск + два ореола (как раньше).
         int sr = std::min(2000, std::max(3, radiusPx(scene.starRadius, sp.depth, view)));

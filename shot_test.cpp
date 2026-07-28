@@ -155,17 +155,32 @@ int main(int argc, char** argv) {
     }
 
     // (7) БЛИЗКО К ЗВЕЗДЕ (звезда 0), кокпит: игрок чуть снаружи поверхности, нос на светило.
-    //     Аналитический диск (focal·R/sqrt(D²−R²)) должен заполнять бОльшую часть экрана —
-    //     это и есть «гигантская звезда, корабли — ничто».
+    //     Изотропная сфера (ray-sphere) заполняет почти весь кадр плазмой с лимб-даркенингом
+    //     и структурой — «гигантская звезда, корабли — ничто». Без порога/заглушки-заливки.
     {
         LocalScene s; buildLocalScene(game, 0, s); s.active = true;
         const double R = s.starRadius;
-        s.px = R * 1.25; s.py = 0.0; s.pz = 0.0;      // снаружи поверхности, но D/R=1.25 (<1.7)
+        s.px = R * 1.25; s.py = 0.0; s.pz = 0.0;      // снаружи поверхности, D/R=1.25
         s.pvx = s.pvy = s.pvz = 0.0;
         localSetForward(s, -1.0, 0.0, 0.0);           // нос на светило (в центре)
-        std::printf("  [near-star] D=%.1f LU  starR=%.1f LU  (D/R=1.25<1.7 => стена плазмы)\n", s.px, R);
+        std::printf("  [near-star] D=%.1f LU  starR=%.1f LU  (D/R=1.25 => сфера почти во весь кадр)\n", s.px, R);
         total += 1;
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_star_near.bmp");
+    }
+
+    // (7б) БЛИЗКО, НО НОС ОТ ЗВЕЗДЫ (звезда 0), кокпит: РЕШАЮЩАЯ проверка изотропии. Глаз в
+    //      D/R=1.3 от центра, но смотрит ПРОЧЬ (+X, звезда позади). Изотропный ray-sphere
+    //      обязан показать ЧЁРНЫЙ КОСМОС (скайбокс), а НЕ жёлтую заливку. Если тут жёлтое —
+    //      значит вернулся старый баг-костыль «переключения режима». Кадр должен быть тёмным.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        const double R = s.starRadius;
+        s.px = R * 1.3; s.py = 0.0; s.pz = 0.0;       // так же близко, как near-star
+        s.pvx = s.pvy = s.pvz = 0.0;
+        localSetForward(s, 1.0, 0.0, 0.0);            // нос ПРОЧЬ от звезды (звезда за спиной)
+        std::printf("  [look-away] D=%.1f LU (D/R=1.3), нос ОТ звезды => ожидаем КОСМОС, не плазму\n", s.px);
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_star_lookaway.bmp");
     }
 
     // (8) ОККЛЮЗИЯ (звезда 0), кокпит: два пробных тела на оси глаз–звезда. FRONT (перед
@@ -200,14 +215,15 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_muzzle.bmp");
     }
 
-    // (10) ВНУТРИ ЗВЕЗДЫ (звезда 0), кокпит: глаз глубоко в веществе (D<R) — экран заливается
-    //      плазмой (звезда непрозрачна изнутри). Проверка near-field ветки D≤R.
+    // (10) ВНУТРИ ЗВЕЗДЫ (звезда 0), кокпит: глаз глубоко в веществе (D<R). Каждый луч входит
+    //      в сферу (te=0 → от глаза), поэтому кадр окружён плазмой, но с НАПРАВЛЕННОЙ
+    //      структурой (турбулентность/градиент по нормали), а не плоской заливкой. Изотропно.
     {
         LocalScene s; buildLocalScene(game, 0, s); s.active = true;
         s.px = s.starRadius * 0.4; s.py = 0.0; s.pz = 0.0;
         s.pvx = s.pvy = s.pvz = 0.0;
         localSetForward(s, 1.0, 0.0, 0.0);
-        std::printf("  [inside-star] D=%.1f < starR=%.1f -> заливка кадра\n", s.px, s.starRadius);
+        std::printf("  [inside-star] D=%.1f < starR=%.1f -> плазма вокруг со структурой\n", s.px, s.starRadius);
         total += 1;
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_star_inside.bmp");
     }
