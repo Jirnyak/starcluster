@@ -66,6 +66,29 @@ int radiusPx(double R, double depth, const View3D& view) {
     return int(R * view.scale);
 }
 
+// Аналитическая ray-sphere окклюзия: отрезок глаз->точка перекрыт непрозрачным
+// веществом сферы (центр C, радиус R)? Ничего не держим в памяти — только чистая
+// геометрия: единичный луч от глаза, ближнее пересечение t0=-b-sqrt(b²−c); тело за
+// звездой (t0 внутри отрезка) невидимо. Так гигантская звезда честно перекрывает
+// планеты/корабли, не будучи «моделью» — лишь центр и радиус.
+static bool segIntersectsSphere(double ex, double ey, double ez,
+                                double px, double py, double pz,
+                                double cx, double cy, double cz, double R) {
+    const double dx = px - ex, dy = py - ey, dz = pz - ez;
+    const double L2 = dx * dx + dy * dy + dz * dz;
+    if (L2 < 1e-12) return false;
+    const double L = std::sqrt(L2);
+    const double idx = dx / L, idy = dy / L, idz = dz / L;   // единичный луч глаз->точка
+    const double ox = ex - cx, oy = ey - cy, oz = ez - cz;   // глаз относительно центра
+    const double b = ox * idx + oy * idy + oz * idz;
+    const double c = ox * ox + oy * oy + oz * oz - R * R;
+    if (c < 0.0) return true;                 // глаз ВНУТРИ сферы — всё за веществом
+    const double disc = b * b - c;
+    if (disc < 0.0) return false;             // луч мимо сферы
+    const double t0 = -b - std::sqrt(disc);   // ближнее пересечение
+    return t0 > 1e-4 && t0 < L;               // сфера между глазом и точкой => перекрыто
+}
+
 // Заливка треугольника через edge-функции по bounding box (не зависит от обхода).
 void fillTriangle(SDL_Renderer* rd, int x0, int y0, int x1, int y1, int x2, int y2, SDL_Color c) {
     int minX = std::min(x0, std::min(x1, x2));
@@ -284,6 +307,14 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     // Звезда в мировом центре (0,0,0).
     ProjectedPoint sp = projectPointWithBasis(0.0, 0.0, 0.0, winW, winH, view, basis);
 
+    // Окклюзия веществом звезды (только перспектива-кокпит; на орто-карте вид сверху —
+    // ничего не прячем). Центр звезды = (0,0,0), радиус = scene.starRadius.
+    auto occ = [&](double wx, double wy, double wz) -> bool {
+        return scene.hasStar && view.perspective &&
+               segIntersectsSphere(view.centerX, view.centerY, view.centerZ,
+                                    wx, wy, wz, 0.0, 0.0, 0.0, scene.starRadius);
+    };
+
     // (2) ОРБИТАЛЬНЫЕ КОЛЬЦА — плоские окружности, осмысленны только в орто-карте
     //     (в перспективе орбита проецируется в эллипс; пропускаем).
     if (scene.hasStar && !view.perspective) {
@@ -295,8 +326,45 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         }
     }
 
-    // (3) ЗВЕЗДА + свечение (радиус ореола слегка пульсирует по fxClock).
-    if (scene.hasStar && !(view.perspective && sp.behind)) {
+    // (3) ЗВЕЗДА — АНАЛИТИЧЕСКАЯ СФЕРА в мировом центре (0,0,0). Рисуем не «модель», а
+    //     геометрию: по дистанции глаза D=|eye| и радиусу R угловой радиус силуэта
+    //     alpha=asin(R/D), экранный радиус = focal·tan(alpha) = focal·R/sqrt(D²−R²).
+    //     При D→R диск раздувается на весь экран (звезда гигантская — влетаем в её
+    //     вещество), при D≤R глаз ВНУТРИ звезды => заливаем кадр плазмой. Это и есть
+    //     «умный масштаб»: одна сфера показывает структуру любого размера, а ray-sphere
+    //     окклюзия (occ) честно прячет за ней планеты/корабли.
+    if (scene.hasStar && view.perspective) {
+        const double R = scene.starRadius;
+        const double D = std::sqrt(view.centerX * view.centerX +
+                                   view.centerY * view.centerY +
+                                   view.centerZ * view.centerZ);
+        const double gp = 1.0 + 0.04 * std::sin(scene.fxClock * 2.0);
+        const int maxDim = 4 * std::max(winW, winH);
+        if (D <= R * 1.0008) {
+            // Глаз в веществе звезды — плазма непрозрачна, заливаем весь кадр.
+            fillRect(renderer, 0, 0, winW, winH, rgba(scene.starR, scene.starG, scene.starB, 255));
+        } else if (!sp.behind) {
+            double screenR = view.focal * R / std::sqrt(D * D - R * R);
+            int sr = int(screenR); if (sr > maxDim) sr = maxDim; if (sr < 2) sr = 2;
+            // Корона аддитивно, поверх скайбокса, за лимбом.
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_ADD);
+            strokeCircle(renderer, sp.x, sp.y, std::min(maxDim, int(sr * 1.9 * gp)),
+                         rgba(scene.starR, scene.starG, scene.starB, 22));
+            strokeCircle(renderer, sp.x, sp.y, std::min(maxDim, int(sr * 1.4 * gp)),
+                         rgba(scene.starR, scene.starG, scene.starB, 46));
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            // Диск с потемнением к лимбу: тёплый/тёмный край -> яркое горячее ядро.
+            fillCircle(renderer, sp.x, sp.y, sr,
+                       rgba(scene.starR, scene.starG * 82 / 100, scene.starB * 60 / 100, 255));
+            fillCircle(renderer, sp.x, sp.y, int(sr * 0.86),
+                       rgba(scene.starR, scene.starG, scene.starB, 255));
+            fillCircle(renderer, sp.x, sp.y, int(sr * 0.52),
+                       rgba(std::min(255, (int)scene.starR + 28),
+                            std::min(255, (int)scene.starG + 20),
+                            std::min(255, (int)scene.starB + 12), 255));
+        }
+    } else if (scene.hasStar) {
+        // Орто-карта (вид сверху): звезда — простой диск + два ореола (как раньше).
         int sr = std::min(2000, std::max(3, radiusPx(scene.starRadius, sp.depth, view)));
         double gp = 1.0 + 0.04 * std::sin(scene.fxClock * 2.0);
         fillCircle(renderer, sp.x, sp.y, sr, rgba(scene.starR, scene.starG, scene.starB, 255));
@@ -324,6 +392,7 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             ProjectedPoint p = projectPointWithBasis(bd.x, bd.y, bd.z, winW, winH, view, basis);
             if (view.perspective && p.behind) continue;
             if (p.x < -200 || p.x > winW + 200 || p.y < -200 || p.y > winH + 200) continue;
+            if (occ(bd.x, bd.y, bd.z)) continue;   // за веществом звезды — не просвечивает
             double f = sceneFade(p.depth);
             if (!view.perspective) {
                 // (4a) КОЛЬЦА газового гиганта — концентрические окружности (плоский вид).
@@ -370,6 +439,7 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         ProjectedPoint p = projectPointWithBasis(rk.x, rk.y, rk.z, winW, winH, view, basis);
         if (view.perspective && p.behind) continue;
         if (p.x < -100 || p.x > winW + 100 || p.y < -100 || p.y > winH + 100) continue;
+        if (occ(rk.x, rk.y, rk.z)) continue;   // астероид за звездой — скрыт
         double f = sceneFade(p.depth);
         int r = std::min(400, std::max(1, radiusPx(rk.radius, p.depth, view)));
         fillCircle(renderer, p.x, p.y, r, fade(rk.r, rk.g, rk.b, 255, f));
@@ -385,6 +455,7 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         ProjectedPoint p = projectPointWithBasis(lt.x, lt.y, lt.z, winW, winH, view, basis);
         if (view.perspective && p.behind) continue;
         if (p.x < -40 || p.x > winW + 40 || p.y < -40 || p.y > winH + 40) continue;
+        if (occ(lt.x, lt.y, lt.z)) continue;   // лут за звездой — скрыт
         double f = sceneFade(p.depth);
         int rad = 4;
         int dx[4], dy[4];
@@ -422,6 +493,7 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         if (view.perspective && p.behind) return;
         if (view.perspective && p.depth < 2.0) return;   // частица практически в кокпите
         if (p.x < -40 || p.x > winW + 40 || p.y < -40 || p.y > winH + 40) return;
+        if (occ(fx.x, fx.y, fx.z)) return;   // частица за веществом звезды — скрыта
         double t = fx.life / std::max(1e-6, fx.maxLife);
         if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
         int alpha = int(double(fx.a) * t);
@@ -442,10 +514,19 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                 case FX_TRAIL: case FX_SMOKE: cap = 8;  break; // выхлоп/дым — мелкие угольки
                 case FX_DEBRIS:               cap = 22; break;
                 case FX_SPARK:                cap = 40; break; // искры попаданий — заметны
-                case FX_MUZZLE:               cap = 90; break; // вспышка у дула — крупная
+                case FX_MUZZLE:               cap = 14; break; // вспышка у дула — компактный блик
                 default:                      cap = 48; break;
             }
             if (s > cap) s = cap;
+        }
+        if (fx.kind == FX_MUZZLE) {
+            // Аддитивный блик-кружок (НЕ квад): мягкий ореол + белое ядро. На тёмном фоне
+            // читается яркой вспышкой у дула, а не «синим квадратом» во весь экран (был баг).
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_ADD);
+            fillCircle(renderer, p.x, p.y, s,     rgba(fx.r, fx.g, fx.b, alpha));
+            fillCircle(renderer, p.x, p.y, s / 2, rgba(255, 255, 255, alpha));
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            return;
         }
         int a2 = (fx.kind == FX_SMOKE) ? alpha / 2 : alpha;  // дым тусклее
         fillRect(renderer, p.x - s / 2, p.y - s / 2, s, s, rgba(fx.r, fx.g, fx.b, a2));
@@ -463,6 +544,7 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         ProjectedPoint p = projectPointWithBasis(c.x, c.y, c.z, winW, winH, view, basis);
         if (view.perspective && p.behind) continue;
         if (p.x < -60 || p.x > winW + 60 || p.y < -60 || p.y > winH + 60) continue;
+        if (occ(c.x, c.y, c.z)) continue;   // корабль за веществом звезды — скрыт
         // Экранный курс носа: по вектору скорости, спроецированному в экран (робастно
         // для обоих режимов — проецируем точку впереди по скорости).
         double sa = 0.0;
@@ -476,7 +558,7 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         }
         SDL_Color col = c.hostile ? P.red : rgba(c.r, c.g, c.b, 255);
         double sz;
-        if (view.perspective) sz = std::max(4.0, std::min(40.0, double(radiusPx(3.0, p.depth, view))));
+        if (view.perspective) sz = std::max(4.0, std::min(40.0, double(radiusPx(1.6, p.depth, view))));
         else                  sz = std::max(6.0, std::min(9.0, view.scale * 1.6));
         headingTriangle(renderer, p.x, p.y, sa, sz, col, true);
         if (c.shield > 0.0 && c.maxShield > 0.0) {
@@ -521,6 +603,7 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         ProjectedPoint p = projectPointWithBasis(s.x, s.y, s.z, winW, winH, view, basis);
         if (view.perspective && p.behind) continue;
         if (p.x < -20 || p.x > winW + 20 || p.y < -20 || p.y > winH + 20) continue;
+        if (occ(s.x, s.y, s.z)) continue;   // снаряд за звездой — скрыт
         SDL_Color col = (s.team == 0) ? P.cyan : P.red;
         double vl = std::sqrt(s.vx * s.vx + s.vy * s.vy + s.vz * s.vz);
         if (vl > 1e-6) {
@@ -749,7 +832,8 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             double pulse = 0.5 + 0.5 * std::sin(scene.fxClock * 4.0 + double(i));
             int a = 120 + int(pulse * (80.0 + 55.0 * s01)); // ~120..255
             ProjectedPoint p = projectPointWithBasis(rs.x, rs.y, rs.z, winW, winH, view, basis);
-            bool on = !(view.perspective && p.behind) &&
+            bool on = !occ(rs.x, rs.y, rs.z) &&   // за звездой — не блип, а пеленг на кромке
+                      !(view.perspective && p.behind) &&
                       (p.x >= 0 && p.x <= winW && p.y >= 0 && p.y <= winH);
             if (on) {
                 drawDiamond(p.x, p.y, 6, rgba(kc.r, kc.g, kc.b, a), true);

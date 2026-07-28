@@ -154,6 +154,64 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_combat_lead.bmp");
     }
 
+    // (7) БЛИЗКО К ЗВЕЗДЕ (звезда 0), кокпит: игрок чуть снаружи поверхности, нос на светило.
+    //     Аналитический диск (focal·R/sqrt(D²−R²)) должен заполнять бОльшую часть экрана —
+    //     это и есть «гигантская звезда, корабли — ничто».
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        const double R = s.starRadius;
+        s.px = R * 1.25; s.py = 0.0; s.pz = 0.0;      // сразу снаружи поверхности
+        s.pvx = s.pvy = s.pvz = 0.0;
+        localSetForward(s, -1.0, 0.0, 0.0);           // нос на светило (в центре)
+        std::printf("  [near-star] D=%.1f LU  starR=%.1f LU  (диск ~огромный)\n", s.px, R);
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_star_near.bmp");
+    }
+
+    // (8) ОККЛЮЗИЯ (звезда 0), кокпит: два пробных тела на оси глаз–звезда. FRONT (перед
+    //     ближней поверхностью) виден на диске; BACK (за дальней поверхностью) обязан быть
+    //     скрыт веществом звезды (ray-sphere occlusion). Наглядная проверка «планеты больше
+    //     не просвечивают сквозь звезду».
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        const double R = s.starRadius;
+        s.bodies.clear(); s.rocks.clear(); s.craft.clear(); s.loot.clear(); s.radio.clear();
+        LocalBody front; front.kind = LB_ROCKY; front.radius = 6.0;
+        front.r = 90; front.g = 255; front.b = 120; front.name = "FRONT";
+        front.x = R * 1.4; front.y = 8.0; front.z = 0.0;      // снаружи, между глазом и звездой
+        LocalBody back;  back.kind = LB_ROCKY; back.radius = 9.0;
+        back.r = 255; back.g = 70; back.b = 70; back.name = "BACK";
+        back.x = -R * 1.4; back.y = 0.0; back.z = 0.0;        // снаружи, но ЗА центром от глаза
+        s.bodies.push_back(front); s.bodies.push_back(back);
+        s.px = R * 2.4; s.py = 0.0; s.pz = 0.0; s.pvx = s.pvy = s.pvz = 0.0;
+        localSetForward(s, -1.0, 0.0, 0.0);
+        std::printf("  [occlusion] FRONT виден на диске, BACK скрыт звездой (за её центром)\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_star_occlusion.bmp");
+    }
+
+    // (9) ДУЛЬНАЯ ВСПЫШКА (звезда 2), кокпит: один выстрел, кадр СРАЗУ после (вспышка жива,
+    //     life=0.05h > dt). Должен быть компактный аддитивный блик у дула, а НЕ синий квадрат.
+    {
+        LocalScene s; buildLocalScene(game, 2, s); s.active = true;
+        LocalInput in; in.fire = true;
+        updateLocalScene(game, s, in, 0.02);
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_muzzle.bmp");
+    }
+
+    // (10) ВНУТРИ ЗВЕЗДЫ (звезда 0), кокпит: глаз глубоко в веществе (D<R) — экран заливается
+    //      плазмой (звезда непрозрачна изнутри). Проверка near-field ветки D≤R.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        s.px = s.starRadius * 0.4; s.py = 0.0; s.pz = 0.0;
+        s.pvx = s.pvy = s.pvz = 0.0;
+        localSetForward(s, 1.0, 0.0, 0.0);
+        std::printf("  [inside-star] D=%.1f < starR=%.1f -> заливка кадра\n", s.px, s.starRadius);
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_star_inside.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);

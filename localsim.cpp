@@ -167,8 +167,11 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         const double turn = LocalCfg::TURN_RATE * dtReal;
         double rx, ry, rz;
         localShipRight(scene, rx, ry, rz);              // текущая ось «право» = pfwd × pup
-        const double yawA   = (in.yawL   ? turn : 0.0) - (in.yawR   ? turn : 0.0);
-        const double pitchA = (in.pitchU ? turn : 0.0) - (in.pitchD ? turn : 0.0);
+        // Мышь-взгляд складывается с клавиатурой. mouseYaw/Pitch — уже готовый угол за кадр
+        // (чувствительность применена в main.cpp), поэтому НЕ множим на turn. Знак приводим к
+        // конвенции yawA (+ = нос влево): нос-вправо (+mouseYaw) => вычитаем.
+        const double yawA   = (in.yawL   ? turn : 0.0) - (in.yawR   ? turn : 0.0) - in.mouseYaw;
+        const double pitchA = (in.pitchU ? turn : 0.0) - (in.pitchD ? turn : 0.0) + in.mousePitch;
         const double rollA  = (in.rollR  ? turn : 0.0) - (in.rollL  ? turn : 0.0); // E банкует вправо
         if (yawA != 0.0)                                // YAW: нос вокруг «вверх».
             rodriguesRotate(scene.pfwdX, scene.pfwdY, scene.pfwdZ, scene.pupX, scene.pupY, scene.pupZ, yawA);
@@ -261,11 +264,15 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         // Дульная вспышка.
         if ((int)scene.fx.size() < LocalCfg::FX_MAX) {
             LocalFx f;
-            f.x = scene.px + dirx * 3.0; f.y = scene.py + diry * 3.0; f.z = scene.pz + dirz * 3.0;
+            // Смещаем ниже линии прицела (как порт орудия), а не в саму камеру по оси взгляда:
+            // иначе вспышка рождается в «глазу» и раздувается на пол-экрана.
+            f.x = scene.px + dirx * 5.0 - scene.pupX * 1.6;
+            f.y = scene.py + diry * 5.0 - scene.pupY * 1.6;
+            f.z = scene.pz + dirz * 5.0 - scene.pupZ * 1.6;
             f.vx = scene.pvx; f.vy = scene.pvy; f.vz = scene.pvz;
-            f.kind = FX_MUZZLE; f.size = 1.6;
+            f.kind = FX_MUZZLE; f.size = 0.8;
             f.life = 0.05; f.maxLife = 0.05;
-            f.r = 160; f.g = 230; f.b = 255; f.a = 255;
+            f.r = 150; f.g = 220; f.b = 255; f.a = 210;
             scene.fx.push_back(f);
         }
     }

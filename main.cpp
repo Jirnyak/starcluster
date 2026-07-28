@@ -551,6 +551,9 @@ int main(int argc, char** argv) {
     bool localDockEdge = false;    // фронт нажатия K за кадр
     bool localTargetEdge = false;  // фронт нажатия Tab за кадр
     bool localFireClick = false;   // одноразовый выстрел по кнопке панели (в этот кадр)
+    bool localFireHeld = false;    // ЛКМ удерживается в кокпите (мышь-взгляд как в шутере)
+    bool relMouseOn = false;       // включён ли SDL relative-mouse (захват указателя в кокпите)
+    const double LOCAL_MOUSE_SENS = 0.0025;   // рад/пиксель для мышь-взгляда
     if (localSmoke) {
         buildLocalScene(game, selectedStar >= 0 ? selectedStar : 0, localScene);
         localScene.active = true;
@@ -730,8 +733,13 @@ int main(int argc, char** argv) {
             }
             if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
                 UI::handleMouseUp(ui);
+                localFireHeld = false;   // отпустили гашетку
             }
-            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT &&
+                localScene.active && !localMapMode) {
+                localFireHeld = true;    // ЛКМ в кокпите = огонь (указатель захвачен мышь-взглядом,
+                                         // панель действий в полёте не кликается — управление с клавиш)
+            } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 UI::HudSelection clickSelection;
                 clickSelection.star = selectedStar;
                 clickSelection.agent = selectedAgent;
@@ -975,6 +983,17 @@ int main(int argc, char** argv) {
             updateCameraRotation(view, SDL_GetKeyboardState(nullptr), std::min(realDt, MAX_CAMERA_DT_SECONDS));
         }
 
+        // Мышь-взгляд (шутер): в кокпите захватываем указатель (relative mode) — курсор скрыт,
+        // читаем только относительные дельты. На карте/в макро — обычный курсор для кликов.
+        {
+            const bool wantRel = localScene.active && !localMapMode && !localSmoke;
+            if (wantRel != relMouseOn) {
+                SDL_SetRelativeMouseMode(wantRel ? SDL_TRUE : SDL_FALSE);
+                relMouseOn = wantRel;
+                int jx = 0, jy = 0; SDL_GetRelativeMouseState(&jx, &jy); // сброс накопленной дельты
+            }
+        }
+
         const double simYearsPerSecond = BASE_SIM_YEARS_PER_SECOND * simSpeed;
         if (localScene.active) {
             // Локальный режим: собираем ввод и продвигаем сцену; макро-симуляция заморожена.
@@ -988,11 +1007,18 @@ int main(int argc, char** argv) {
             li.pitchD = ks[SDL_SCANCODE_F] != 0;
             li.rollL  = ks[SDL_SCANCODE_Q] != 0;
             li.rollR  = ks[SDL_SCANCODE_E] != 0;
-            li.fire   = ks[SDL_SCANCODE_SPACE] != 0 || localFireClick;
+            li.fire   = ks[SDL_SCANCODE_SPACE] != 0 || localFireClick || localFireHeld;
             li.warp   = ks[SDL_SCANCODE_LSHIFT] != 0 || ks[SDL_SCANCODE_RSHIFT] != 0;
             li.mineToggle = localMineEdge;
             li.dock   = localDockEdge;
             li.cycleTarget = localTargetEdge;
+            // Мышь-взгляд: относительные дельты -> доп. поворот за кадр (только в кокпите).
+            if (relMouseOn) {
+                int mdx = 0, mdy = 0;
+                SDL_GetRelativeMouseState(&mdx, &mdy);
+                li.mouseYaw   =  mdx * LOCAL_MOUSE_SENS;   // мышь вправо => нос вправо
+                li.mousePitch = -mdy * LOCAL_MOUSE_SENS;   // мышь вверх  => нос вверх (не инвертирован)
+            }
             if (localSmoke) {
                 // Синтетический ввод для headless-прогона всех веток:
                 li.fire = true;                 // снаряды: спавн/интеграция/коллизии

@@ -175,7 +175,10 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
     // ==================== CASE B: реальная звёздная система ====================
     const ClusterStar& star = game.cluster.stars[starIndex];
     scene.hasStar = true;
-    scene.starRadius = 28.0 + star.metallicity * 10.0;
+    // ГИГАНТСКАЯ звезда: тысячи планет влезают по объёму (R_звезды/R_планеты ~ 20..50 =>
+    // объём ~ 10^4..10^5). Рисуем аналитически (см. localdraw §3), поэтому большой радиус
+    // ничего не стоит по памяти — это просто число. Орбиты ниже кладём СНАРУЖИ поверхности.
+    scene.starRadius = 90.0 + star.metallicity * 45.0;   // 90..135 LU
 
     // Цвет звезды: пульсар — бело-голубой, обычная — тёплый.
     if (star.stellarClass == 1) {
@@ -189,7 +192,9 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
     double prevOrbit = 0.0;
     for (int i = 0; i < planetCount; ++i) {
         LocalBody body;
-        double orbitRadius = (i == 0) ? (170.0 + frand(0.0, 60.0))
+        // Внутренняя орбита — гарантированно снаружи поверхности звезды (×1.55 радиуса),
+        // чтобы планеты не тонули в веществе. Дальше — прежний кеплеровский разлёт.
+        double orbitRadius = (i == 0) ? (scene.starRadius * 1.55 + frand(30.0, 110.0))
                                       : (prevOrbit + frand(160.0, 320.0));
         prevOrbit = orbitRadius;
 
@@ -204,13 +209,13 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         else                           body.kind = LB_GASGIANT;
 
         if (body.kind == LB_ROCKY) {
-            body.radius = frand(6.0, 12.0);
+            body.radius = frand(2.5, 5.0);   // крошечные рядом с гигантской звездой
             double base = 120.0 + star.metallicity * 60.0;   // серый, тонированный металличностью
             body.r = col(base + frand(-10.0, 10.0));
             body.g = col(base + frand(-10.0, 10.0));
             body.b = col(base + frand(-10.0, 10.0));
         } else if (body.kind == LB_GASGIANT) {
-            body.radius = frand(16.0, 30.0);
+            body.radius = frand(7.0, 14.0);   // крупнейшие планеты, но всё равно << звезды
             body.r = col(200.0 + frand(-15.0, 15.0));         // песочно-янтарный
             body.g = col(170.0 + frand(-15.0, 15.0));
             body.b = col(110.0 + frand(-15.0, 15.0));
@@ -220,7 +225,7 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
                 body.ringOuter = body.ringInner * frand(1.4, 1.9);
             }
         } else { // LB_ICE
-            body.radius = frand(8.0, 14.0);
+            body.radius = frand(3.5, 7.0);
             body.r = col(170.0 + frand(-10.0, 10.0));         // бледно-голубой
             body.g = col(200.0 + frand(-10.0, 10.0));
             body.b = col(230.0 + frand(-10.0, 10.0));
@@ -269,7 +274,7 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         rock.orbitVel = (40.0 / std::pow(std::max(1.0, rr), 1.5)) * 0.18; // медленный дрейф пояса (доля кеплера), один знак на весь пояс
         rock.spin = frand(0.0, 6.2831853);
         rock.spinVel = frand(-0.6, 0.6);
-        rock.radius = frand(1.4, 4.0);
+        rock.radius = frand(0.6, 1.8);   // астероиды — пылинки в этом масштабе
         rock.ore = frand(20.0, 120.0);
 
         // Элемент: из resourceFocus системы, иначе первый металлический со сдвига.
@@ -304,7 +309,7 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         LocalBody st;
         st.kind = LB_STATION;
         st.hasMarket = true;
-        st.radius = 5.0;
+        st.radius = 3.0;
         st.orbitRadius = scene.bodies[0].orbitRadius + 40.0;   // на своей орбите рядом с внутренней
         st.orbitPhase  = frand(0.0, 2.0 * M_PI);
         st.orbitSpeed  = 40.0 / std::pow(st.orbitRadius, 1.5);
@@ -463,7 +468,7 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
                 LocalBody m;
                 m.kind = LB_MOON;
                 m.parent = p;
-                m.radius = frand(2.0, 4.5);
+                m.radius = frand(1.0, 2.4);
                 m.orbitRadius = scene.bodies[p].radius + frand(10.0, 26.0) + (moonNo * frand(8.0, 16.0));
                 m.orbitPhase  = frand(0.0, 2.0 * M_PI);
                 m.orbitSpeed  = frand(0.6, 1.4);   // луны обращаются заметно быстрее планет (рад/час)
