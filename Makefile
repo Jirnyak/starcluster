@@ -24,5 +24,13 @@ soak: soak_test.cpp $(LIBSOURCES)
 	$(CXX) soak_test.cpp $(LIBSOURCES) $(SANFLAGS) -std=c++11 $(SDL_CFLAGS) $(SDL_LIBS) -o soak_asan
 	ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 ./soak_asan
 
+# Скриншот-харнес локального режима: рендерит кадры микромира в BMP через ПРОГРАММНЫЙ
+# рендерер SDL (без окна), затем конвертит в PNG через macOS `sips`. Камера — тем же
+# buildLocalCamera, что и игра. Артефакты (shot_test, *.bmp, *.png) не коммитятся.
+shots: shot_test.cpp $(LIBSOURCES)
+	$(CXX) shot_test.cpp $(LIBSOURCES) -O2 -std=c++11 $(SDL_CFLAGS) $(SDL_LIBS) -o shot_test
+	SDL_VIDEODRIVER=dummy ./shot_test
+	@for f in shot_*.bmp; do sips -s format png "$$f" --out "$${f%.bmp}.png" >/dev/null 2>&1 && echo "png: $${f%.bmp}.png"; done
+
 clean:
-	rm -rf game game_asan soak_asan *.dSYM
+	rm -rf game game_asan soak_asan shot_test *.dSYM shot_*.bmp shot_*.png

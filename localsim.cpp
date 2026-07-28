@@ -5,6 +5,22 @@
 #include <cstdint>
 #include <random>
 
+// Родригес: поворот вектора (vx,vy,vz) НА МЕСТЕ вокруг ЕДИНИЧНОЙ оси (kx,ky,kz) на угол a.
+//   v' = v·cos a + (k×v)·sin a + k·(k·v)·(1−cos a)
+// Ось считается единичной (базис корабля ре-ортонормируется каждый кадр в updateLocalScene).
+static void rodriguesRotate(double& vx, double& vy, double& vz,
+                            double kx, double ky, double kz, double a) {
+    const double c = std::cos(a), s = std::sin(a), omc = 1.0 - c;
+    const double dot = kx * vx + ky * vy + kz * vz;
+    const double cx = ky * vz - kz * vy;   // k × v
+    const double cy = kz * vx - kx * vz;
+    const double cz = kx * vy - ky * vx;
+    const double nx = vx * c + cx * s + kx * dot * omc;
+    const double ny = vy * c + cy * s + ky * dot * omc;
+    const double nz = vz * c + cz * s + kz * dot * omc;
+    vx = nx; vy = ny; vz = nz;
+}
+
 // ============================================================================
 //  Один кадр локальной сцены: полёт игрока, орбиты, стрельба, умный ИИ NPC, бой
 //  (со щитами и убиваемым игроком), дрейф пояса, лут, частицы-juice, добыча руды
@@ -141,17 +157,50 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         }
     };
 
-    // ---- Поворот и ориентация носа (раз в кадр, по реальному времени) ----
-    if (in.yawL)   scene.pyaw   += LocalCfg::TURN_RATE * dtReal;
-    if (in.yawR)   scene.pyaw   -= LocalCfg::TURN_RATE * dtReal;
-    if (in.pitchU) scene.ppitch += LocalCfg::TURN_RATE * dtReal;
-    if (in.pitchD) scene.ppitch -= LocalCfg::TURN_RATE * dtReal;
-    if (scene.ppitch < -1.3) scene.ppitch = -1.3;
-    if (scene.ppitch >  1.3) scene.ppitch =  1.3;
-    double cpit = std::cos(scene.ppitch);
-    double dirx = cpit * std::cos(scene.pyaw);
-    double diry = cpit * std::sin(scene.pyaw);
-    double dirz = std::sin(scene.ppitch);
+    // ---- Ориентация корабля: ТЕЛО-ОТНОСИТЕЛЬНОЕ вращение базиса (полное 3D, по РЕАЛЬНОМУ времени) ----
+    //  yaw (A/D) — вокруг pup; pitch (R/F) — вокруг right (крутит И нос, И «вверх»); roll (Q/E) — вокруг pfwd.
+    //  Знаки: yawL=+, pitchU=+ — как в прежней Эйлеровой схеме. Крен: rollR (E) = +TURN_RATE => КРЕН ВПРАВО
+    //  (правое крыло вниз: положительный поворот pup вокруг pfwd в правой тройке right=pfwd×pup); rollL (Q) = −.
+    //  Клампа тангажа НЕТ — полное 3D, за ориентацию отвечает крен. Базис ре-ортонормируется каждый кадр.
+    //  TURN_RATE — рад/РЕАЛЬНУЮ секунду (не зависит от warp), поэтому умножаем на dtReal, а не dtHours.
+    {
+        const double turn = LocalCfg::TURN_RATE * dtReal;
+        double rx, ry, rz;
+        localShipRight(scene, rx, ry, rz);              // текущая ось «право» = pfwd × pup
+        const double yawA   = (in.yawL   ? turn : 0.0) - (in.yawR   ? turn : 0.0);
+        const double pitchA = (in.pitchU ? turn : 0.0) - (in.pitchD ? turn : 0.0);
+        const double rollA  = (in.rollR  ? turn : 0.0) - (in.rollL  ? turn : 0.0); // E банкует вправо
+        if (yawA != 0.0)                                // YAW: нос вокруг «вверх».
+            rodriguesRotate(scene.pfwdX, scene.pfwdY, scene.pfwdZ, scene.pupX, scene.pupY, scene.pupZ, yawA);
+        if (pitchA != 0.0) {                            // PITCH: и нос, и «вверх» вокруг «право».
+            rodriguesRotate(scene.pfwdX, scene.pfwdY, scene.pfwdZ, rx, ry, rz, pitchA);
+            rodriguesRotate(scene.pupX,  scene.pupY,  scene.pupZ,  rx, ry, rz, pitchA);
+        }
+        if (rollA != 0.0)                               // ROLL: «вверх» вокруг носа.
+            rodriguesRotate(scene.pupX, scene.pupY, scene.pupZ, scene.pfwdX, scene.pfwdY, scene.pfwdZ, rollA);
+
+        // Ре-ортонормировка (Грам–Шмидт) против численного дрейфа; защита от вырождения.
+        double fl = std::sqrt(scene.pfwdX*scene.pfwdX + scene.pfwdY*scene.pfwdY + scene.pfwdZ*scene.pfwdZ);
+        if (fl < 1e-9) { scene.pfwdX = 1.0; scene.pfwdY = 0.0; scene.pfwdZ = 0.0; fl = 1.0; }
+        const double finv = 1.0 / fl;
+        scene.pfwdX *= finv; scene.pfwdY *= finv; scene.pfwdZ *= finv;
+        double d = scene.pupX*scene.pfwdX + scene.pupY*scene.pfwdY + scene.pupZ*scene.pfwdZ;
+        scene.pupX -= d * scene.pfwdX; scene.pupY -= d * scene.pfwdY; scene.pupZ -= d * scene.pfwdZ;
+        double ul = std::sqrt(scene.pupX*scene.pupX + scene.pupY*scene.pupY + scene.pupZ*scene.pupZ);
+        if (ul < 1e-9) {                                // pup схлопнулся на pfwd — берём устойчивый ⟂ носу
+            if (std::fabs(scene.pfwdX) < 0.9) { scene.pupX = 1.0; scene.pupY = 0.0; scene.pupZ = 0.0; }
+            else                              { scene.pupX = 0.0; scene.pupY = 1.0; scene.pupZ = 0.0; }
+            d = scene.pupX*scene.pfwdX + scene.pupY*scene.pfwdY + scene.pupZ*scene.pfwdZ;
+            scene.pupX -= d * scene.pfwdX; scene.pupY -= d * scene.pfwdY; scene.pupZ -= d * scene.pfwdZ;
+            ul = std::sqrt(scene.pupX*scene.pupX + scene.pupY*scene.pupY + scene.pupZ*scene.pupZ);
+        }
+        const double uinv = 1.0 / ul;
+        scene.pupX *= uinv; scene.pupY *= uinv; scene.pupZ *= uinv;
+    }
+
+    // Нос корабля (единичный) — источник для тяги/огня/дульной вспышки/выхлопа ниже.
+    // Имена dirx/diry/dirz СОХРАНЕНЫ, чтобы весь низлежащий код работал без изменений.
+    double dirx = scene.pfwdX, diry = scene.pfwdY, dirz = scene.pfwdZ;
 
     // ---- Орбиты тел (раз в кадр) ----
     //  Луна (b.parent>=0) позиционируется ОТНОСИТЕЛЬНО родителя. Луны в векторе идут

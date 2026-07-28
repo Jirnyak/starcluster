@@ -1,7 +1,9 @@
 #pragma once
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "camera.h"   // View3D / CameraBasis / проекция (нужны buildLocalCamera ниже)
 
 // ============================================================================
 //  Локальный режим полёта ("микромир").
@@ -26,9 +28,7 @@
 // ============================================================================
 
 class Game;
-struct View3D;
-struct CameraBasis;
-struct SDL_Renderer;
+struct SDL_Renderer;   // View3D/CameraBasis приходят из camera.h (см. include выше)
 
 // ---- Тюнинг (общий для gen/sim/draw; main.cpp тоже читает HOURS/ WARP) ----
 namespace LocalCfg {
@@ -216,7 +216,14 @@ struct LocalScene {
     // Игрок в локальных координатах:
     double px = 0.0, py = 0.0, pz = 0.0;
     double pvx = 0.0, pvy = 0.0, pvz = 0.0;
-    double pyaw = 0.0, ppitch = 0.0;    // ориентация носа (yaw в плоскости XY, pitch к оси Z)
+    // Ориентация корабля — ТЕЛО-ОТНОСИТЕЛЬНЫЙ ортонормированный базис (полное 3D, 3 оси,
+    // как в Elite). pfwd — нос (куда тяга/оружие/выхлоп), pup — «крыша кабины».
+    // right = pfwd × pup (см. localShipRight). Управление вращает этот базис ТЕЛЕСНО:
+    //   yaw  (A/D) — вокруг pup, pitch (R/F) — вокруг right, roll (Q/E) — вокруг pfwd.
+    // localsim ре-ортонормирует базис каждый кадр (защита от дрейфа). Экранный курс
+    // для радара/карты выводится из pfwd (atan2). НИКАКИХ pyaw/ppitch — гимбал-лока нет.
+    double pfwdX = 1.0, pfwdY = 0.0, pfwdZ = 0.0; // нос (единичный)
+    double pupX  = 0.0, pupY  = 0.0, pupZ  = 1.0; // «вверх» корабля (единичный, ⟂ pfwd)
     double fireCooldown = 0.0;
     double playerMaxSpeed = LocalCfg::PLAYER_MAXSPEED; // из ship.speed, но с локальным полом
     double playerAccel = LocalCfg::PLAYER_ACCEL;
@@ -248,16 +255,79 @@ struct LocalScene {
 struct LocalInput {
     bool thrust = false;      // W  — тяга по носу
     bool brake  = false;      // S  — гашение скорости (тяга против вектора v)
-    bool yawL   = false;      // A
-    bool yawR   = false;      // D
-    bool pitchU = false;      // R
-    bool pitchD = false;      // F
+    bool yawL   = false;      // A  — рыскание влево (вокруг pup)
+    bool yawR   = false;      // D  — рыскание вправо
+    bool pitchU = false;      // R  — тангаж вверх (вокруг right)
+    bool pitchD = false;      // F  — тангаж вниз
+    bool rollL  = false;      // Q  — крен влево (вокруг pfwd)
+    bool rollR  = false;      // E  — крен вправо
     bool fire   = false;      // Space — огонь
     bool warp   = false;      // Shift — ускорение времени (удержание)
-    bool mineToggle = false;  // E (edge) — вкл/выкл добычу ближайшего астероида
+    bool mineToggle = false;  // M (edge) — вкл/выкл добычу ближайшего астероида
     bool dock   = false;      // K (edge) — стыковка с телом в зоне
     bool cycleTarget = false; // Tab (edge) — переключить залоченную HUD-цель
 };
+
+// ---------------------------------------------------------------------------
+//  Утилиты ориентации корабля (общие для gen/sim/draw/тестов — единая конвенция).
+// ---------------------------------------------------------------------------
+
+// right = pfwd × pup (правая тройка; согласована с makeCameraFrameBasis в camera.h).
+inline void localShipRight(const LocalScene& s, double& rx, double& ry, double& rz) {
+    rx = s.pfwdY * s.pupZ - s.pfwdZ * s.pupY;
+    ry = s.pfwdZ * s.pupX - s.pfwdX * s.pupZ;
+    rz = s.pfwdX * s.pupY - s.pfwdY * s.pupX;
+}
+
+// Направить нос корабля по вектору dir (не обязательно единичному) и пересобрать
+// ортонормированный базис, держа «вверх» максимально близким к мировому +Z.
+// Для генерации стартовой ориентации, а также для скриптов/soak-теста (наведение).
+inline void localSetForward(LocalScene& s, double dx, double dy, double dz) {
+    double fl = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (fl < 1e-9) { dx = 1.0; dy = 0.0; dz = 0.0; fl = 1.0; }
+    dx /= fl; dy /= fl; dz /= fl;
+    // предпочтительный «вверх» — мировой +Z, спроецированный ⟂ носу
+    double ux = 0.0, uy = 0.0, uz = 1.0;
+    double d = ux * dx + uy * dy + uz * dz;
+    ux -= d * dx; uy -= d * dy; uz -= d * dz;
+    double ul = std::sqrt(ux * ux + uy * uy + uz * uz);
+    if (ul < 1e-6) {              // нос почти вертикален — берём мировой +Y как up
+        ux = 0.0; uy = 1.0; uz = 0.0;
+        d = ux * dx + uy * dy + uz * dz;
+        ux -= d * dx; uy -= d * dy; uz -= d * dz;
+        ul = std::sqrt(ux * ux + uy * uy + uz * uz);
+    }
+    ux /= ul; uy /= ul; uz /= ul;
+    s.pfwdX = dx; s.pfwdY = dy; s.pfwdZ = dz;
+    s.pupX = ux; s.pupY = uy; s.pupZ = uz;
+}
+
+// Построить камеру локального режима — ЕДИНЫЙ источник для игры (main.cpp) и
+// скриншот-харнеса, чтобы кадр в тесте был ПОБИТОВО как в игре.
+//   mapMode==false  =>  3D-КОКПИТ (вид «из глаз» корабля): перспектива, ГЛАЗ камеры
+//                       ровно в позиции корабля, взгляд вдоль носа (pfwd), крен через
+//                       pup. Свой корабль при этом не рисуется (см. localdraw §8).
+//                       Фокус = winW*fovScale (fovScale — оптический зум/FOV на +/-).
+//   mapMode==true   =>  орто вид-«карта» сверху: центр = игрок, scale = mapZoom пикс/LU.
+// winH зарезервирован (проекция берёт центр экрана сама); НЕ трогает глобальный rng.
+inline void buildLocalCamera(const LocalScene& s, int winW, int winH,
+                             bool mapMode, double fovScale, double mapZoom,
+                             View3D& view, CameraBasis& basis) {
+    (void)winH;
+    view = View3D();
+    if (mapMode) {
+        view.perspective = false;
+        view.centerX = s.px; view.centerY = s.py; view.centerZ = s.pz;
+        view.scale = mapZoom;
+        basis = makeCameraBasis(view);
+    } else {
+        view.perspective = true;
+        view.focal = double(winW) * fovScale;
+        view.nearPlane = 0.5;
+        view.centerX = s.px; view.centerY = s.py; view.centerZ = s.pz; // глаз = корабль
+        basis = makeCameraFrameBasis(s.pfwdX, s.pfwdY, s.pfwdZ, s.pupX, s.pupY, s.pupZ);
+    }
+}
 
 // ---------------------------------------------------------------------------
 //  Контракт (реализации в localgen.cpp / localsim.cpp / localdraw.cpp)
@@ -277,8 +347,16 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene);
 // Возвращает индекс звезды для стыковки (открыть рынок) в этом кадре, иначе -1.
 int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double dtReal);
 
-// Рисует сцену и локальный HUD. Камера (view/basis) приходит из main.cpp
-// (центр = позиция игрока, ориентация фиксирована сверху; масштаб = зум).
+// Рисует сцену и локальный HUD. Камера (view/basis) строится buildLocalCamera:
+//  • 3D-КОКПИТ: view.perspective==true, basis из makeCameraFrameBasis по ориентации
+//    корабля; ГЛАЗ камеры = позиция корабля, взгляд вдоль носа. Свой корабль НЕ
+//    рисуется — вместо него прицел-«мушка» по курсу + маркер вектора скорости.
+//    Точки за ближней плоскостью помечаются pp.behind.
+//  • Карта (переключатель C): view.perspective==false, верхний ортогональный вид
+//    (свой корабль рисуется стрелкой — это тактический вид сверху).
+// Фон — LOD-скайбокс реальных звёзд кластера (projectDirectionWithBasis): направление
+// на звезду = normalize(star.pos - anchor.pos) в координатах кластера (anchor =
+// game.cluster.stars[scene.starIndex]), яркость/размер по видимой звёздной величине.
 // Тряска экрана (scene.shake) применяется ВНУТРИ draw. Переиспользует
 // camera.h-проекцию и render2d.h-примитивы (namespace UI).
 void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene& scene,

@@ -1,5 +1,6 @@
 #include "local.h"
 #include "game.h"
+#include "cluster.h"
 #include "camera.h"
 #include "render2d.h"
 #include <SDL.h>
@@ -7,12 +8,28 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 using namespace UI;
 
 // ============================================================================
-//  localdraw.cpp — рендер локальной сцены и HUD (namespace UI-примитивы +
-//  camera.h-проекция). Камера сверху (yaw=pitch=0), центр = позиция игрока,
-//  scale = пикселей на LU. Порядок рисования — художником, сзади вперёд.
+//  localdraw.cpp — рендер локальной сцены и HUD.
+//
+//  Камера/базис приходят из main.cpp (см. local.h::renderLocalScene):
+//   • 3D-ПОЛЁТ (по умолчанию): view.perspective==true, basis построен
+//     makeCameraFrameBasis из тело-относительного базиса корабля (chase-cam
+//     позади/над носом). Проекция перспективная (делим на глубину); точки за
+//     ближней плоскостью помечены pp.behind. Экранный радиус тела ~ R*focal/depth.
+//   • КАРТА (переключатель C): view.perspective==false — верхний ортогональный
+//     вид (как прежний top-down). Экранный радиус ~ R*scale.
+//
+//  Фон в 3D — LOD-скайбокс реальных звёзд кластера (projectDirectionWithBasis):
+//  направление на звезду = normalize(star.pos - anchor) в координатах кластера;
+//  трансляция пренебрежима, важна лишь ориентация камеры => при повороте/крене
+//  корабля скайбокс поворачивается корректно. Якорь — текущая звезда, в глубоком
+//  космосе — центроид кластера. В режиме карты фон — дешёвая россыпь тусклых точек.
+//
+//  Порядок рисования — художником: дальнее раньше ближнего.
+//  Детерминизм: глобальный rng здесь не трогается (только хеши от индексов/окна).
 // ============================================================================
 
 namespace {
@@ -35,6 +52,18 @@ SDL_Color fade(uint8_t r, uint8_t g, uint8_t b, uint8_t a, double f) {
 // Приблизительная ширина строки для центрирования (глиф 5 + 1 пробел = 6 * scale).
 int textWidth(const std::string& s, int scale) {
     return int(s.size()) * 6 * scale;
+}
+
+// Экранный радиус мирового радиуса R по режиму: перспектива => R*focal/depth
+// (depth = дистанция перед камерой, >near); орто => R*scale. Возвращает СЫРОЙ px
+// (клэмпы — на стороне вызова, как раньше по типам объектов).
+int radiusPx(double R, double depth, const View3D& view) {
+    if (view.perspective) {
+        if (depth <= view.nearPlane) return 0;
+        double v = R * view.focal / depth;
+        return v < 0.0 ? 0 : int(v);
+    }
+    return int(R * view.scale);
 }
 
 // Заливка треугольника через edge-функции по bounding box (не зависит от обхода).
@@ -74,22 +103,32 @@ void headingTriangle(SDL_Renderer* rd, int cx, int cy, double sa, double len, SD
     }
 }
 
-// Маркер у края экрана, указывающий на off-screen цель (wx,wy,wz).
+// Маркер у края экрана, указывающий на off-screen цель (wx,wy,wz). Учитывает
+// перспективу: цель за камерой (pp.behind) — пеленг берётся из осей камеры.
 void drawEdgeMarker(SDL_Renderer* rd, int cx, int cy, int winW, int winH,
                     double wx, double wy, double wz,
                     const View3D& view, const CameraBasis& basis, SDL_Color col) {
     ProjectedPoint p = projectPointWithBasis(wx, wy, wz, winW, winH, view, basis);
-    if (p.x >= 0 && p.x <= winW && p.y >= 0 && p.y <= winH) return; // на экране — маркер не нужен
-    double dx = double(p.x - cx), dy = double(p.y - cy);
-    if (std::abs(dx) < 1e-6 && std::abs(dy) < 1e-6) return;
+    double sdx, sdy;
+    if (view.perspective && p.behind) {
+        // Цель за камерой — экранная проекция невалидна; берём направление из осей
+        // камеры (право/вверх). Экран Y вниз => sdy = -camY.
+        sdx = p.camX; sdy = -p.camY;
+        if (std::abs(sdx) < 1e-9 && std::abs(sdy) < 1e-9) sdy = 1.0; // строго позади — вниз
+    } else {
+        if (!p.behind && p.x >= 0 && p.x <= winW && p.y >= 0 && p.y <= winH) return; // на экране
+        sdx = double(p.x - cx);
+        sdy = double(p.y - cy);
+        if (std::abs(sdx) < 1e-6 && std::abs(sdy) < 1e-6) return;
+    }
     double margin = 28.0;
     double maxX = std::max(10.0, winW * 0.5 - margin);
     double maxY = std::max(10.0, winH * 0.5 - margin);
-    double ax = std::abs(dx), ay = std::abs(dy);
+    double ax = std::abs(sdx), ay = std::abs(sdy);
     double t = (ax * maxY > ay * maxX) ? (maxX / std::max(1.0, ax)) : (maxY / std::max(1.0, ay));
-    int ex = cx + int(dx * t);
-    int ey = cy + int(dy * t);
-    headingTriangle(rd, ex, ey, std::atan2(dy, dx), 9.0, col, true);
+    int ex = cx + int(sdx * t);
+    int ey = cy + int(sdy * t);
+    headingTriangle(rd, ex, ey, std::atan2(sdy, sdx), 9.0, col, true);
 }
 
 // Цвет радиоисточника по типу (общий для мировых маркеров и радара).
@@ -103,6 +142,19 @@ SDL_Color radioColor(int kind) {
     }
 }
 
+// Цвет далёкой звезды скайбокса по спектральному классу/индексу (детерминированно).
+SDL_Color skyStarColor(unsigned i, int stellarClass) {
+    if (stellarClass == 1) return rgba(205, 224, 255, 255); // нейтронная/пульсар — голубовато-белая
+    unsigned h = (i + 1u) * 2654435761u; h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
+    switch (h % 5u) {
+        case 0:  return rgba(255, 214, 170, 255); // тёплая (K/M)
+        case 1:  return rgba(255, 236, 205, 255); // жёлто-белая (G)
+        case 2:  return rgba(235, 240, 248, 255); // белая (F)
+        case 3:  return rgba(200, 216, 255, 255); // бело-голубая (A)
+        default: return rgba(178, 200, 255, 255); // голубая (B)
+    }
+}
+
 } // namespace
 
 void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene& scene,
@@ -110,19 +162,40 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     const int cx = winW / 2, cy = winH / 2;
 
-    // (0) ТРЯСКА ЭКРАНА: смещаем ЛОКАЛЬНУЮ копию центра камеры, чтобы дрожал весь
-    //     мир; HUD рисуется в абсолютных координатах и не трясётся. Фаза — fxClock
-    //     (реальные секунды, независимы от warp). basis пересчитывается для нового
-    //     центра, поэтому входной basis0 не используется.
+    // (0) ТРЯСКА ЭКРАНА. Перспектива: угловое дрожание камеры (панорама/тангаж на
+    //     малый угол) — сдвиг ~одинаков на любой глубине, глаз не двигаем. Орто:
+    //     смещаем центр камеры в LU (как прежний top-down). Фаза — fxClock (реальные
+    //     секунды, независимы от warp).
     View3D view = view0;
-    {
+    CameraBasis basis = basis0;
+    if (view.perspective) {
+        if (scene.shake > 0.0) {
+            double ox = scene.shake * std::sin(scene.fxClock * 90.0);
+            double oy = scene.shake * std::cos(scene.fxClock * 70.0);
+            double yawJ   = ox / std::max(1.0, view.focal); // сдвиг ~ox px
+            double pitchJ = oy / std::max(1.0, view.focal);
+            double nfx = basis.fX + basis.rX * yawJ + basis.uX * pitchJ;
+            double nfy = basis.fY + basis.rY * yawJ + basis.uY * pitchJ;
+            double nfz = basis.fZ + basis.rZ * yawJ + basis.uZ * pitchJ;
+            basis = makeCameraFrameBasis(nfx, nfy, nfz, basis.uX, basis.uY, basis.uZ);
+        }
+    } else {
         double ox = scene.shake * std::sin(scene.fxClock * 90.0);
         double oy = scene.shake * std::cos(scene.fxClock * 70.0);
         view.centerX += ox / std::max(1e-6, view.scale);
         view.centerY -= oy / std::max(1e-6, view.scale);
+        basis = makeCameraBasis(view);
     }
-    const CameraBasis basis = makeCameraBasis(view);
-    (void)basis0;
+
+    // Глубинный фейд сцены: в перспективе — мягкий (глубина достигает тысяч LU),
+    // в орто — прежний depthFade (сохраняет вид карты).
+    auto sceneFade = [&](double depth) -> double {
+        if (view.perspective) {
+            double v = 1.15 - std::abs(depth) / 1700.0;
+            return v < 0.30 ? 0.30 : (v > 1.0 ? 1.0 : v);
+        }
+        return depthFade(depth);
+    };
 
     // (0b) ТУМАННОСТЬ: слабый полноэкранный тон (в этом проходе неактивен — strength=0).
     if (scene.nebulaStrength > 0.0) {
@@ -143,22 +216,77 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         }
     }
 
-    // (1) ФОН: детерминированное рассеяние тусклых звёзд (без глобального rng).
-    for (int i = 0; i < 60; ++i) {
-        unsigned h = (unsigned)(i + 1) * 2654435761u;
-        h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
-        unsigned hy = h * 668265263u; hy ^= hy >> 15;
-        int sx = int(h % (unsigned)std::max(1, winW));
-        int sy = int(hy % (unsigned)std::max(1, winH));
-        int b = 44 + int((h >> 3) % 46u);
-        fillRect(renderer, sx, sy, 1, 1, rgba(b, b, b + 10, 150));
+    // (1) ФОН.
+    if (view.perspective) {
+        // LOD-СКАЙБОКС: реальные звёзды кластера на «небесной сфере». Направление на
+        // звезду = normalize(star.pos - anchor) в координатах кластера. Проецируем как
+        // точку на бесконечности (важна только ориентация камеры). LOD: яркость/размер
+        // ~ обратно дистанции (нормировано на среднюю дистанцию от якоря).
+        const std::vector<ClusterStar>& cs = game.cluster.stars;
+        const size_t N = cs.size();
+        if (N > 0) {
+            double ax, ay, az;
+            int anchorIdx = -1;
+            if (scene.starIndex >= 0 && (size_t)scene.starIndex < N) {
+                ax = cs[scene.starIndex].x; ay = cs[scene.starIndex].y; az = cs[scene.starIndex].z;
+                anchorIdx = scene.starIndex;
+            } else {
+                double sx = 0.0, sy = 0.0, sz = 0.0; // глубокий космос — центроид кластера
+                for (size_t i = 0; i < N; ++i) { sx += cs[i].x; sy += cs[i].y; sz += cs[i].z; }
+                ax = sx / double(N); ay = sy / double(N); az = sz / double(N);
+            }
+            double sumd = 0.0; int cnt = 0;
+            for (size_t i = 0; i < N; ++i) {
+                if ((int)i == anchorIdx) continue;
+                double dx = cs[i].x - ax, dy = cs[i].y - ay, dz = cs[i].z - az;
+                sumd += std::sqrt(dx * dx + dy * dy + dz * dz); ++cnt;
+            }
+            double meanD = (cnt > 0) ? sumd / double(cnt) : 1.0;
+            if (meanD < 1e-6) meanD = 1.0;
+            for (size_t i = 0; i < N; ++i) {
+                if ((int)i == anchorIdx) continue;
+                double dx = cs[i].x - ax, dy = cs[i].y - ay, dz = cs[i].z - az;
+                double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+                if (dist < 1e-6) continue;
+                double inv = 1.0 / dist;
+                ProjectedPoint p = projectDirectionWithBasis(dx * inv, dy * inv, dz * inv,
+                                                             winW, winH, view, basis);
+                if (p.behind) continue;
+                if (p.x < -2 || p.x > winW + 2 || p.y < -2 || p.y > winH + 2) continue;
+                double mag = meanD / dist;               // >1 ближе среднего
+                if (mag > 3.0) mag = 3.0;
+                int a = 40 + int(70.0 * mag); if (a > 235) a = 235;
+                SDL_Color col = skyStarColor((unsigned)i, cs[i].stellarClass);
+                col.a = (Uint8)a;
+                if (mag > 2.4) {                          // яркая близкая — крестик
+                    fillRect(renderer, p.x - 1, p.y, 3, 1, col);
+                    fillRect(renderer, p.x, p.y - 1, 1, 3, col);
+                } else if (mag > 1.6) {
+                    fillRect(renderer, p.x, p.y, 2, 2, col);
+                } else {
+                    fillRect(renderer, p.x, p.y, 1, 1, col);
+                }
+            }
+        }
+    } else {
+        // Карта: детерминированная россыпь тусклых звёзд (без глобального rng).
+        for (int i = 0; i < 60; ++i) {
+            unsigned h = (unsigned)(i + 1) * 2654435761u;
+            h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
+            unsigned hy = h * 668265263u; hy ^= hy >> 15;
+            int sx = int(h % (unsigned)std::max(1, winW));
+            int sy = int(hy % (unsigned)std::max(1, winH));
+            int b = 44 + int((h >> 3) % 46u);
+            fillRect(renderer, sx, sy, 1, 1, rgba(b, b, b + 10, 150));
+        }
     }
 
     // Звезда в мировом центре (0,0,0).
     ProjectedPoint sp = projectPointWithBasis(0.0, 0.0, 0.0, winW, winH, view, basis);
 
-    // (2) ОРБИТАЛЬНЫЕ КОЛЬЦА (только если есть звезда).
-    if (scene.hasStar) {
+    // (2) ОРБИТАЛЬНЫЕ КОЛЬЦА — плоские окружности, осмысленны только в орто-карте
+    //     (в перспективе орбита проецируется в эллипс; пропускаем).
+    if (scene.hasStar && !view.perspective) {
         SDL_Color ring = rgba(70, 90, 120, 90);
         for (size_t i = 0; i < scene.bodies.size(); ++i) {
             int rr = int(scene.bodies[i].orbitRadius * view.scale);
@@ -168,8 +296,8 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     }
 
     // (3) ЗВЕЗДА + свечение (радиус ореола слегка пульсирует по fxClock).
-    if (scene.hasStar) {
-        int sr = std::min(2000, std::max(3, int(scene.starRadius * view.scale)));
+    if (scene.hasStar && !(view.perspective && sp.behind)) {
+        int sr = std::min(2000, std::max(3, radiusPx(scene.starRadius, sp.depth, view)));
         double gp = 1.0 + 0.04 * std::sin(scene.fxClock * 2.0);
         fillCircle(renderer, sp.x, sp.y, sr, rgba(scene.starR, scene.starG, scene.starB, 255));
         strokeCircle(renderer, sp.x, sp.y, std::min(2600, int(sr * 1.4 * gp)),
@@ -178,7 +306,7 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                      rgba(scene.starR, scene.starG, scene.starB, 34));
     }
 
-    // (4) ТЕЛА (планеты/станции), отсортированные по глубине (сзади вперёд).
+    // (4) ТЕЛА (планеты/станции), отсортированные по глубине (дальнее раньше ближнего).
     {
         std::vector<int> order;
         std::vector<double> depth(scene.bodies.size(), 0.0);
@@ -188,38 +316,40 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             depth[i] = projectPointWithBasis(bd.x, bd.y, bd.z, winW, winH, view, basis).depth;
             order.push_back((int)i);
         }
-        std::sort(order.begin(), order.end(),
-                  [&](int a, int b) { return depth[a] < depth[b]; });
+        std::sort(order.begin(), order.end(), [&](int a, int b) {
+            return view.perspective ? (depth[a] > depth[b]) : (depth[a] < depth[b]);
+        });
         for (size_t k = 0; k < order.size(); ++k) {
             const LocalBody& bd = scene.bodies[order[k]];
             ProjectedPoint p = projectPointWithBasis(bd.x, bd.y, bd.z, winW, winH, view, basis);
+            if (view.perspective && p.behind) continue;
             if (p.x < -200 || p.x > winW + 200 || p.y < -200 || p.y > winH + 200) continue;
-            double f = depthFade(p.depth);
-            // (4a) КОЛЬЦА газового гиганта: несколько концентрических окружностей ПОЗАДИ
-            //      заливки планеты (планета рисуется поверх и перекрывает ближний край).
-            //      Плоский top-down вид; внешние кольца бледнее. Тинт из цвета тела.
-            if (bd.ringOuter > 0.0) {
-                int ri = std::max(1, int(bd.ringInner * view.scale));
-                int ro = int(bd.ringOuter * view.scale);
-                if (ro > ri && ro < 4000) {
-                    const int nRings = 4;
-                    for (int rr = 0; rr < nRings; ++rr) {
-                        double tt = (nRings > 1) ? double(rr) / (nRings - 1) : 0.0;
-                        int rad = ri + int((ro - ri) * tt);
-                        int a = int(150.0 - 90.0 * tt); // 150 (внутр.) -> 60 (внешн.)
-                        strokeCircle(renderer, p.x, p.y, rad, fade(bd.r, bd.g, bd.b, a, f));
+            double f = sceneFade(p.depth);
+            if (!view.perspective) {
+                // (4a) КОЛЬЦА газового гиганта — концентрические окружности (плоский вид).
+                if (bd.ringOuter > 0.0) {
+                    int ri = std::max(1, int(bd.ringInner * view.scale));
+                    int ro = int(bd.ringOuter * view.scale);
+                    if (ro > ri && ro < 4000) {
+                        const int nRings = 4;
+                        for (int rr = 0; rr < nRings; ++rr) {
+                            double tt = (nRings > 1) ? double(rr) / (nRings - 1) : 0.0;
+                            int rad = ri + int((ro - ri) * tt);
+                            int a = int(150.0 - 90.0 * tt); // 150 (внутр.) -> 60 (внешн.)
+                            strokeCircle(renderer, p.x, p.y, rad, fade(bd.r, bd.g, bd.b, a, f));
+                        }
                     }
                 }
+                // (4b) ОРБИТА ЛУНЫ: слабое кольцо вокруг РОДИТЕЛЯ на радиусе орбиты луны.
+                if (bd.kind == LB_MOON && bd.parent >= 0 && (size_t)bd.parent < scene.bodies.size()) {
+                    const LocalBody& par = scene.bodies[bd.parent];
+                    ProjectedPoint pc = projectPointWithBasis(par.x, par.y, par.z, winW, winH, view, basis);
+                    int orad = int(bd.orbitRadius * view.scale);
+                    if (orad > 2 && orad < 4000)
+                        strokeCircle(renderer, pc.x, pc.y, orad, fade(bd.r, bd.g, bd.b, 40, f));
+                }
             }
-            // (4b) ОРБИТА ЛУНЫ: очень слабое кольцо вокруг РОДИТЕЛЯ на радиусе орбиты луны.
-            if (bd.kind == LB_MOON && bd.parent >= 0 && (size_t)bd.parent < scene.bodies.size()) {
-                const LocalBody& par = scene.bodies[bd.parent];
-                ProjectedPoint pc = projectPointWithBasis(par.x, par.y, par.z, winW, winH, view, basis);
-                int orad = int(bd.orbitRadius * view.scale);
-                if (orad > 2 && orad < 4000)
-                    strokeCircle(renderer, pc.x, pc.y, orad, fade(bd.r, bd.g, bd.b, 40, f));
-            }
-            int r = std::min(1200, std::max(2, int(bd.radius * view.scale)));
+            int r = std::min(1200, std::max(2, radiusPx(bd.radius, p.depth, view)));
             fillCircle(renderer, p.x, p.y, r, fade(bd.r, bd.g, bd.b, 255, f));
             if (bd.hasMarket) {
                 strokeCircle(renderer, p.x, p.y, r + 3, rgba(P.green.r, P.green.g, P.green.b, 150));
@@ -238,9 +368,10 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     for (size_t i = 0; i < scene.rocks.size(); ++i) {
         const LocalRock& rk = scene.rocks[i];
         ProjectedPoint p = projectPointWithBasis(rk.x, rk.y, rk.z, winW, winH, view, basis);
+        if (view.perspective && p.behind) continue;
         if (p.x < -100 || p.x > winW + 100 || p.y < -100 || p.y > winH + 100) continue;
-        double f = depthFade(p.depth);
-        int r = std::min(400, std::max(1, int(rk.radius * view.scale)));
+        double f = sceneFade(p.depth);
+        int r = std::min(400, std::max(1, radiusPx(rk.radius, p.depth, view)));
         fillCircle(renderer, p.x, p.y, r, fade(rk.r, rk.g, rk.b, 255, f));
         if ((int)i == scene.miningRock) {
             strokeCircle(renderer, p.x, p.y, r + 4, P.amber);
@@ -252,8 +383,9 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     for (size_t i = 0; i < scene.loot.size(); ++i) {
         const LocalLoot& lt = scene.loot[i];
         ProjectedPoint p = projectPointWithBasis(lt.x, lt.y, lt.z, winW, winH, view, basis);
+        if (view.perspective && p.behind) continue;
         if (p.x < -40 || p.x > winW + 40 || p.y < -40 || p.y > winH + 40) continue;
-        double f = depthFade(p.depth);
+        double f = sceneFade(p.depth);
         int rad = 4;
         int dx[4], dy[4];
         for (int k = 0; k < 4; ++k) {
@@ -281,8 +413,14 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     }
 
     // Хелпер отрисовки одной частицы (juice). Альфа = a * clamp(life/maxLife,0,1).
+    // В кокпите ГЛАЗ камеры совпадает с кораблём, поэтому его собственный выхлоп/дым
+    // рождается фактически В камере: без защиты близкая частица раздувается в
+    // экранный квад (radiusPx = size*focal/depth → ∞ при depth→0). Поэтому в
+    // перспективе отсекаем частицы у самой камеры и клампим экранный размер.
     auto drawParticle = [&](const LocalFx& fx) {
         ProjectedPoint p = projectPointWithBasis(fx.x, fx.y, fx.z, winW, winH, view, basis);
+        if (view.perspective && p.behind) return;
+        if (view.perspective && p.depth < 2.0) return;   // частица практически в кокпите
         if (p.x < -40 || p.x > winW + 40 || p.y < -40 || p.y > winH + 40) return;
         double t = fx.life / std::max(1e-6, fx.maxLife);
         if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
@@ -290,16 +428,27 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         if (alpha <= 0) return;
         if (fx.kind == FX_RING) {
             double radiusLU = fx.size * (1.0 - t);           // растёт по мере life->0
-            int rr = std::max(1, int(radiusLU * view.scale));
+            int rr = std::max(1, radiusPx(radiusLU, p.depth, view));
+            if (view.perspective && rr > 300) rr = 300;      // взрыв-кольцо не на весь экран
             strokeCircle(renderer, p.x, p.y, rr, rgba(fx.r, fx.g, fx.b, alpha));
-        } else if (fx.kind == FX_MUZZLE) {
-            int s = std::max(2, int(fx.size * view.scale));
-            fillRect(renderer, p.x - s / 2, p.y - s / 2, s, s, rgba(fx.r, fx.g, fx.b, alpha));
-        } else {
-            int s = std::max(1, int(fx.size * view.scale));
-            int a2 = (fx.kind == FX_SMOKE) ? alpha / 2 : alpha; // дым тусклее
-            fillRect(renderer, p.x - s / 2, p.y - s / 2, s, s, rgba(fx.r, fx.g, fx.b, a2));
+            return;
         }
+        int s = std::max(2, radiusPx(fx.size, p.depth, view));
+        if (view.perspective) {
+            // Экранный кап по типу: близкий собственный выхлоп/дым читается искрами-точками,
+            // а боевой juice (вспышка/искры/обломки) остаётся сочным. radiusPx у камеры огромен.
+            int cap = 48;
+            switch (fx.kind) {
+                case FX_TRAIL: case FX_SMOKE: cap = 8;  break; // выхлоп/дым — мелкие угольки
+                case FX_DEBRIS:               cap = 22; break;
+                case FX_SPARK:                cap = 40; break; // искры попаданий — заметны
+                case FX_MUZZLE:               cap = 90; break; // вспышка у дула — крупная
+                default:                      cap = 48; break;
+            }
+            if (s > cap) s = cap;
+        }
+        int a2 = (fx.kind == FX_SMOKE) ? alpha / 2 : alpha;  // дым тусклее
+        fillRect(renderer, p.x - s / 2, p.y - s / 2, s, s, rgba(fx.r, fx.g, fx.b, a2));
     };
 
     // (5c) ЧАСТИЦЫ ПОЗАДИ КОРАБЛЕЙ: трейл двигателя, дым, обломки.
@@ -312,11 +461,23 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     for (size_t i = 0; i < scene.craft.size(); ++i) {
         const LocalCraft& c = scene.craft[i];
         ProjectedPoint p = projectPointWithBasis(c.x, c.y, c.z, winW, winH, view, basis);
+        if (view.perspective && p.behind) continue;
         if (p.x < -60 || p.x > winW + 60 || p.y < -60 || p.y > winH + 60) continue;
-        double v2 = c.vx * c.vx + c.vy * c.vy;
-        double sa = (v2 > 1e-6) ? std::atan2(-c.vy, c.vx) : 0.0; // экранный угол носа
+        // Экранный курс носа: по вектору скорости, спроецированному в экран (робастно
+        // для обоих режимов — проецируем точку впереди по скорости).
+        double sa = 0.0;
+        double vlen = std::sqrt(c.vx * c.vx + c.vy * c.vy + c.vz * c.vz);
+        if (vlen > 1e-6) {
+            double vhx = c.vx / vlen, vhy = c.vy / vlen, vhz = c.vz / vlen;
+            ProjectedPoint pn = projectPointWithBasis(c.x + vhx * 3.0, c.y + vhy * 3.0, c.z + vhz * 3.0,
+                                                      winW, winH, view, basis);
+            if (!(view.perspective && pn.behind))
+                sa = std::atan2(double(pn.y - p.y), double(pn.x - p.x));
+        }
         SDL_Color col = c.hostile ? P.red : rgba(c.r, c.g, c.b, 255);
-        double sz = std::max(6.0, std::min(9.0, view.scale * 1.6));
+        double sz;
+        if (view.perspective) sz = std::max(4.0, std::min(40.0, double(radiusPx(3.0, p.depth, view))));
+        else                  sz = std::max(6.0, std::min(9.0, view.scale * 1.6));
         headingTriangle(renderer, p.x, p.y, sa, sz, col, true);
         if (c.shield > 0.0 && c.maxShield > 0.0) {
             int sha = int(70.0 * c.shield / c.maxShield); // бледный синеватый щит
@@ -329,7 +490,7 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         double cdist = std::sqrt((c.x - scene.px) * (c.x - scene.px) +
                                  (c.y - scene.py) * (c.y - scene.py) +
                                  (c.z - scene.pz) * (c.z - scene.pz));
-        if ((view.scale >= 5.0 || cdist < 90.0) && !c.label.empty()) {
+        if (((view.perspective ? cdist < 700.0 : view.scale >= 5.0) || cdist < 90.0) && !c.label.empty()) {
             drawText(renderer, p.x - textWidth(c.label, 1) / 2, p.y + int(sz) + 3, c.label, P.dim, 1);
         }
         if ((int)i == scene.targetCraft) {
@@ -354,19 +515,22 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         }
     }
 
-    // (7) СНАРЯДЫ: короткая яркая линия назад по вектору скорости.
+    // (7) СНАРЯДЫ: короткая яркая линия назад по вектору скорости (проецируем хвост).
     for (size_t i = 0; i < scene.shots.size(); ++i) {
         const LocalProjectile& s = scene.shots[i];
         ProjectedPoint p = projectPointWithBasis(s.x, s.y, s.z, winW, winH, view, basis);
+        if (view.perspective && p.behind) continue;
         if (p.x < -20 || p.x > winW + 20 || p.y < -20 || p.y > winH + 20) continue;
         SDL_Color col = (s.team == 0) ? P.cyan : P.red;
-        double vx = s.vx, vy = -s.vy; // в экранные оси
-        double vl = std::sqrt(vx * vx + vy * vy);
+        double vl = std::sqrt(s.vx * s.vx + s.vy * s.vy + s.vz * s.vz);
         if (vl > 1e-6) {
-            int x2 = p.x - int(vx / vl * 4.0);
-            int y2 = p.y - int(vy / vl * 4.0);
-            SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, 255);
-            SDL_RenderDrawLine(renderer, p.x, p.y, x2, y2);
+            double k = 2.0 / vl;
+            ProjectedPoint p2 = projectPointWithBasis(s.x - s.vx * k, s.y - s.vy * k, s.z - s.vz * k,
+                                                      winW, winH, view, basis);
+            if (!(view.perspective && p2.behind)) {
+                SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, 255);
+                SDL_RenderDrawLine(renderer, p.x, p.y, p2.x, p2.y);
+            }
         }
         fillRect(renderer, p.x - 1, p.y - 1, 2, 2, col);
     }
@@ -377,17 +541,27 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         if (fx.kind == FX_SPARK || fx.kind == FX_RING || fx.kind == FX_MUZZLE) drawParticle(fx);
     }
 
-    // (8) ИГРОК: чёткая тёплая стрелка + прицел впереди по носу.
-    ProjectedPoint pp = projectPointWithBasis(scene.px, scene.py, scene.pz, winW, winH, view, basis);
-    double psa = -scene.pyaw; // мировой yaw -> экранный угол (Y инвертирован)
-    headingTriangle(renderer, pp.x, pp.y, psa, 11.0, rgba(255, 230, 120, 255), true);
-    headingTriangle(renderer, pp.x, pp.y, psa, 11.0, rgba(255, 255, 255, 180), false);
-    if (scene.pShield > 0.0 && scene.pMaxShield > 0.0) {
-        int psha = int(120.0 * scene.pShield / scene.pMaxShield); // бледный циан-щит игрока
-        strokeCircle(renderer, pp.x, pp.y, 14, rgba(P.cyan.r, P.cyan.g, P.cyan.b, psha));
-        strokeCircle(renderer, pp.x, pp.y, 15, rgba(P.cyan.r, P.cyan.g, P.cyan.b, psha / 2));
-    }
-    {
+    // (8) ИГРОК.
+    //  • КАРТА (орто, вид сверху): свой корабль — тёплая стрелка по курсу носа +
+    //    кольцо щита + прицел по направлению стрельбы (тактический вид).
+    //  • КОКПИТ (перспектива, вид «из глаз»): глаз камеры В корабле, поэтому сам
+    //    корабль НЕ рисуем. Вместо него неподвижная «мушка» по курсу стрельбы (центр
+    //    экрана) + маркер вектора скорости (куда несёт по инерции, как flight-path в
+    //    Elite) + дуга щита у мушки. Крен читается по повороту скайбокса/мира.
+    if (!view.perspective) {
+        ProjectedPoint pp = projectPointWithBasis(scene.px, scene.py, scene.pz, winW, winH, view, basis);
+        ProjectedPoint pn = projectPointWithBasis(scene.px + scene.pfwdX * 6.0,
+                                                  scene.py + scene.pfwdY * 6.0,
+                                                  scene.pz + scene.pfwdZ * 6.0,
+                                                  winW, winH, view, basis);
+        double psa = std::atan2(double(pn.y - pp.y), double(pn.x - pp.x));
+        headingTriangle(renderer, pp.x, pp.y, psa, 11.0, rgba(255, 230, 120, 255), true);
+        headingTriangle(renderer, pp.x, pp.y, psa, 11.0, rgba(255, 255, 255, 180), false);
+        if (scene.pShield > 0.0 && scene.pMaxShield > 0.0) {
+            int psha = int(120.0 * scene.pShield / scene.pMaxShield); // бледный циан-щит игрока
+            strokeCircle(renderer, pp.x, pp.y, 14, rgba(P.cyan.r, P.cyan.g, P.cyan.b, psha));
+            strokeCircle(renderer, pp.x, pp.y, 15, rgba(P.cyan.r, P.cyan.g, P.cyan.b, psha / 2));
+        }
         int rx = pp.x + int(std::cos(psa) * 40.0);
         int ry = pp.y + int(std::sin(psa) * 40.0);
         SDL_Color ret = rgba(P.cyan.r, P.cyan.g, P.cyan.b, 120);
@@ -397,9 +571,46 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         SDL_RenderDrawLine(renderer, rx + 3, ry, rx + 8, ry);
         SDL_RenderDrawLine(renderer, rx, ry - 8, rx, ry - 3);
         SDL_RenderDrawLine(renderer, rx, ry + 3, rx, ry + 8);
+    } else {
+        // Мушка по курсу стрельбы: точка далеко вдоль носа (~центр экрана при нулевом сносе).
+        ProjectedPoint pa = projectPointWithBasis(scene.px + scene.pfwdX * 600.0,
+                                                  scene.py + scene.pfwdY * 600.0,
+                                                  scene.pz + scene.pfwdZ * 600.0,
+                                                  winW, winH, view, basis);
+        int rx = pa.behind ? cx : pa.x;
+        int ry = pa.behind ? cy : pa.y;
+        SDL_Color ret = rgba(P.cyan.r, P.cyan.g, P.cyan.b, 175);
+        strokeCircle(renderer, rx, ry, 6, ret);
+        SDL_SetRenderDrawColor(renderer, ret.r, ret.g, ret.b, ret.a);
+        SDL_RenderDrawLine(renderer, rx - 11, ry, rx - 4, ry);
+        SDL_RenderDrawLine(renderer, rx + 4, ry, rx + 11, ry);
+        SDL_RenderDrawLine(renderer, rx, ry - 11, rx, ry - 4);
+        SDL_RenderDrawLine(renderer, rx, ry + 4, rx, ry + 11);
+        SDL_RenderDrawPoint(renderer, rx, ry);
+        if (scene.pShield > 0.0 && scene.pMaxShield > 0.0) {   // дуга щита у мушки
+            int psha = int(150.0 * scene.pShield / scene.pMaxShield);
+            strokeCircle(renderer, rx, ry, 10, rgba(P.cyan.r, P.cyan.g, P.cyan.b, psha));
+        }
+        // Маркер вектора скорости (prograde): куда реально несёт по инерции.
+        double sp = std::sqrt(scene.pvx * scene.pvx + scene.pvy * scene.pvy + scene.pvz * scene.pvz);
+        if (sp > 0.5) {
+            const double k = 600.0 / sp;
+            ProjectedPoint pv = projectPointWithBasis(scene.px + scene.pvx * k,
+                                                      scene.py + scene.pvy * k,
+                                                      scene.pz + scene.pvz * k,
+                                                      winW, winH, view, basis);
+            if (!pv.behind) {
+                SDL_Color vg = rgba(150, 235, 170, 160); // мягкий зелёный (прогрейд)
+                strokeCircle(renderer, pv.x, pv.y, 4, vg);
+                SDL_SetRenderDrawColor(renderer, vg.r, vg.g, vg.b, vg.a);
+                SDL_RenderDrawLine(renderer, pv.x - 7, pv.y, pv.x - 4, pv.y);
+                SDL_RenderDrawLine(renderer, pv.x + 4, pv.y, pv.x + 7, pv.y);
+                SDL_RenderDrawLine(renderer, pv.x, pv.y - 7, pv.x, pv.y - 4);
+            }
+        }
     }
 
-    // Маркеры off-screen целей: ближайший рынок (зелёный) и ближайший враг (красный).
+    // Маркеры off-screen целей: ближайший рынок (зелёный), враг (красный), лут (янтарь).
     {
         int nearMkt = -1; double bestMkt = 1e18;
         for (size_t i = 0; i < scene.bodies.size(); ++i) {
@@ -462,7 +673,8 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             double pulse = 0.5 + 0.5 * std::sin(scene.fxClock * 4.0 + double(i));
             int a = 120 + int(pulse * (80.0 + 55.0 * s01)); // ~120..255
             ProjectedPoint p = projectPointWithBasis(rs.x, rs.y, rs.z, winW, winH, view, basis);
-            bool on = (p.x >= 0 && p.x <= winW && p.y >= 0 && p.y <= winH);
+            bool on = !(view.perspective && p.behind) &&
+                      (p.x >= 0 && p.x <= winW && p.y >= 0 && p.y <= winH);
             if (on) {
                 drawDiamond(p.x, p.y, 6, rgba(kc.r, kc.g, kc.b, a), true);
                 drawDiamond(p.x, p.y, 9, rgba(kc.r, kc.g, kc.b, a / 2), false);
@@ -603,7 +815,7 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
 
     // Подсказка добычи: доступен ближайший астероид (если ещё не добываем).
     if (scene.minePrompt >= 0 && scene.miningRock < 0) {
-        const char* msg = "PRESS E TO MINE";
+        const char* msg = "PRESS M TO MINE";
         drawText(renderer, cx - textWidth(msg, 2) / 2, winH - 124, msg, P.amber, 2);
     }
 
@@ -612,10 +824,8 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         drawText(renderer, cx - textWidth(scene.toast, 2) / 2, 24, scene.toast, P.text, 2);
     }
 
-    // Низ-СПРАВА: РАДАР / ДЕТЕКТОР. Свободный угол — не пересекает верх-слева (статус
-    // 12,12..242,78), верх-справа (цель winW-236,12..winW-12,70), низ-слева (корабль
-    // 12,winH-130..248,winH-26) и нижнюю строку подсказок (y=winH-14): панель
-    // winW-166,winH-210..winW-12,winH-52 оставляет ~38 px зазора над подсказками.
+    // Низ-СПРАВА: РАДАР / ДЕТЕКТОР. Тактический вид от кабины: ось вперёд (pfwd) —
+    // ВВЕРХ радара, ось right (pfwd×pup) — вправо. Контакт впереди по курсу -> вверх.
     {
         int rw = 154, rh = 158;
         int rpx = winW - rw - 12;   // левый край панели  = winW-166
@@ -638,15 +848,16 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         SDL_RenderDrawLine(renderer, rcx, rcy - R, rcx, rcy + R);
 
         const double RANGE = 1400.0; // мировая дальность радара, LU
-        // Поворот "нос игрока вверх": контакт впереди по курсу -> вверх на радаре.
-        double cyaw = std::cos(scene.pyaw), syaw = std::sin(scene.pyaw);
+        // Тело-относительный базис: right = pfwd × pup; forward = pfwd (вверх радара).
+        double rgtX, rgtY, rgtZ;
+        localShipRight(scene, rgtX, rgtY, rgtZ);
 
         // Корабли: мелкие точки (враг красный, иначе серый).
         for (size_t i = 0; i < scene.craft.size(); ++i) {
             const LocalCraft& c = scene.craft[i];
-            double dx = c.x - scene.px, dy = c.y - scene.py;
-            double rx = dx * syaw - dy * cyaw;
-            double ry = dx * cyaw + dy * syaw;
+            double dx = c.x - scene.px, dy = c.y - scene.py, dz = c.z - scene.pz;
+            double rx = dx * rgtX + dy * rgtY + dz * rgtZ;                       // вправо
+            double ry = dx * scene.pfwdX + dy * scene.pfwdY + dz * scene.pfwdZ;  // вперёд (вверх)
             double dd = std::sqrt(rx * rx + ry * ry);
             bool beyond = dd > RANGE;
             double k = beyond ? (double(R) / std::max(1e-6, dd)) : (double(R) / RANGE);
@@ -663,9 +874,9 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             const LocalRadioSource& rs = scene.radio[i];
             if (!rs.revealed || rs.resolved) continue;
             ++sigCount;
-            double dx = rs.x - scene.px, dy = rs.y - scene.py;
-            double rx = dx * syaw - dy * cyaw;
-            double ry = dx * cyaw + dy * syaw;
+            double dx = rs.x - scene.px, dy = rs.y - scene.py, dz = rs.z - scene.pz;
+            double rx = dx * rgtX + dy * rgtY + dz * rgtZ;
+            double ry = dx * scene.pfwdX + dy * scene.pfwdY + dz * scene.pfwdZ;
             double dd = std::sqrt(rx * rx + ry * ry);
             bool beyond = dd > RANGE;
             double k = beyond ? (double(R) / std::max(1e-6, dd)) : (double(R) / RANGE);
@@ -694,6 +905,6 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
 
     // Подсказка управления — вдоль самого низа.
     drawText(renderer, 12, winH - 14,
-             "W THRUST   S BRAKE   A/D TURN   R/F PITCH   SHIFT WARP   (BUTTONS BELOW: FIRE MINE DOCK LOCK EXIT)",
+             "W/S THRUST  A/D YAW  R/F PITCH  Q/E ROLL  SHIFT WARP  M MINE  K DOCK  TAB LOCK  C VIEW  L EXIT",
              P.dim, 1);
 }

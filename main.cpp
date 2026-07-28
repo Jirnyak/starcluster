@@ -22,7 +22,7 @@ enum ActionId {
     // Макро-режим (звёздная карта):
     ACT_ENTER, ACT_GO, ACT_STOP, ACT_TRADE, ACT_SHIPYARD, ACT_REPAIR, ACT_HIRE, ACT_PAUSE, ACT_SPEED,
     // Локальный режим (полёт):
-    ACT_FIRE, ACT_MINE, ACT_DOCK, ACT_TARGET, ACT_ZOOM_IN, ACT_ZOOM_OUT, ACT_EXIT
+    ACT_FIRE, ACT_MINE, ACT_DOCK, ACT_TARGET, ACT_ZOOM_IN, ACT_ZOOM_OUT, ACT_VIEW, ACT_EXIT
 };
 struct ActionButton {
     SDL_Rect rect;
@@ -543,9 +543,11 @@ int main(int argc, char** argv) {
 
     // --- Локальный режим полёта ("микромир") ---
     LocalScene localScene;
-    View3D localView;              // follow-cam сверху; центр = игрок, scale = зум
-    double localZoom = 0.8;        // пикселей на LU (регулируется +/-)
-    bool localMineEdge = false;    // фронт нажатия E за кадр
+    View3D localView;              // 3D-кокпит (перспектива, глаз в корабле) или верхний ортовид (карта)
+    double localZoom = 0.8;        // ортозум карты, пикселей на LU (+/- в режиме карты)
+    double localFovScale = 0.60;   // оптический зум/FOV кокпита: фокус = winW*fovScale (+/- в 3D)
+    bool localMapMode = false;     // false = 3D-полёт (перспектива), true = верхняя карта (клавиша C)
+    bool localMineEdge = false;    // фронт нажатия M за кадр (добыча; E теперь крен)
     bool localDockEdge = false;    // фронт нажатия K за кадр
     bool localTargetEdge = false;  // фронт нажатия Tab за кадр
     bool localFireClick = false;   // одноразовый выстрел по кнопке панели (в этот кадр)
@@ -587,13 +589,17 @@ int main(int argc, char** argv) {
             const bool mining = localScene.miningRock >= 0;
             specs.push_back(Spec{ACT_FIRE, "SPC FIRE", UI::P.red,
                                  localScene.fireCooldown <= 0.0 && !localScene.playerDestroyed, false});
-            specs.push_back(Spec{ACT_MINE, mining ? "E STOP" : "E MINE", UI::P.amber,
+            specs.push_back(Spec{ACT_MINE, mining ? "M STOP" : "M MINE", UI::P.amber,
                                  mining || localScene.minePrompt >= 0, mining});
             specs.push_back(Spec{ACT_DOCK, "K DOCK", UI::P.green, localScene.dockPrompt >= 0, false});
             specs.push_back(Spec{ACT_TARGET, "TAB LOCK", UI::P.cyan,
                                  !localScene.craft.empty(), localScene.lockTarget >= 0});
-            specs.push_back(Spec{ACT_ZOOM_OUT, "- ZOOM", UI::P.dim, localZoom > 0.0501, false});
-            specs.push_back(Spec{ACT_ZOOM_IN, "+ ZOOM", UI::P.dim, localZoom < 39.99, false});
+            // Зум зависит от режима: карта => ортозум; 3D => оптический зум/FOV кокпита.
+            const bool zoomOutEnabled = localMapMode ? (localZoom > 0.0501) : (localFovScale > 0.401);
+            const bool zoomInEnabled  = localMapMode ? (localZoom < 39.99)  : (localFovScale < 1.599);
+            specs.push_back(Spec{ACT_ZOOM_OUT, "- ZOOM", UI::P.dim, zoomOutEnabled, false});
+            specs.push_back(Spec{ACT_ZOOM_IN, "+ ZOOM", UI::P.dim, zoomInEnabled, false});
+            specs.push_back(Spec{ACT_VIEW, localMapMode ? "C 3D" : "C MAP", UI::P.cyan, true, localMapMode});
             specs.push_back(Spec{ACT_EXIT, "L EXIT", UI::P.cyan, true, false});
         } else {
             const bool docked = playerDocked() >= 0;
@@ -688,8 +694,15 @@ int main(int argc, char** argv) {
             case ACT_MINE:   localMineEdge = true;   break;
             case ACT_DOCK:   localDockEdge = true;   break;
             case ACT_TARGET: localTargetEdge = true; break;
-            case ACT_ZOOM_IN:  localZoom = clampDouble(localZoom * 1.2, 0.05, 40.0); break;
-            case ACT_ZOOM_OUT: localZoom = clampDouble(localZoom / 1.2, 0.05, 40.0); break;
+            case ACT_VIEW:   localMapMode = !localMapMode; break;
+            case ACT_ZOOM_IN:
+                if (localMapMode) localZoom = clampDouble(localZoom * 1.2, 0.05, 40.0);
+                else localFovScale = clampDouble(localFovScale * 1.15, 0.40, 1.60); // уже FOV
+                break;
+            case ACT_ZOOM_OUT:
+                if (localMapMode) localZoom = clampDouble(localZoom / 1.2, 0.05, 40.0);
+                else localFovScale = clampDouble(localFovScale / 1.15, 0.40, 1.60); // шире FOV
+                break;
             case ACT_EXIT: localScene.active = false; game.lastEvent = "exited local flight"; break;
         }
     };
@@ -834,13 +847,19 @@ int main(int argc, char** argv) {
                 if (localScene.active) {
                     // Локальный режим: клавиши обрабатываем здесь, макро-обработчики ниже пропускаем.
                     if (e.key.keysym.sym == SDLK_ESCAPE) { localScene.active = false; continue; }
-                    if (e.key.keysym.sym == SDLK_e) localMineEdge = true;
+                    if (e.key.keysym.sym == SDLK_m) localMineEdge = true;   // добыча (E теперь крен)
                     if (e.key.keysym.sym == SDLK_k) localDockEdge = true;
                     if (e.key.keysym.sym == SDLK_TAB) localTargetEdge = true;
-                    if (e.key.keysym.sym == SDLK_EQUALS || e.key.keysym.sym == SDLK_PLUS)
-                        localZoom = clampDouble(localZoom * 1.2, 0.05, 40.0);
-                    if (e.key.keysym.sym == SDLK_MINUS)
-                        localZoom = clampDouble(localZoom / 1.2, 0.05, 40.0);
+                    if (e.key.keysym.sym == SDLK_c) localMapMode = !localMapMode; // 3D <-> карта
+                    if (e.key.keysym.sym == SDLK_EQUALS || e.key.keysym.sym == SDLK_PLUS) {
+                        if (localMapMode) localZoom = clampDouble(localZoom * 1.2, 0.05, 40.0);
+                        else localFovScale = clampDouble(localFovScale * 1.15, 0.40, 1.60);
+                    }
+                    if (e.key.keysym.sym == SDLK_MINUS) {
+                        if (localMapMode) localZoom = clampDouble(localZoom / 1.2, 0.05, 40.0);
+                        else localFovScale = clampDouble(localFovScale / 1.15, 0.40, 1.60);
+                    }
+                    // Q/E (крен) и R/F (тангаж) читаются как удержание в сборке LocalInput ниже.
                     continue;
                 }
                 if (e.key.keysym.sym == SDLK_SPACE) paused = !paused;
@@ -967,6 +986,8 @@ int main(int argc, char** argv) {
             li.yawR   = ks[SDL_SCANCODE_D] != 0;
             li.pitchU = ks[SDL_SCANCODE_R] != 0;
             li.pitchD = ks[SDL_SCANCODE_F] != 0;
+            li.rollL  = ks[SDL_SCANCODE_Q] != 0;
+            li.rollR  = ks[SDL_SCANCODE_E] != 0;
             li.fire   = ks[SDL_SCANCODE_SPACE] != 0 || localFireClick;
             li.warp   = ks[SDL_SCANCODE_LSHIFT] != 0 || ks[SDL_SCANCODE_RSHIFT] != 0;
             li.mineToggle = localMineEdge;
@@ -980,11 +1001,8 @@ int main(int argc, char** argv) {
                 li.warp   = (frames >= 6);      // позже — субшаги/клэмп N при большом dt
             }
             const int dockStar = updateLocalScene(game, localScene, li, realDt);
-            localView = View3D();
-            localView.centerX = localScene.px;
-            localView.centerY = localScene.py;
-            localView.centerZ = localScene.pz;
-            localView.scale = localZoom;
+            // Камера (localView/localBasis) строится ниже, у самого рендера, единым
+            // помощником buildLocalCamera (тот же код, что и в скриншот-харнесе).
             if (localScene.playerDestroyed) {
                 // Корпус разрушен в микромире — аварийный прыжок (не терминально):
                 // корабль восстанавливается частично, штраф за спасение/ремонт.
@@ -1023,7 +1041,9 @@ int main(int argc, char** argv) {
         SDL_SetRenderDrawColor(renderer, 3, 5, 14, 255);
         SDL_RenderClear(renderer);
         if (localScene.active) {
-            const CameraBasis localBasis = makeCameraBasis(localView);
+            CameraBasis localBasis;
+            buildLocalCamera(localScene, winW, winH, localMapMode, localFovScale, localZoom,
+                             localView, localBasis);
             renderLocalScene(renderer, game, localScene, localView, localBasis, winW, winH);
             { std::vector<ActionButton> bar; buildBar(bar); drawBar(bar); }
             SDL_RenderPresent(renderer);

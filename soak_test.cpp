@@ -62,14 +62,10 @@ int main() {
                 bx = bd.x; by = bd.y; bz = bd.z; haveTarget = true;
             }
 
-            // Прямое наведение носа на цель (soak напрямую задаёт ориентацию).
+            // Прямое наведение носа на цель (soak напрямую задаёт ориентацию через
+            // тело-относительный базис — как gen/UI; см. localSetForward в local.h).
             if (haveTarget) {
-                double dx = bx - scene.px, dy = by - scene.py, dz = bz - scene.pz;
-                double horiz = std::sqrt(dx * dx + dy * dy);
-                scene.pyaw = std::atan2(dy, dx);
-                scene.ppitch = std::atan2(dz, horiz > 1e-6 ? horiz : 1e-6);
-                if (scene.ppitch > 1.3) scene.ppitch = 1.3;
-                if (scene.ppitch < -1.3) scene.ppitch = -1.3;
+                localSetForward(scene, bx - scene.px, by - scene.py, bz - scene.pz);
             }
 
             LocalInput in;

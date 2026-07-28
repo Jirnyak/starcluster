@@ -150,23 +150,25 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
             c.r = 90; c.g = 200; c.b = 235;
             c.x = frand(-400.0, 400.0);
             c.y = frand(-400.0, 400.0);
-            c.z = frand(-80.0, 80.0);
+            c.z = frand(-300.0, 300.0);   // реальный 3D-разброс по высоте (пустота — не плоскость)
             c.tx = 0.0; c.ty = 0.0; c.tz = 0.0;
             scene.craft.push_back(c);
         }
 
         // Радиоисточники в пустоте (POI/детекторы): 4..7 вокруг начала координат,
-        // на дистанциях 400..2400 в разных направлениях (небольшой разброс по z).
+        // на дистанциях 400..2400 в разных направлениях (полный 3D-разброс по высоте).
         int deepRadio = irand(4, 7);
         for (int i = 0; i < deepRadio; ++i) {
             double bearing = frand(0.0, 2.0 * M_PI);
-            double dist = frand(400.0, 2400.0);
-            makeRadioSource(dist * std::cos(bearing), dist * std::sin(bearing), frand(-300.0, 300.0));
+            double elev    = frand(-0.55, 0.55);      // наклон над/под плоскостью — источники реально off-plane
+            double dist    = frand(400.0, 2400.0);
+            double ce = std::cos(elev);
+            makeRadioSource(dist * ce * std::cos(bearing), dist * ce * std::sin(bearing), dist * std::sin(elev));
         }
 
-        // Игрок в начале координат, нос по нулю, скорость 0 (дефолты структуры).
+        // Игрок в начале координат, нос вдоль +X, скорость 0 (дефолты структуры).
         scene.px = 0.0; scene.py = 0.0; scene.pz = 0.0;
-        scene.pyaw = 0.0; scene.ppitch = 0.0;
+        localSetForward(scene, 1.0, 0.0, 0.0);   // нос вдоль +X (тело-относительный базис)
         return;
     }
 
@@ -194,7 +196,7 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         body.orbitRadius = orbitRadius;
         body.orbitPhase  = frand(0.0, 2.0 * M_PI);
         body.orbitSpeed  = 40.0 / std::pow(orbitRadius, 1.5);   // кеплерово ~ r^-1.5
-        body.inclination = frand(-0.14, 0.14);
+        body.inclination = frand(-0.40, 0.40);   // заметный 3D-наклон орбит — система читается как реальный диск
 
         // Тип: две внутренние — каменные, средние — газовые, самая внешняя — лёд.
         if (i <= 1)                    body.kind = LB_ROCKY;
@@ -261,7 +263,7 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         double rr = beltR + frand(-45.0, 45.0);
         rock.x = rr * std::cos(angle);
         rock.y = rr * std::sin(angle);
-        rock.z = frand(-12.0, 12.0);
+        rock.z = frand(-25.0, 25.0);   // вертикальная толщина пояса; sim сохраняет z -> реальный 3D-пояс
         rock.orbitR = rr;
         rock.orbitAng = angle;
         rock.orbitVel = (40.0 / std::pow(std::max(1.0, rr), 1.5)) * 0.18; // медленный дрейф пояса (доля кеплера), один знак на весь пояс
@@ -422,8 +424,7 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
     scene.px = innermostR + 120.0;
     scene.py = 0.0;
     scene.pz = 0.0;
-    scene.pyaw = M_PI;   // нос направлен к звезде в начале координат
-    scene.ppitch = 0.0;
+    localSetForward(scene, -1.0, 0.0, 0.0);   // нос назад к звезде в начале координат (-X)
 
     // ---- Радиоисточники системы (POI/детекторы): 2..4 вокруг звезды. ----
     // Отдельный вектор scene.radio — на индексы тел не влияет.
@@ -432,8 +433,10 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         int sysRadio = irand(2, 4);
         for (int i = 0; i < sysRadio; ++i) {
             double bearing = frand(0.0, 2.0 * M_PI);
-            double dist = frand(innermostOrbit * 0.7, outermostOrbit * 1.5);
-            makeRadioSource(dist * std::cos(bearing), dist * std::sin(bearing), frand(-60.0, 60.0));
+            double elev    = frand(-0.35, 0.35);      // умеренный наклон — система остаётся диском, но 3D
+            double dist    = frand(innermostOrbit * 0.7, outermostOrbit * 1.5);
+            double ce = std::cos(elev);
+            makeRadioSource(dist * ce * std::cos(bearing), dist * ce * std::sin(bearing), dist * std::sin(elev));
         }
     }
 

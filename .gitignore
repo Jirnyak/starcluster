@@ -4,6 +4,9 @@
 /game
 /game_asan
 /soak_asan
+/shot_test
+shot_*.bmp
+shot_*.png
 *.dSYM/
 *.o
 *.out
