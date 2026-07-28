@@ -339,10 +339,109 @@ int main() {
     }
     if (!npcWriteBackOk) { std::printf("INVARIANT FAIL: §5.13.26 NPC-vs-NPC macro write-back did not fire\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s rocks=%ld shiny=%ld trades=%ld\n",
+    // --- Детерминированная проверка §5.13.28: патруль ОХОТИТСЯ на РОЗЫСКНОГО пирата ---
+    // Гейт этого слайса. Ветку CK_PATROL headless-мир НЕ исполняет (патрулей в замороженном кластере
+    //   нет — оттого 120k-бейзлайн выше побитово неизменен), поэтому изолированный пробник — ЕДИНСТВЕННОЕ
+    //   headless-покрытие ИИ патруля. Свежий Game. Две подпроверки, обе с пиньнутыми позициями (ноль RNG,
+    //   ноль движения): (A) розыскной пират ДАЛЬШЕ, простой БЛИЖЕ ⇒ патруль обязан бить ИМЕННО розыскного
+    //   (приоритет-0 перебивает дистанцию); (B) розыскного нет ⇒ патруль бьёт БЛИЖАЙШЕГО (фолбэк §5.13.12
+    //   цел). Игрок далеко и не стреляет — бой чисто патруль-против-пиратов. Пиратам даём огромный корпус
+    //   (не гибнут за пробу ⇒ индексы стабильны), щит=0 (урон сразу в корпус, измерим); патруль пиньним
+    //   здоровым каждый кадр (никогда не бежит ⇒ aiState=1, стреляет с первого кадра, цель — в WEAPON_RANGE).
+    bool patrolHuntsWantedOk = false;
+    {
+        Game g5; g5.init(1200);
+        int star = -1;
+        for (int s : stars) { if (s >= 0) { star = s; break; } }
+        bool aOk = false, bOk = false;
+        if (star >= 0) {
+            // (A) розыскной ДАЛЬШЕ (120 LU) vs простой БЛИЖЕ (60 LU) → патруль должен бить РОЗЫСКНОГО
+            LocalScene sa;
+            buildLocalScene(g5, star, sa);
+            sa.active = true;
+            while (sa.craft.size() < 3) { LocalCraft nc; sa.craft.push_back(nc); }
+            sa.craft.resize(3);
+            {
+                LocalCraft& pat = sa.craft[0];                 // ПАТРУЛЬ-охотник (чисто локальный)
+                pat.kind = CK_PATROL; pat.hostile = false; pat.faction = -1; pat.agentIndex = -1;
+                pat.heavy = 60.0; pat.light = 0.0;             // гарантированный урон
+                pat.maxHullHP = 100000.0; pat.hullHP = 100000.0;
+                pat.maxShield = 0.0; pat.shield = 0.0; pat.fireCooldown = 0.0; pat.wanted = false;
+                LocalCraft& farW = sa.craft[1];                // РОЗЫСКНОЙ пират — ДАЛЬШЕ
+                farW.kind = CK_PIRATE; farW.hostile = true; farW.faction = -1; farW.agentIndex = -1;
+                farW.wanted = true; farW.wantedBounty = 650.0;
+                farW.maxHullHP = 100000.0; farW.hullHP = 100000.0;
+                farW.maxShield = 0.0; farW.shield = 0.0; farW.shieldRegenTimer = 999.0;
+                LocalCraft& nearP = sa.craft[2];               // ПРОСТОЙ пират — БЛИЖЕ
+                nearP.kind = CK_PIRATE; nearP.hostile = true; nearP.faction = -1; nearP.agentIndex = -1;
+                nearP.wanted = false;
+                nearP.maxHullHP = 100000.0; nearP.hullHP = 100000.0;
+                nearP.maxShield = 0.0; nearP.shield = 0.0; nearP.shieldRegenTimer = 999.0;
+            }
+            sa.px = 100000.0; sa.py = 0.0; sa.pz = 0.0; sa.pvx = sa.pvy = sa.pvz = 0.0;
+            for (int f = 0; f < 400 && !aOk; ++f) {
+                LocalCraft& p0 = sa.craft[0]; LocalCraft& w1 = sa.craft[1]; LocalCraft& n2 = sa.craft[2];
+                p0.x = p0.y = p0.z = 0.0; p0.vx = p0.vy = p0.vz = 0.0;
+                p0.hullHP = p0.maxHullHP; p0.shield = 0.0;     // держим патруль здоровым
+                w1.x = 120.0; w1.y = 0.0; w1.z = 0.0; w1.vx = w1.vy = w1.vz = 0.0;  // розыскной ДАЛЬШЕ
+                w1.shield = 0.0; w1.shieldRegenTimer = 999.0;
+                n2.x =  60.0; n2.y = 0.0; n2.z = 0.0; n2.vx = n2.vy = n2.vz = 0.0;  // простой БЛИЖЕ
+                n2.shield = 0.0; n2.shieldRegenTimer = 999.0;
+                LocalInput in;
+                updateLocalScene(g5, sa, in, dtReal);
+                if (sa.craft.size() >= 3
+                    && sa.craft[1].hullHP <  sa.craft[1].maxHullHP    // розыскной (дальний) под огнём
+                    && sa.craft[2].hullHP >= sa.craft[2].maxHullHP)   // простой (ближний) НЕ тронут
+                    aOk = true;
+            }
+            // (B) розыскного НЕТ: два простых пирата, дальний (120) и ближний (60) → бьёт БЛИЖНЕГО (фолбэк)
+            LocalScene sb;
+            buildLocalScene(g5, star, sb);
+            sb.active = true;
+            while (sb.craft.size() < 3) { LocalCraft nc; sb.craft.push_back(nc); }
+            sb.craft.resize(3);
+            {
+                LocalCraft& pat = sb.craft[0];
+                pat.kind = CK_PATROL; pat.hostile = false; pat.faction = -1; pat.agentIndex = -1;
+                pat.heavy = 60.0; pat.light = 0.0;
+                pat.maxHullHP = 100000.0; pat.hullHP = 100000.0;
+                pat.maxShield = 0.0; pat.shield = 0.0; pat.fireCooldown = 0.0; pat.wanted = false;
+                for (int idx = 1; idx <= 2; ++idx) {           // оба — ПРОСТЫЕ пираты (не в розыске)
+                    LocalCraft& pr = sb.craft[idx];
+                    pr.kind = CK_PIRATE; pr.hostile = true; pr.faction = -1; pr.agentIndex = -1;
+                    pr.wanted = false;
+                    pr.maxHullHP = 100000.0; pr.hullHP = 100000.0;
+                    pr.maxShield = 0.0; pr.shield = 0.0; pr.shieldRegenTimer = 999.0;
+                }
+            }
+            sb.px = 100000.0; sb.py = 0.0; sb.pz = 0.0; sb.pvx = sb.pvy = sb.pvz = 0.0;
+            for (int f = 0; f < 400 && !bOk; ++f) {
+                LocalCraft& p0 = sb.craft[0]; LocalCraft& far1 = sb.craft[1]; LocalCraft& near2 = sb.craft[2];
+                p0.x = p0.y = p0.z = 0.0; p0.vx = p0.vy = p0.vz = 0.0;
+                p0.hullHP = p0.maxHullHP; p0.shield = 0.0;
+                far1.x = 120.0; far1.y = 0.0; far1.z = 0.0; far1.vx = far1.vy = far1.vz = 0.0;  // ДАЛЬНИЙ
+                far1.shield = 0.0; far1.shieldRegenTimer = 999.0;
+                near2.x = 60.0; near2.y = 0.0; near2.z = 0.0; near2.vx = near2.vy = near2.vz = 0.0; // БЛИЖНИЙ
+                near2.shield = 0.0; near2.shieldRegenTimer = 999.0;
+                LocalInput in;
+                updateLocalScene(g5, sb, in, dtReal);
+                if (sb.craft.size() >= 3
+                    && sb.craft[2].hullHP <  sb.craft[2].maxHullHP    // ближний под огнём
+                    && sb.craft[1].hullHP >= sb.craft[1].maxHullHP)   // дальний НЕ тронут (фолбэк = ближайший)
+                    bOk = true;
+            }
+        }
+        patrolHuntsWantedOk = aOk && bOk;
+        std::printf("patrol-hunts-wanted probe: wantedOverDistance=%s fallbackNearest=%s\n",
+                    aOk ? "YES (ok)" : "NO", bOk ? "YES (ok)" : "NO");
+    }
+    if (!patrolHuntsWantedOk) { std::printf("INVARIANT FAIL: §5.13.28 patrol wanted-hunt did not fire\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
+                patrolHuntsWantedOk ? "ok" : "FAILED",
                 rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }

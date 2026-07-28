@@ -380,43 +380,66 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                 if (d2 < atkBest) { atkBest = d2; atkCraft = (int)j; atkPlayer = false; }
             }
         } else if (c.kind == CK_PATROL) {
-            // (§5.13.12) Эскорт-патруль. Сперва ищем БЛИЖАЙШЕГО НАЛЁТЧИКА — пирата в РАСШИРЕННОМ радиусе
-            //   бедствия PATROL_DISTRESS_R, который сам находится вплотную (< RAID_NEAR) к торговцу/
-            //   гражданскому. Это даёт реакцию «издалека» и приоритет над случайным пиратом. Детект идёт
-            //   по СЫРЫМ позициям (не по кадровым SOS-флагам §5.13.11) — значит порядок обработки кораблей
-            //   не важен и разметка бедствия здесь не нужна (нет зависимости индекс-жертвы-от-индекс-пирата).
-            int raider = -1;
-            double raiderBest = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
-            const double RAID2 = LocalCfg::RAID_NEAR * LocalCfg::RAID_NEAR;
+            // (§5.13.28) ПРИОРИТЕТ 0 — ОХОТА НА РОЗЫСКНОГО. Патруль/милиция активно преследует пирата
+            //   «в розыске» (§5.13.24 предген / §5.13.26(G) эмерджентный) — тот самый ЗОЛОТОЙ контакт,
+            //   что радар уже подсвечивает (§5.13.27). Так замыкается петля закона: розыск больше не только
+            //   ярлык выплаты и HUD — на него РЕАГИРУЮТ. Берём ближайшего `wanted`-пирата в радиусе бедствия
+            //   PATROL_DISTRESS_R и БЕЗ условия «у беззащитного борта» (в отличие от рейдер-скана ниже):
+            //   объявленный вне закона — цель сам по себе, даже когда прямо сейчас не грабит. Читаем живое
+            //   поле o.wanted — ни RNG, ни нового поля. Огонь всё так же заперт WEAPON_RANGE (см. блок огня):
+            //   патруль обязан сблизиться и драться в упор, а не «снайпить» с 1400 LU. Комбат-инвариант цел —
+            //   меняем ТОЛЬКО выбор цели патруля; урон и агрессию ПИРАТА не трогаем. В headless-soak ветка
+            //   CK_PATROL не исполняется (патрулей в замороженном мире нет) ⇒ числовой бейзлайн неизменен.
+            int wantedPir = -1;
+            double wantedBest = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
             for (size_t j = 0; j < scene.craft.size(); ++j) {
                 if (j == i) continue;
                 LocalCraft& o = scene.craft[j];
-                if (o.hullHP <= 0.0 || o.kind != CK_PIRATE) continue;
+                if (o.hullHP <= 0.0 || o.kind != CK_PIRATE || !o.wanted) continue;
                 double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
                 double d2 = dx*dx + dy*dy + dz*dz;
-                if (d2 >= raiderBest) continue;         // уже есть более близкий налётчик
-                bool raiding = false;                    // пират у беззащитного борта (конвой)?
-                for (size_t k = 0; k < scene.craft.size(); ++k) {
-                    if (k == j) continue;
-                    const LocalCraft& v = scene.craft[k];
-                    if (v.hullHP <= 0.0) continue;
-                    if (v.kind != CK_TRADER && v.kind != CK_CIVILIAN) continue;
-                    double vx = v.x - o.x, vy = v.y - o.y, vz = v.z - o.z;
-                    if (vx*vx + vy*vy + vz*vz < RAID2) { raiding = true; break; }
-                }
-                if (raiding) { raiderBest = d2; raider = (int)j; }
+                if (d2 < wantedBest) { wantedBest = d2; wantedPir = (int)j; }
             }
-            if (raider >= 0) {
-                atkCraft = raider; atkBest = raiderBest; atkPlayer = false; c.defending = true;
+            if (wantedPir >= 0) {
+                atkCraft = wantedPir; atkBest = wantedBest; atkPlayer = false; c.defending = true;
             } else {
-                // Фолбэк — прежняя логика: ближайший пират в радиусе осведомлённости AW2.
+                // (§5.13.12) ПРИОРИТЕТ 1 — БЛИЖАЙШИЙ НАЛЁТЧИК: пират в РАСШИРЕННОМ радиусе бедствия
+                //   PATROL_DISTRESS_R, который сам находится вплотную (< RAID_NEAR) к торговцу/гражданскому.
+                //   Реакция «издалека» и приоритет над случайным пиратом. Детект по СЫРЫМ позициям (не по
+                //   кадровым SOS-флагам §5.13.11) — порядок обработки кораблей не важен, разметка не нужна.
+                int raider = -1;
+                double raiderBest = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
+                const double RAID2 = LocalCfg::RAID_NEAR * LocalCfg::RAID_NEAR;
                 for (size_t j = 0; j < scene.craft.size(); ++j) {
                     if (j == i) continue;
                     LocalCraft& o = scene.craft[j];
                     if (o.hullHP <= 0.0 || o.kind != CK_PIRATE) continue;
                     double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
                     double d2 = dx*dx + dy*dy + dz*dz;
-                    if (d2 < atkBest) { atkBest = d2; atkCraft = (int)j; atkPlayer = false; }
+                    if (d2 >= raiderBest) continue;         // уже есть более близкий налётчик
+                    bool raiding = false;                    // пират у беззащитного борта (конвой)?
+                    for (size_t k = 0; k < scene.craft.size(); ++k) {
+                        if (k == j) continue;
+                        const LocalCraft& v = scene.craft[k];
+                        if (v.hullHP <= 0.0) continue;
+                        if (v.kind != CK_TRADER && v.kind != CK_CIVILIAN) continue;
+                        double vx = v.x - o.x, vy = v.y - o.y, vz = v.z - o.z;
+                        if (vx*vx + vy*vy + vz*vz < RAID2) { raiding = true; break; }
+                    }
+                    if (raiding) { raiderBest = d2; raider = (int)j; }
+                }
+                if (raider >= 0) {
+                    atkCraft = raider; atkBest = raiderBest; atkPlayer = false; c.defending = true;
+                } else {
+                    // Фолбэк — прежняя логика: ближайший пират в радиусе осведомлённости AW2.
+                    for (size_t j = 0; j < scene.craft.size(); ++j) {
+                        if (j == i) continue;
+                        LocalCraft& o = scene.craft[j];
+                        if (o.hullHP <= 0.0 || o.kind != CK_PIRATE) continue;
+                        double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+                        double d2 = dx*dx + dy*dy + dz*dz;
+                        if (d2 < atkBest) { atkBest = d2; atkCraft = (int)j; atkPlayer = false; }
+                    }
                 }
             }
             // Спровоцированный патруль всё ещё может предпочесть БОЛЕЕ БЛИЗКОГО игрока (тогда не «эскорт»).
