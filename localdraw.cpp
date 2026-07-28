@@ -344,6 +344,14 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
     const double screenR = Rb * focal / pc.depth;
     if (screenR < 1.0) return false;    // меньше ~2 полноэкранных px — диск неотличим, фолбэк
 
+    // Кольца газового гиганта (перспектива): аннулус в экваториальной плоскости тела
+    // (нормаль = ось A, ниже). 0-поля => колец нет. Геометрия, как у сферы (луч↔плоскость).
+    const bool   hasRing = (bd.kind == LB_GASGIANT && bd.ringOuter > bd.ringInner &&
+                            bd.ringInner > 0.0);
+    const double Ri = bd.ringInner, Ro = bd.ringOuter;
+    const double Ri2 = Ri * Ri, Ro2 = Ro * Ro;
+    const double invSpan = (Ro > Ri) ? 1.0 / (Ro - Ri) : 0.0;
+
     // Персистентная half-res стриминг-текстура (как у звезды, но отдельная).
     static SDL_Texture*  tex   = nullptr;
     static SDL_Renderer* texRd = nullptr;
@@ -362,7 +370,15 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
     if (!tex) return false;
 
     // bbox в координатах half-res буфера вокруг проекции центра (+рамка на атмосферный лимб).
-    const double margin = screenR * 1.14 + 3.0;
+    // При кольцах расширяем bbox на их внешний радиус (проекция кольца шире диска планеты).
+    double margin = screenR * 1.14 + 3.0;
+    if (hasRing) {
+        double dd = pc.depth - Ro; if (dd < view.nearPlane) dd = view.nearPlane;
+        const double ringScreenR = Ro * focal / dd + 3.0;
+        if (ringScreenR > margin) margin = ringScreenR;
+        const double cap = (double)(winW + winH);
+        if (margin > cap) margin = cap;
+    }
     int bx0 = std::max(0,  (int)std::floor((pc.x - margin) * 0.5));
     int by0 = std::max(0,  (int)std::floor((pc.y - margin) * 0.5));
     int bx1 = std::min(bw, (int)std::ceil ((pc.x + margin) * 0.5) + 1);
@@ -391,6 +407,12 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
     double axY = 0.20 * std::cos(seed * 0.9);
     double axZ = 1.0;
     { const double al = 1.0 / std::sqrt(axX * axX + axY * axY + axZ * axZ); axX *= al; axY *= al; axZ *= al; }
+    // Инварианты колец (не зависят от пикселя): (E−C)·A, |центр|², базовый цвет колец.
+    const double ocA = ocx * axX + ocy * axY + ocz * axZ;     // глаз относительно плоскости колец
+    const double CC  = cx * cx + cy * cy + cz * cz;           // |центр тела|² (для тени на кольцах)
+    const double ringBR = 0.45 * baseR + 0.55 * 214.0;        // лёд/камень: светлее и «серее» тела
+    const double ringBG = 0.45 * baseG + 0.55 * 205.0;
+    const double ringBB = 0.45 * baseB + 0.55 * 188.0;
     const double tcl   = scene.fxClock;
     const double drift = (kind == LB_GASGIANT) ? tcl * 0.05 : 0.0;   // медленный дрейф полос
     const double ambient = 0.15;                              // подсветка от кластера (тысячи звёзд)
@@ -417,77 +439,158 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
             double dz = basis.rZ * scx + basis.uZ * scy + basis.fZ;
             const double il = 1.0 / std::sqrt(dx * dx + dy * dy + dz * dz);
             dx *= il; dy *= il; dz *= il;
-            // Пересечение со сферой тела (ближний корень t0).
-            const double b = ocx * dx + ocy * dy + ocz * dz;
-            const double disc = b * b - cBody;
-            if (disc < 0.0) continue;                          // мимо тела → прозрачно
-            const double t0 = -b - std::sqrt(disc);
-            if (t0 <= 0.0) continue;                            // тело позади / глаз внутри → пропуск
-            // Точка/нормаль поверхности.
-            const double sx = ex + dx * t0, sy = ey + dy * t0, sz = ez + dz * t0;
-            const double nx = (sx - cx) / Rb, ny = (sy - cy) / Rb, nz = (sz - cz) / Rb;
-            // Попиксельная окклюзия звездой: её ближнее пересечение раньше t0 → пиксель за плазмой.
+
+            // --- (a) Сфера тела: ближний корень t0, точка/нормаль поверхности. ---
+            bool   sHit = false; double t0 = 0.0;
+            double nx = 0.0, ny = 0.0, nz = 0.0, sx = 0.0, sy = 0.0, sz = 0.0;
+            {
+                const double b = ocx * dx + ocy * dy + ocz * dz;
+                const double disc = b * b - cBody;
+                if (disc >= 0.0) {
+                    const double tt = -b - std::sqrt(disc);
+                    if (tt > 0.0) {
+                        sHit = true; t0 = tt;
+                        sx = ex + dx * tt; sy = ey + dy * tt; sz = ez + dz * tt;
+                        nx = (sx - cx) / Rb; ny = (sy - cy) / Rb; nz = (sz - cz) / Rb;
+                    }
+                }
+            }
+
+            // --- (b) Кольца: пересечение луча с экваториальной плоскостью (нормаль A). ---
+            bool   rHit = false; double tR = 0.0, ralpha = 0.0;
+            double rcr = 0.0, rcg = 0.0, rcb = 0.0;
+            if (hasRing) {
+                const double denom = dx * axX + dy * axY + dz * axZ;
+                if (std::fabs(denom) > 1e-6) {
+                    const double tt = -ocA / denom;                     // (C−E)·A / (d·A)
+                    if (tt > 1e-4) {
+                        const double px = ex + dx * tt, py = ey + dy * tt, pz = ez + dz * tt;
+                        const double rvx = px - cx, rvy = py - cy, rvz = pz - cz;
+                        const double rad2 = rvx * rvx + rvy * rvy + rvz * rvz;
+                        if (rad2 >= Ri2 && rad2 <= Ro2) {
+                            const double rad = std::sqrt(rad2);
+                            const double u = (rad - Ri) * invSpan;      // 0..1 поперёк колец
+                            double edge = 1.0;                          // мягкие кромки
+                            if (u < 0.10) edge = u / 0.10;
+                            else if (u > 0.90) edge = (1.0 - u) / 0.10;
+                            double gap;                                 // деления (Кассини)
+                            { const double g = (u - 0.52) / 0.055; gap  = 1.0 - 0.85 * std::exp(-g * g); }
+                            { const double g = (u - 0.80) / 0.030; gap *= 1.0 - 0.55 * std::exp(-g * g); }
+                            const double bands = 0.72 + 0.28 * std::sin(rad * 0.85 + seed * 2.0);
+                            const double dens = edge * gap * bands;     // локальная плотность частиц
+                            if (dens > 0.02) {
+                                // Тень тела на кольцах (мягкая): прицельный параметр луча
+                                // звезда(0)→P относительно центра тела; полутень ~18% радиуса.
+                                double shadow = 1.0;
+                                const double PP = px * px + py * py + pz * pz;
+                                if (PP > 1e-9) {
+                                    const double PC = px * cx + py * cy + pz * cz;
+                                    const double tc = PC / PP;                      // ближайшее сближение
+                                    if (tc > 0.0 && tc < 1.0) {                     // тело между звездой и P
+                                        double dp2 = CC - PC * PC / PP;             // квадрат прицельного
+                                        if (dp2 < 0.0) dp2 = 0.0;
+                                        double sh = (std::sqrt(dp2) - Rb) / (0.18 * Rb);
+                                        if (sh < 0.0) sh = 0.0; else if (sh > 1.0) sh = 1.0;
+                                        shadow = 0.16 + 0.84 * sh;                  // 0.16 умбра → 1 свет
+                                    }
+                                }
+                                const double lightR = ambient + (1.0 - ambient) * shadow;
+                                double graze = 0.34 / (std::fabs(denom) + 0.22);   // edge-on → плотнее
+                                if (graze < 1.0) graze = 1.0; else if (graze > 2.2) graze = 2.2;
+                                ralpha = dens * graze * 0.80;
+                                if (ralpha > 0.92) ralpha = 0.92;
+                                rcr = ringBR * lightR; rcg = ringBG * lightR; rcb = ringBB * lightR;
+                                rHit = true; tR = tt;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- (c) Попиксельная окклюзия звездой (одна проверка на сферу и кольца). ---
             if (hasStar) {
                 if (csStar < 0.0) continue;                     // глаз внутри звезды — всё за веществом
                 const double bsr = ex * dx + ey * dy + ez * dz; // центр звезды = 0
                 const double dss = bsr * bsr - csStar;
                 if (dss >= 0.0) {
                     const double ts0 = -bsr - std::sqrt(dss);
-                    if (ts0 > 1e-4 && ts0 < t0) continue;       // звезда ближе тела → перекрыто
+                    if (ts0 > 1e-4) {
+                        if (sHit && ts0 < t0) sHit = false;     // звезда ближе тела
+                        if (rHit && ts0 < tR) rHit = false;     // звезда ближе колец
+                    }
                 }
             }
-            // Освещение: свет из начала координат. L = normalize(−S); ламберт с мягким терминатором.
-            const double sl = std::sqrt(sx * sx + sy * sy + sz * sz);
-            double lam = 1.0;
-            if (sl > 1e-9) lam = -(nx * sx + ny * sy + nz * sz) / sl;
-            double diff = (lam + 0.10) / 1.10;                  // wrap-lighting: чуть мягче кромка
-            if (diff < 0.0) diff = 0.0; else if (diff > 1.0) diff = 1.0;
-            const double lightF = ambient + (1.0 - ambient) * diff;
+            if (!sHit && !rHit) continue;                       // мимо всего → прозрачно
 
-            // Поверхностный альбедо-паттерн по типу тела.
-            double cr = baseR, cg = baseG, cb = baseB;
-            if (kind == LB_GASGIANT) {
-                const double lat  = nx * axX + ny * axY + nz * axZ;      // [-1,1] «широта»
-                const double warp = 0.35 * std::sin((nx - nz) * 4.0 + drift * 2.0 + seed);
-                const double band = std::sin(lat * 8.0 + warp + seed * 3.0);
-                const double swirl= std::sin(lat * 17.0 - warp * 2.2 + drift * 4.0);
-                const double m = 0.5 + 0.5 * (0.72 * band + 0.28 * swirl);  // 0..1 тёмн/светл пояс
-                const double f2 = 0.74 + 0.46 * m;
-                cr = baseR * f2; cg = baseG * f2; cb = baseB * f2;
-            } else if (kind == LB_ICE) {
-                const double lat = std::fabs(nx * axX + ny * axY + nz * axZ);
-                const double sp1 = std::sin(nx * 13.0 + seed) * std::sin(ny * 11.0 - seed) *
-                                   std::sin(nz * 12.0 + seed * 2.0);
-                const double alb = 1.05 + 0.12 * lat + 0.05 * sp1;      // ярче к полюсам
-                cr = baseR * alb; cg = baseG * alb; cb = std::min(255.0, baseB * alb + 8.0);
-            } else if (kind == LB_MOON) {
-                const double sp1 = std::sin(nx * 15.0 + seed * 2.0) * std::sin(ny * 14.0 - seed) *
-                                   std::sin(nz * 16.0 + seed);
-                const double mare = 0.82 + 0.18 * sp1;                  // тёмные «моря»
-                cr = baseR * mare; cg = baseG * mare; cb = baseB * mare;
-            } else {                                                    // LB_ROCKY
-                const double sp1 = std::sin(nx * 7.0 + seed) * std::sin(ny * 8.0 - seed * 1.3);
-                const double sp2 = std::sin((nx + ny) * 13.0 - seed) * std::sin(nz * 11.0 + seed);
-                const double mott = 0.86 + 0.14 * sp1 + 0.06 * sp2;     // континенты/кратеры
-                cr = baseR * mott; cg = baseG * mott; cb = baseB * mott;
+            // --- (d) Шейдинг сферы (если попали) → scr/scg/scb. ---
+            double scr = 0.0, scg = 0.0, scb = 0.0;
+            if (sHit) {
+                const double sl = std::sqrt(sx * sx + sy * sy + sz * sz);
+                double lam = 1.0;
+                if (sl > 1e-9) lam = -(nx * sx + ny * sy + nz * sz) / sl;
+                double diff = (lam + 0.10) / 1.10;              // wrap-lighting: мягче кромка
+                if (diff < 0.0) diff = 0.0; else if (diff > 1.0) diff = 1.0;
+                const double lightF = ambient + (1.0 - ambient) * diff;
+                double cr = baseR, cg = baseG, cb = baseB;
+                if (kind == LB_GASGIANT) {
+                    const double lat  = nx * axX + ny * axY + nz * axZ;      // [-1,1] «широта»
+                    const double warp = 0.35 * std::sin((nx - nz) * 4.0 + drift * 2.0 + seed);
+                    const double band = std::sin(lat * 8.0 + warp + seed * 3.0);
+                    const double swirl= std::sin(lat * 17.0 - warp * 2.2 + drift * 4.0);
+                    const double m = 0.5 + 0.5 * (0.72 * band + 0.28 * swirl);  // 0..1 пояс
+                    const double f2 = 0.74 + 0.46 * m;
+                    cr = baseR * f2; cg = baseG * f2; cb = baseB * f2;
+                } else if (kind == LB_ICE) {
+                    const double lat = std::fabs(nx * axX + ny * axY + nz * axZ);
+                    const double sp1 = std::sin(nx * 13.0 + seed) * std::sin(ny * 11.0 - seed) *
+                                       std::sin(nz * 12.0 + seed * 2.0);
+                    const double alb = 1.05 + 0.12 * lat + 0.05 * sp1;      // ярче к полюсам
+                    cr = baseR * alb; cg = baseG * alb; cb = std::min(255.0, baseB * alb + 8.0);
+                } else if (kind == LB_MOON) {
+                    const double sp1 = std::sin(nx * 15.0 + seed * 2.0) * std::sin(ny * 14.0 - seed) *
+                                       std::sin(nz * 16.0 + seed);
+                    const double mare = 0.82 + 0.18 * sp1;                  // тёмные «моря»
+                    cr = baseR * mare; cg = baseG * mare; cb = baseB * mare;
+                } else {                                                    // LB_ROCKY
+                    const double sp1 = std::sin(nx * 7.0 + seed) * std::sin(ny * 8.0 - seed * 1.3);
+                    const double sp2 = std::sin((nx + ny) * 13.0 - seed) * std::sin(nz * 11.0 + seed);
+                    const double mott = 0.86 + 0.14 * sp1 + 0.06 * sp2;     // континенты/кратеры
+                    cr = baseR * mott; cg = baseG * mott; cb = baseB * mott;
+                }
+                cr *= lightF; cg *= lightF; cb *= lightF;
+                // Атмосферный лимб (газ/лёд): мягкое свечение на ОСВЕЩЁННОМ крае (рассеяние).
+                if (kind == LB_GASGIANT || kind == LB_ICE) {
+                    double ndv = -(nx * dx + ny * dy + nz * dz);            // к глазу (>0 у ближней грани)
+                    if (ndv < 0.0) ndv = 0.0; else if (ndv > 1.0) ndv = 1.0;
+                    double rim = 1.0 - ndv; rim *= rim;                     // резче к самому лимбу
+                    const double glow = rim * diff * 85.0;                  // виден на дневной стороне
+                    if (kind == LB_ICE) { cr += glow * 0.60; cg += glow * 0.80; cb += glow; }
+                    else                { cr += glow;        cg += glow * 0.80; cb += glow * 0.50; }
+                }
+                scr = cr; scg = cg; scb = cb;
             }
-            cr *= lightF; cg *= lightF; cb *= lightF;
 
-            // Атмосферный лимб (газ/лёд): мягкое свечение на ОСВЕЩЁННОМ крае (рассеяние).
-            if (kind == LB_GASGIANT || kind == LB_ICE) {
-                double ndv = -(nx * dx + ny * dy + nz * dz);            // к глазу (>0 на ближней грани)
-                if (ndv < 0.0) ndv = 0.0; else if (ndv > 1.0) ndv = 1.0;
-                double rim = 1.0 - ndv; rim *= rim;                     // резче к самому лимбу
-                const double glow = rim * diff * 85.0;                  // виден на дневной стороне
-                if (kind == LB_ICE) { cr += glow * 0.60; cg += glow * 0.80; cb += glow; }
-                else                { cr += glow;        cg += glow * 0.80; cb += glow * 0.50; }
+            // --- (e) Композит кольца/сфера по глубине (t0 vs tR). ---
+            double outR, outG, outB; Uint32 outA;
+            if (sHit && (!rHit || t0 <= tR)) {
+                outR = scr; outG = scg; outB = scb; outA = 255u;    // сфера ближе (кольцо за телом)
+            } else if (sHit) {                                       // кольцо перед телом → поверх
+                const double a = ralpha;
+                outR = a * rcr + (1.0 - a) * scr;
+                outG = a * rcg + (1.0 - a) * scg;
+                outB = a * rcb + (1.0 - a) * scb;
+                outA = 255u;
+            } else {                                                 // только кольцо над фоном
+                outR = rcr; outG = rcg; outB = rcb;
+                const double aa = ralpha * 255.0;
+                outA = aa > 255.0 ? 255u : (aa < 0.0 ? 0u : (Uint32)aa);
             }
 
-            cr *= fade01; cg *= fade01; cb *= fade01;                   // глубинный фейд сцены
-            const Uint32 ir = cr > 255.0 ? 255u : (cr < 0.0 ? 0u : (Uint32)cr);
-            const Uint32 ig = cg > 255.0 ? 255u : (cg < 0.0 ? 0u : (Uint32)cg);
-            const Uint32 ib = cb > 255.0 ? 255u : (cb < 0.0 ? 0u : (Uint32)cb);
-            row[bx - bx0] = 0xFF000000u | (ir << 16) | (ig << 8) | ib;
+            outR *= fade01; outG *= fade01; outB *= fade01;         // глубинный фейд сцены
+            const Uint32 ir = outR > 255.0 ? 255u : (outR < 0.0 ? 0u : (Uint32)outR);
+            const Uint32 ig = outG > 255.0 ? 255u : (outG < 0.0 ? 0u : (Uint32)outG);
+            const Uint32 ib = outB > 255.0 ? 255u : (outB < 0.0 ? 0u : (Uint32)outB);
+            row[bx - bx0] = (outA << 24) | (ir << 16) | (ig << 8) | ib;
         }
     }
     SDL_UnlockTexture(tex);

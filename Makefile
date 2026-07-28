@@ -32,5 +32,12 @@ shots: shot_test.cpp $(LIBSOURCES)
 	SDL_VIDEODRIVER=dummy ./shot_test
 	@for f in shot_*.bmp; do sips -s format png "$$f" --out "$${f%.bmp}.png" >/dev/null 2>&1 && echo "png: $${f%.bmp}.png"; done
 
+# Скриншот-харнес под ASan/UBSan: покрывает попиксельные renderStarPlasma/renderBodySphere
+# (sub-rect SDL_LockTexture, композит колец/сферы, расширенный bbox). Собирает и прогоняет все
+# сценарии headless. Обязателен при правках localdraw.cpp. Артефакты не коммитятся.
+shot_asan: shot_test.cpp $(LIBSOURCES)
+	$(CXX) shot_test.cpp $(LIBSOURCES) $(SANFLAGS) -std=c++11 $(SDL_CFLAGS) $(SDL_LIBS) -o shot_test_asan
+	SDL_VIDEODRIVER=dummy ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 ./shot_test_asan
+
 clean:
-	rm -rf game game_asan soak_asan shot_test *.dSYM shot_*.bmp shot_*.png
+	rm -rf game game_asan soak_asan shot_test shot_test_asan *.dSYM shot_*.bmp shot_*.png

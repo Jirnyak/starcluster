@@ -40,6 +40,10 @@ cluster map stays orthographic) and the player flies a ship in 3D around:
   at the system origin as the light source: a real day/night terminator gives them
   phases and crescents, plus per-type surfaces (gas-giant bands, rocky mottling,
   icy poles and albedo, lunar maria) and an atmospheric limb glow;
+- **gas-giant rings in perspective**, drawn as a per-pixel ray↔plane annulus in the
+  planet's equatorial plane: Cassini gaps, radial banding, a soft planet shadow cast
+  on the rings, edge-on opacity gain, and a depth composite so the near arc passes in
+  front of the planet while the far arc is occluded behind it;
 - local NPC ships (traders, pirates), mining, docking, and scooping interactions.
 
 The local mode is fully deterministic and self-contained: it draws its own seeded
@@ -359,6 +363,13 @@ surface (gas-giant latitude bands, rocky mottling, icy poles, lunar maria) and a
 atmospheric limb glow. Each body's shading is seeded deterministically from its
 orbit, so the screenshots stay reproducible; only small or map-view bodies fall
 back to flat discs, and the orthographic map is left bit-for-bit unchanged.
+Gas-giant rings are drawn in the same `renderBodySphere` pass: each pixel's ray is
+intersected with the annulus lying in the planet's equatorial plane (its normal is
+the same spin axis that orients the latitude bands), giving Cassini gaps, radial
+banding, a soft impact-parameter planet shadow on the rings, and an edge-on opacity
+gain. The sphere and ring roots are compared per pixel, so the near ring arc blends
+over the planet while the far arc is occluded behind it, and the star's sphere
+occludes both — no separate billboard or depth pass.
 
 ## Source Map
 
@@ -386,7 +397,7 @@ back to flat discs, and the orthographic map is left bit-for-bit unchanged.
 | `local.h` | Local-mode data structures (`LocalScene`, `LocalInput`) and the `buildLocalCamera` helper. |
 | `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). |
 | `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior. |
-| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, and lit ray-sphere planet/moon spheres (perspective view only). |
+| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, and perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow) — all perspective view only. |
 | `shot_test.cpp` | Headless screenshot harness for local-mode scenarios (`make shots`). |
 | `soak_test.cpp` | Headless long-run soak harness for the local simulation (`make soak`). |
 | `architecture.md` | High-level architecture and data-oriented rules. |
@@ -433,10 +444,11 @@ Important rules from the project documents:
   flight mode's star is a *software* shader drawn into an SDL streaming texture.
 - In local flight mode there is no physical collision with the star or bodies
   (flying "into" the star is cosmetic; only HP can end a flight).
-- Planets and moons are now lit ray-sphere spheres in the perspective view, but
-  their rings are still only drawn on the orthographic map — ring geometry is not
-  yet projected around the sphere in first person (a Saturn-like ellipse with the
-  back arc occluded by the planet is a known next step).
+- Gas-giant rings are now projected in first person (a Saturn-like ellipse with the
+  back arc occluded by the planet), but treated as an infinitely thin plane: there is
+  no vertical ring thickness at the edge-on grazing angle, no moon-resonance gap
+  structure, and no ring-cast shadow back onto the planet — only the planet's shadow
+  onto the rings.
 - Non-player faction memory overlays are not exposed through a debug selector.
 - The active build is POSIX/SDL2 via `sdl2-config`; the old platform makefiles
   are not synchronized with the current source list.
