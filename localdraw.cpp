@@ -794,6 +794,101 @@ static bool renderRockLit(SDL_Renderer* renderer, const LocalScene& scene,
     return true;
 }
 
+// Туманность-фон как газовое поле на «небесной сфере»: для каждого пикселя мировой луч
+// (тот же приём, что шейдеры), многооктавный шум с доменным варпом ОТ НАПРАВЛЕНИЯ луча →
+// клочья/волокна газа, устойчивые при повороте камеры (согласовано со скайбоксом §1).
+// Крупномасштабная «банка» сгущает газ в одной части неба; ядра филаментов чуть белее;
+// медленный дрейф по fxClock. Чистая функция направления (изотропно), global rng не трогаем.
+// Только перспектива — орто-карта (§2.7) рисует прежний плоский тон отдельной веткой.
+static void renderNebula(SDL_Renderer* renderer, const LocalScene& scene,
+                         const View3D& view, const CameraBasis& basis, int winW, int winH) {
+    if (winW <= 0 || winH <= 0) return;
+    const double strength = scene.nebulaStrength;
+    if (strength <= 0.0) return;
+    const double focal = std::max(1.0, view.focal);
+
+    static SDL_Texture*  tex   = nullptr;
+    static SDL_Renderer* texRd = nullptr;
+    static int texW = 0, texH = 0;
+    const int bw = (winW + 1) / 2, bh = (winH + 1) / 2;
+    if (!tex || texRd != renderer || texW != bw || texH != bh) {
+        if (tex) SDL_DestroyTexture(tex);
+        tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                SDL_TEXTUREACCESS_STREAMING, bw, bh);
+        texRd = renderer; texW = bw; texH = bh;
+        if (tex) {
+            SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+            SDL_SetTextureScaleMode(tex, SDL_ScaleModeLinear);
+        }
+    }
+    if (!tex) return;
+
+    const double gR = (double)scene.nebulaR, gG = (double)scene.nebulaG, gB = (double)scene.nebulaB;
+    const double t  = scene.fxClock;
+    // Детерминированная ось «банки» из тона (без rng) — плотнее в одной части неба.
+    double axx = std::sin(gR * 0.021 + 1.3), axy = std::sin(gG * 0.017 + 2.7), axz = std::sin(gB * 0.013 + 0.6);
+    { double al = std::sqrt(axx*axx + axy*axy + axz*axz);
+      if (al < 1e-6) { axx = 0.0; axy = 1.0; axz = 0.0; al = 1.0; }
+      axx /= al; axy /= al; axz /= al; }
+
+    void* vpix = nullptr; int pitch = 0;
+    if (SDL_LockTexture(tex, nullptr, &vpix, &pitch) != 0) return;
+    unsigned char* rowbase = (unsigned char*)vpix;
+
+    const double invF  = 1.0 / focal;
+    const double halfW = winW * 0.5, halfH = winH * 0.5;
+    const double MAXA  = strength * 200.0;   // потолок альфы в плотном ядре банки
+
+    for (int by = 0; by < bh; ++by) {
+        Uint32* row = (Uint32*)(rowbase + (size_t)by * pitch);
+        const double fy  = (double)(by * 2) + 0.5;
+        const double scy = -(fy - halfH) * invF;
+        for (int bx = 0; bx < bw; ++bx) {
+            const double fx  = (double)(bx * 2) + 0.5;
+            const double scx = (fx - halfW) * invF;
+            double dx = basis.rX * scx + basis.uX * scy + basis.fX;
+            double dy = basis.rY * scx + basis.uY * scy + basis.fY;
+            double dz = basis.rZ * scx + basis.uZ * scy + basis.fZ;
+            const double il = 1.0 / std::sqrt(dx*dx + dy*dy + dz*dz);
+            dx *= il; dy *= il; dz *= il;
+
+            // Доменный варп направления луча.
+            const double w1 = 0.40 * std::sin(dy*3.0 + t*0.05) * std::sin(dz*2.6 - t*0.04);
+            const double wx = dx + w1, wy = dy - w1, wz = dz + w1;
+            // Пухлые облака: НИЗКОчастотные произведения синусов дают локализованные сгустки
+            // (а не полосы, как сумма синусов), + средняя и мелкая октавы — волокна. Домен уже
+            // искажён варпом (wx..wz), поэтому сгустки не выровнены по осям.
+            const double base = std::sin(wx*2.2 + t*0.02) * std::sin(wy*1.9 - t*0.015) * std::sin(wz*2.5 + t*0.01);
+            const double mid  = std::sin(wx*5.0 - t*0.02) * std::sin(wz*5.5 + t*0.02);
+            const double hi   = std::sin(wy*11.0)         * std::sin(wz*13.0);
+            const double f    = 0.60*base + 0.30*mid + 0.15*hi;      // ~[-1,1]: сгустки + волокна
+            double cloud = 0.5 + 0.7*f;                              // ~[-0.2,1.2]
+
+            const double bank = 0.5 + 0.5*(dx*axx + dy*axy + dz*axz); // 0..1 поперёк неба
+            double dens = cloud * (0.35 + 0.65*bank) - 0.18;         // мягкий пол → клочья, не заливка
+            if (dens <= 0.0) { row[bx] = 0u; continue; }             // промах = прозрачно
+            if (dens > 1.0) dens = 1.0;
+            dens *= (0.6 + 0.4*dens);                                // мягкий контраст (мид не давит)
+
+            const double a  = MAXA * dens;
+            const double wf = 0.30 * dens;                           // ядра волокон чуть белее
+            double rr = gR + (255.0 - gR) * wf;
+            double gg = gG + (255.0 - gG) * wf;
+            double bb = gB + (255.0 - gB) * wf;
+            const Uint32 ia = a  > 255.0 ? 255u : (a  < 0.0 ? 0u : (Uint32)a);
+            const Uint32 ir = rr > 255.0 ? 255u : (rr < 0.0 ? 0u : (Uint32)rr);
+            const Uint32 ig = gg > 255.0 ? 255u : (gg < 0.0 ? 0u : (Uint32)gg);
+            const Uint32 ib = bb > 255.0 ? 255u : (bb < 0.0 ? 0u : (Uint32)bb);
+            row[bx] = (ia << 24) | (ir << 16) | (ig << 8) | ib;
+        }
+    }
+    SDL_UnlockTexture(tex);
+
+    const SDL_Rect src = { 0, 0, bw, bh };
+    const SDL_Rect dst = { 0, 0, winW, winH };
+    SDL_RenderCopy(renderer, tex, &src, &dst);
+}
+
 } // namespace
 
 void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene& scene,
@@ -836,22 +931,28 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         return depthFade(depth);
     };
 
-    // (0b) ТУМАННОСТЬ: слабый полноэкранный тон (в этом проходе неактивен — strength=0).
+    // (0b) ТУМАННОСТЬ (косметический фон; strength задаётся в localgen для части сцен).
+    // Перспектива — богатое газовое поле на небесной сфере (renderNebula, попиксельно).
+    // Орто-карта (C) — прежний плоский тон + 3 сгустка, ПОБИТОВО НЕ ТРОГАЕМ (§2.7).
     if (scene.nebulaStrength > 0.0) {
-        int na = (int)(scene.nebulaStrength * 60.0);
-        fillRect(renderer, 0, 0, winW, winH, rgba(scene.nebulaR, scene.nebulaG, scene.nebulaB, na));
-        // Мягкие газовые сгустки: 3 больших круга в ДЕТЕРМИНИРОВАННЫХ точках
-        // (хеш от размеров окна, НЕ rng), очень низкая альфа. Стоимость мизерна.
-        int ba = (int)(scene.nebulaStrength * 30.0);
-        for (int i = 0; ba > 0 && i < 3; ++i) {
-            unsigned h = ((unsigned)winW * 73856093u) ^ ((unsigned)winH * 19349663u) ^
-                         ((unsigned)(i + 1) * 83492791u);
-            h ^= h >> 13; h *= 2246822519u; h ^= h >> 16;
-            unsigned h2 = h * 2654435761u; h2 ^= h2 >> 15;
-            int bx = int(h % (unsigned)std::max(1, winW));
-            int by = int(h2 % (unsigned)std::max(1, winH));
-            int br = std::min(winW, winH) / 4 + int((h >> 5) % 120u);
-            fillCircle(renderer, bx, by, br, rgba(scene.nebulaR, scene.nebulaG, scene.nebulaB, ba));
+        if (view.perspective) {
+            renderNebula(renderer, scene, view, basis, winW, winH);
+        } else {
+            int na = (int)(scene.nebulaStrength * 60.0);
+            fillRect(renderer, 0, 0, winW, winH, rgba(scene.nebulaR, scene.nebulaG, scene.nebulaB, na));
+            // Мягкие газовые сгустки: 3 больших круга в ДЕТЕРМИНИРОВАННЫХ точках
+            // (хеш от размеров окна, НЕ rng), очень низкая альфа. Стоимость мизерна.
+            int ba = (int)(scene.nebulaStrength * 30.0);
+            for (int i = 0; ba > 0 && i < 3; ++i) {
+                unsigned h = ((unsigned)winW * 73856093u) ^ ((unsigned)winH * 19349663u) ^
+                             ((unsigned)(i + 1) * 83492791u);
+                h ^= h >> 13; h *= 2246822519u; h ^= h >> 16;
+                unsigned h2 = h * 2654435761u; h2 ^= h2 >> 15;
+                int bx = int(h % (unsigned)std::max(1, winW));
+                int by = int(h2 % (unsigned)std::max(1, winH));
+                int br = std::min(winW, winH) / 4 + int((h >> 5) % 120u);
+                fillCircle(renderer, bx, by, br, rgba(scene.nebulaR, scene.nebulaG, scene.nebulaB, ba));
+            }
         }
     }
 

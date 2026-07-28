@@ -345,6 +345,25 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_belt_near.bmp");
     }
 
+    // (14) ТУМАННОСТЬ изолированно: глубокий космос (звезды НЕТ), туманность включена
+    //      принудительно (QA рендера renderNebula — газовое поле на небесной сфере: клочья/
+    //      волокна, крупная «банка», медленный дрейф; без диска/короны звезды, чтобы не путать
+    //      с короной). Нос — вдоль оси «банки» (та же формула из тона, что в renderNebula) ⇒
+    //      плотная часть неба в центре кадра. Пурпурный тон (пара к амбру shot_system_cockpit).
+    {
+        LocalScene s; buildLocalScene(game, -1, s); s.active = true;   // -1 = глубокий космос
+        s.nebulaStrength = 0.60; s.nebulaR = 110; s.nebulaG = 50; s.nebulaB = 120; // magenta, поярче
+        const double axx = std::sin(110.0*0.021 + 1.3);
+        const double axy = std::sin(50.0 *0.017 + 2.7);
+        const double axz = std::sin(120.0*0.013 + 0.6);
+        s.px = s.py = s.pz = 0.0; s.pvx = s.pvy = s.pvz = 0.0;
+        localSetForward(s, axx, axy, axz);            // нос в плотную часть неба
+        std::printf("  [nebula] forced strength=%.2f rgb=%d,%d,%d (deep space, QA renderNebula)\n",
+                    s.nebulaStrength, (int)s.nebulaR, (int)s.nebulaG, (int)s.nebulaB);
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_nebula.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);

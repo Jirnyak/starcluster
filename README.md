@@ -52,6 +52,11 @@ cluster map stays orthographic) and the player flies a ship in 3D around:
   never overflows its sprite), craters and surface mottling, and a slow tumble that
   turns the surface detail with the rock — distant rocks fall back to cheap phase-lit
   discs;
+- **a volumetric nebula backdrop** in perspective: a per-pixel gas field painted on the
+  celestial sphere (color and density are a function of the world ray direction, so it
+  turns in lockstep with the skybox stars), built from multi-octave product noise (puffy
+  clumps plus filaments), a domain warp, and a large-scale density gradient; it is
+  translucent so the stars shine through it;
 - local NPC ships (traders, pirates), mining, docking, and scooping interactions.
 
 The local mode is fully deterministic and self-contained: it draws its own seeded
@@ -389,6 +394,19 @@ spin axis. To bound the number of texture locks in a dense belt, only rocks larg
 than a few pixels get the shader; smaller ones stay cheap phase-lit discs, and the
 whole path is gated on the perspective view so the orthographic map is untouched.
 
+The nebula backdrop (`renderNebula`) uses the same idea one more time, on the sky
+itself: for each pixel the world ray direction is fed to multi-octave product noise
+(low-frequency products make puffy localized clumps rather than the stripes a sum of
+sines would give, with mid and high octaves adding filaments), pre-distorted by a
+domain warp so nothing aligns to an axis. A large-scale "bank" gradient — density
+rising across the sky along an axis derived deterministically from the nebula's tint —
+makes it denser on one side, and filament cores are nudged toward white. Because color
+and density are a pure function of the ray direction, the field is fixed to the
+celestial sphere and turns in lockstep with the skybox stars; it is drawn first and
+kept translucent so those stars shine through it, with a slow `fxClock` drift. As with
+every other lit body this is perspective-only — the orthographic map keeps its former
+flat tint plus three hashed blobs, byte-for-byte.
+
 ## Source Map
 
 | File | Responsibility |
@@ -415,7 +433,7 @@ whole path is gated on the perspective view so the orthographic map is untouched
 | `local.h` | Local-mode data structures (`LocalScene`, `LocalInput`) and the `buildLocalCamera` helper. |
 | `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). |
 | `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior. |
-| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), and lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble) — all perspective view only. |
+| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble), and a volumetric nebula backdrop (`renderNebula` — per-pixel gas field on the celestial sphere: multi-octave noise, domain warp, density gradient, translucent) — all perspective view only. |
 | `shot_test.cpp` | Headless screenshot harness for local-mode scenarios (`make shots`). |
 | `soak_test.cpp` | Headless long-run soak harness for the local simulation (`make soak`). |
 | `architecture.md` | High-level architecture and data-oriented rules. |
@@ -471,6 +489,9 @@ Important rules from the project documents:
   than a few pixels; smaller and distant belt rocks are still phase-lit discs. The
   boulders are spheres carved *inward* for an irregular silhouette, so there are no
   true concavities, overhangs, or contact-binary shapes yet.
+- The nebula backdrop is a single translucent layer painted on the celestial sphere:
+  it does not yet have dust lanes that absorb light, emission brightening around the
+  bright skybox stars embedded in it, or multiple parallax layers for a sense of depth.
 - Non-player faction memory overlays are not exposed through a debug selector.
 - The active build is POSIX/SDL2 via `sdl2-config`; the old platform makefiles
   are not synchronized with the current source list.
