@@ -1386,6 +1386,12 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             strokeCircle(renderer, p.x, p.y, int(sz) + 8,  rgba(90, 220, 130, da));       // вне cyan-рамки цели (sz+6)
             strokeCircle(renderer, p.x, p.y, int(sz) + 13, rgba(90, 220, 130, da / 3));
         }
+        if (c.wanted) { // (§5.13.25) розыск: золотой пульс вокруг пирата, за которого назначена награда (§5.13.24)
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 5.2 + double(i) * 1.3); // темп ≠ швартовка(3.0)/эскорт(4.5)/SOS(6.0)
+            int da = 85 + int(pl * 130.0);                 // 85..215 — заметный «розыскной» пульс
+            strokeCircle(renderer, p.x, p.y, int(sz) + 9,  rgba(255, 205, 60, da));       // вне cyan-рамки цели и зелёного эскорта
+            strokeCircle(renderer, p.x, p.y, int(sz) + 14, rgba(255, 205, 60, da / 3));
+        }
         if (c.hullHP < c.maxHullHP) {
             double frac = c.hullHP / std::max(1.0, c.maxHullHP);
             bar(renderer, p.x - 8, p.y - int(sz) - 6, 16, 2, frac, c.hostile ? P.red : P.green);
@@ -1677,6 +1683,14 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                        (c.z - scene.pz) * (c.z - scene.pz);
             if (d < bestDef) { bestDef = d; nearDef = (int)i; }
         }
+        int nearWanted = -1; double bestWanted = 1e18; // (§5.13.25) ближайший пират «в розыске» (§5.13.24)
+        for (size_t i = 0; i < scene.craft.size(); ++i) {
+            if (!scene.craft[i].wanted || scene.craft[i].hullHP <= 0.0) continue;
+            const LocalCraft& c = scene.craft[i];
+            double d = (c.x - scene.px) * (c.x - scene.px) + (c.y - scene.py) * (c.y - scene.py) +
+                       (c.z - scene.pz) * (c.z - scene.pz);
+            if (d < bestWanted) { bestWanted = d; nearWanted = (int)i; }
+        }
         if (nearMkt >= 0) {
             const LocalBody& bd = scene.bodies[nearMkt];
             drawEdgeMarker(renderer, cx, cy, winW, winH, bd.x, bd.y, bd.z, view, basis, P.green);
@@ -1692,6 +1706,10 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         if (nearDef >= 0) { // (§5.13.12) краевой маркер эскорта — «помощь идёт» из-за кадра (зелёный «свои»)
             const LocalCraft& c = scene.craft[nearDef];
             drawEdgeMarker(renderer, cx, cy, winW, winH, c.x, c.y, c.z, view, basis, rgba(90, 220, 130, 255));
+        }
+        if (nearWanted >= 0) { // (§5.13.25) краевой маркер розыска — ведёт к премиальной цели за кадром (золото)
+            const LocalCraft& c = scene.craft[nearWanted];
+            drawEdgeMarker(renderer, cx, cy, winW, winH, c.x, c.y, c.z, view, basis, rgba(255, 205, 60, 255));
         }
         if (nearLoot >= 0) {
             const LocalLoot& lt = scene.loot[nearLoot];
@@ -1840,7 +1858,9 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         const bool hasShield = t.maxShield > 0.0;
         const bool sos = t.underAttack;   // (§5.13.11) цель — жертва бедствия
         const bool esc = t.defending;     // (§5.13.12) цель — патруль-эскорт на перехвате (взаимоискл. с sos)
+        const bool wnt = t.wanted;        // (§5.13.25) цель — пират «в розыске»; розыск ставится только пиратам ⇒ взаимоискл. с sos/esc
         int ph = hasShield ? 72 : 60;
+        if (wnt) ph += 14;                // (§5.13.25) место под строку «BOUNTY N CR» под корпусом
         panel(renderer, tx, ty, 224, ph);
         if (sos) {   // пульсирующая SOS-красная рамка вокруг панели — «эта цель под атакой»
             double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 6.0);
@@ -1850,15 +1870,22 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 4.5);
             strokeRect(renderer, tx - 2, ty - 2, 224 + 4, ph + 4, rgba(90, 220, 130, 110 + int(pl * 120.0)));
             strokeRect(renderer, tx - 3, ty - 3, 224 + 6, ph + 6, rgba(90, 220, 130, 55));
+        } else if (wnt) {   // (§5.13.25) золотая рамка — «цель в розыске, назначена награда»
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 5.2);   // темп ≠ SOS(6.0)/эскорт(4.5)
+            strokeRect(renderer, tx - 2, ty - 2, 224 + 4, ph + 4, rgba(255, 205, 60, 110 + int(pl * 130.0)));
+            strokeRect(renderer, tx - 3, ty - 3, 224 + 6, ph + 6, rgba(255, 205, 60, 55));
         }
         drawText(renderer, tx + 8, ty + 8, t.label.empty() ? std::string("CONTACT") : t.label,
-                 sos ? rgba(238, 88, 82, 255) : (esc ? rgba(90, 220, 130, 255) : (t.hostile ? P.red : P.text)), 1);
+                 sos ? rgba(238, 88, 82, 255) : (esc ? rgba(90, 220, 130, 255)
+                     : (wnt ? rgba(255, 205, 60, 255) : (t.hostile ? P.red : P.text))), 1);
         if (scene.lockTarget >= 0 && scene.lockTarget == scene.targetCraft) {
             drawText(renderer, tx + 224 - 8 - textWidth("LOCK", 1), ty + 8, "LOCK", P.cyan, 1);
         } else if (sos) {   // «SOS»-чип, если панель не занята значком захвата
             drawText(renderer, tx + 224 - 8 - textWidth("SOS", 1), ty + 8, "SOS", rgba(238, 88, 82, 255), 1);
         } else if (esc) {   // «ESCORT»-чип для дружественного перехватчика
             drawText(renderer, tx + 224 - 8 - textWidth("ESCORT", 1), ty + 8, "ESCORT", rgba(90, 220, 130, 255), 1);
+        } else if (wnt) {   // (§5.13.25) «WANTED»-чип — цель в розыске
+            drawText(renderer, tx + 224 - 8 - textWidth("WANTED", 1), ty + 8, "WANTED", rgba(255, 205, 60, 255), 1);
         }
         std::snprintf(buf, sizeof(buf), "DIST %.0F LU", dist);
         drawText(renderer, tx + 8, ty + 22, buf, P.dim, 1);
@@ -1878,6 +1905,11 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         }
         double frac = t.hullHP / std::max(1.0, t.maxHullHP);
         bar(renderer, tx + 8, by, 208, 6, frac, t.hostile ? P.red : P.green);
+        if (wnt) {   // (§5.13.25) сумма награды за розыск (золото, §2.6 %.0F) — под корпусом
+            by += 12;
+            std::snprintf(buf, sizeof(buf), "BOUNTY %.0F CR", t.wantedBounty);
+            drawText(renderer, tx + 8, by, buf, rgba(255, 205, 60, 255), 1);
+        }
     }
 
     // Индикатор добычи (по центру, над подсказкой стыковки).

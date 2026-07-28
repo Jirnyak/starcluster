@@ -580,6 +580,29 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_patrol_escort.bmp");
     }
 
+    // (18) РОЗЫСК (§5.13.25): пират «в розыске» (wanted) в кадре, наведён -> золотое кольцо-розыск у борта
+    //      + золотая рамка/чип «WANTED» и строка «BOUNTY N CR» в панели цели. Награда назначается ещё при
+    //      генерации (§5.13.24, детерминированный хэш); здесь форсируем флаг+сумму (sim в headless не крутится).
+    //      Открытый космос вдали от светила — без окклюзии. Темп золотого пульса (5.2) отличен от SOS/эскорта.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 1) { LocalCraft c; s.craft.push_back(c); } // гарантируем 1 борт
+        LocalCraft& pir = s.craft[0];                  // ПИРАТ В РОЗЫСКЕ
+        pir.hostile = true; pir.kind = CK_PIRATE; pir.label = "PIRATE"; pir.faction = -1;
+        pir.r = 230; pir.g = 90; pir.b = 80;
+        pir.aiState = 1; pir.errand = 0; pir.errandBody = -1;
+        pir.wanted = true; pir.wantedBounty = 650.0;   // ФОРСИРУЕМ метку розыска + сумму (детерм. диапазон 250..900)
+        pir.x = 600.0; pir.y = 0.0; pir.z = 180.0; pir.vx = pir.vy = pir.vz = 0.0;
+        pir.maxHullHP = 45.0; pir.hullHP = pir.maxHullHP * 0.8; pir.maxShield = 15.0; pir.shield = 15.0;
+        s.px = 510.0; s.py = -20.0; s.pz = 235.0; s.pvx = s.pvy = s.pvz = 0.0; // камера сзади-сбоку
+        localSetForward(s, pir.x - s.px, pir.y - s.py, pir.z - s.pz);         // нос на пирата
+        s.targetCraft = 0;                             // цель — пират в розыске -> панель покажет WANTED + BOUNTY
+        s.fxClock = 0.30;                              // фаза золотого пульса -> яркое кольцо/рамка
+        std::printf("  [wanted] wanted pirate (bounty 650) targeted -> gold ring + WANTED panel + BOUNTY line\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_wanted.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);
