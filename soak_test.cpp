@@ -39,11 +39,19 @@ int main() {
 
         // (§5.13.15) Инвариант внешнего вида пород: spec ∈ [0,1] и конечен (r/g/b — байты
         // по типу). Заодно считаем блестящие (лёд/металл, spec>0.5) для сводки разнообразия.
+        // (§5.13.16) + класс породы валиден (RockClass) и даёт конечный положительный множитель
+        // добычи — гейт на новую классификацию/выход (rockClass/rockYieldMult).
         for (size_t k = 0; k < scene.rocks.size(); ++k) {
             const double sp = scene.rocks[k].spec;
+            const int    rc = rockClass(scene.rocks[k].element);
+            const double ym = rockYieldMult(rc);
             if (!std::isfinite(sp) || sp < 0.0 || sp > 1.0) {
                 std::printf("INVARIANT FAIL: rock spec out of range star=%d k=%d spec=%f\n",
                             starIdx, (int)k, sp);
+                ++invariantFails;
+            } else if (rc < ROCK_SILICATE || rc > ROCK_METAL || !std::isfinite(ym) || ym <= 0.0) {
+                std::printf("INVARIANT FAIL: rock class/yield star=%d k=%d class=%d yield=%f\n",
+                            starIdx, (int)k, rc, ym);
                 ++invariantFails;
             } else {
                 ++rocksSeen;

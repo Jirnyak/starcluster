@@ -394,8 +394,15 @@ int main(int argc, char** argv) {
         s.px = c0x - ux * 30.0; s.py = c0y - uy * 30.0; s.pz = 40.0;
         s.pvx = s.pvy = s.pvz = 0.0;
         localSetForward(s, c0x - s.px, c0y - s.py, 0.0 - s.pz);
-        std::printf("  [belt-types] rocks=%d elems=O/C/Fe/Si specs=%.2f/%.2f/%.2f/%.2f\n",
-                    (int)s.rocks.size(), s.rocks[0].spec, s.rocks[1].spec, s.rocks[2].spec, s.rocks[3].spec);
+        // (§5.13.16) Заодно печатаем класс+множитель выхода по каждому элементу: проверяем, что
+        // rockClass(O/C/Fe/Si) -> ICE/CARBON/METAL/SILICATE и yields = 1.25/0.65/1.60/1.00.
+        std::printf("  [belt-types] rocks=%d elems=O/C/Fe/Si specs=%.2f/%.2f/%.2f/%.2f "
+                    "class=%s/%s/%s/%s yields=%.2f/%.2f/%.2f/%.2f\n",
+                    (int)s.rocks.size(), s.rocks[0].spec, s.rocks[1].spec, s.rocks[2].spec, s.rocks[3].spec,
+                    rockClassName(rockClass(reps[0])), rockClassName(rockClass(reps[1])),
+                    rockClassName(rockClass(reps[2])), rockClassName(rockClass(reps[3])),
+                    rockYieldMult(rockClass(reps[0])), rockYieldMult(rockClass(reps[1])),
+                    rockYieldMult(rockClass(reps[2])), rockYieldMult(rockClass(reps[3])));
         total += 1;
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_belt_types.bmp");
     }

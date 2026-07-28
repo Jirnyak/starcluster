@@ -972,7 +972,9 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                     int el = scene.rocks[best].element;
                     if (el < 0) el = 0;
                     if (el >= (int)ec) el = (int)ec - 1;
-                    scene.toast = std::string("MINING ") + elementDefinitions()[el].symbol;
+                    // (§5.13.16) Показываем элемент И класс породы, чтобы игрок связал вид→тип→выход.
+                    scene.toast = std::string("MINING ") + elementDefinitions()[el].symbol
+                                + " " + rockClassName(rockClass(el));
                 } else {
                     scene.toast = "MINING";
                 }
@@ -987,7 +989,11 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         double range = rk.radius + LocalCfg::MINE_RANGE;
         size_t ec = elementCount();
         if (rk.ore > 0.0 && d2 <= range*range && ec > 0) {
-            double rate = 9.0;
+            // (§5.13.16) Скорость извлечения зависит от КЛАССА породы (§5.13.15): металл —
+            // богатый и быстрый (ищи блестящие глыбы!), лёд — лёгкие летучие, силикат — базовый
+            // темп (=прежний ⇒ нулевой регресс для дефолт-класса), углерод — рыхлый и медленный.
+            // Тип уже виден по цвету/блеску — теперь он ещё и значим. Чистая арифметика, без RNG.
+            double rate = LocalCfg::MINE_RATE_BASE * rockYieldMult(rockClass(rk.element));
             double amt = rate * dtHours;               // масса за кадр
             int el = rk.element;
             if (el < 0) el = 0;

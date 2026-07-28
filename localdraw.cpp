@@ -1788,8 +1788,11 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     }
 
     // Индикатор добычи (по центру, над подсказкой стыковки).
-    if (scene.miningRock >= 0) {
-        std::snprintf(buf, sizeof(buf), "MINING  +%.0F", scene.miningAccum);
+    if (scene.miningRock >= 0 && scene.miningRock < (int)scene.rocks.size()) {
+        // (§5.13.16) Класс породы в индикаторе: игрок видит, что даёт текущая глыба (металл богаче).
+        const LocalRock& mr = scene.rocks[scene.miningRock];
+        std::snprintf(buf, sizeof(buf), "MINING %s  +%.0F",
+                      rockClassName(rockClass(mr.element)), scene.miningAccum);
         drawText(renderer, cx - textWidth(buf, 2) / 2, winH - 182, buf, P.amber, 2);
     }
 

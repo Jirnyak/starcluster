@@ -78,8 +78,45 @@ namespace LocalCfg {
     constexpr double RADIO_REVEAL_RANGE = 300.0; // источник "проявляется" (маркер+пеленг) при достатке детектора
     constexpr double RADIO_CLAIM_RANGE  = 36.0;  // дистанция активации/забора награды, LU
 
+    // --- Добыча по классу породы (§5.13.16): темп извлечения (масса/час) зависит от состава
+    // (класс из §5.13.15). Металл — плотная богатая руда (ищи блестящие глыбы!), лёд — легко
+    // возгоняемые летучие, силикат — базовая порода (=1.0, прежний темп ⇒ нулевой регресс для
+    // дефолт-класса), углерод — рыхлый низкосортный. Только СКОРОСТЬ добычи; combat/AI/ген не тронуты.
+    constexpr double MINE_RATE_BASE      = 9.0;   // базовая скорость (была inline-константой в localsim)
+    constexpr double MINE_YIELD_SILICATE = 1.00;  // силикат = база (прежнее поведение)
+    constexpr double MINE_YIELD_ICE      = 1.25;  // лёд/летучие
+    constexpr double MINE_YIELD_CARBON   = 0.65;  // углеродистый (медленно)
+    constexpr double MINE_YIELD_METAL    = 1.60;  // металлический (богато/быстро)
+
     // --- FX / juice ---
     constexpr int    FX_MAX = 3600;             // потолок частиц (безопасность/пейсинг)
+}
+
+// ---- Классы пород астероидов (§5.13.15/§5.13.16) ----
+// Плоский числовой класс по составу элемента (реальная таксономия M/C/S/лёд). rockClass()
+// (определён в localgen.cpp) — ЕДИНЫЙ источник этой классификации: его зовут и rockAppearance
+// (палитра/блеск, §5.13.15), и добыча (множитель выхода, §5.13.16) — чтобы «как выглядит» и
+// «сколько даёт» шли от одного правила. Чистые функции, без RNG (§2.3).
+enum RockClass { ROCK_SILICATE = 0, ROCK_ICE = 1, ROCK_CARBON = 2, ROCK_METAL = 3 };
+
+// Множитель скорости добычи по классу (относительно LocalCfg::MINE_RATE_BASE).
+inline double rockYieldMult(int rc) {
+    switch (rc) {
+    case ROCK_ICE:    return LocalCfg::MINE_YIELD_ICE;
+    case ROCK_CARBON: return LocalCfg::MINE_YIELD_CARBON;
+    case ROCK_METAL:  return LocalCfg::MINE_YIELD_METAL;
+    default:          return LocalCfg::MINE_YIELD_SILICATE;   // ROCK_SILICATE / неизвестное
+    }
+}
+
+// Короткое имя класса для HUD (UPPERCASE, §2.6).
+inline const char* rockClassName(int rc) {
+    switch (rc) {
+    case ROCK_ICE:    return "ICE";
+    case ROCK_CARBON: return "CARBON";
+    case ROCK_METAL:  return "METAL";
+    default:          return "SILICATE";
+    }
 }
 
 // Спец-значение aiTarget: цель NPC — игрок (а не индекс в scene.craft).
@@ -381,6 +418,12 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene);
 // (реальная таксономия M/C/S/лёд). ЧИСТАЯ арифметика над elementDefinitions(): без RNG,
 // без global rng (§2.3) — зовётся из localgen (запекает в rock.r/g/b/spec) и из шот-харнеса.
 void rockAppearance(int element, double& baseR, double& baseG, double& baseB, double& spec);
+
+// Класс породы астероида по индексу элемента (§5.13.16): один из RockClass
+// (SILICATE/ICE/CARBON/METAL). ЕДИНЫЙ источник таксономии — rockAppearance() (палитра/блеск)
+// и добыча (rockYieldMult) зовут именно его. Чистая арифметика над elementDefinitions(),
+// без RNG, без global rng (§2.3) — безопасно из localsim/localgen/шот-харнеса.
+int rockClass(int element);
 
 // Продвигает сцену на один кадр. dtReal — реальные секунды кадра.
 // Мутирует и сцену, и game: добыча/лут кладут груз в трюм игрока (уважая

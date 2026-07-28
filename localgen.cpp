@@ -23,25 +23,43 @@
 // с metallicTrait>0.35) — стальной, яркий блик; силикаты (всё прочее: Mg/Al/Si/Ca/Ti…) — тёпло-
 // бурый камень, матовый (≈ прежний вид пояса — безопасный дефолт). ЧИСТАЯ арифметика: без RNG,
 // без global rng (§2.3); клэмп индекса — переносит мусор без падения.
+// (§5.13.16) ЕДИНЫЙ классификатор породы по элементу — реальная таксономия M/C/S/лёд.
+// Зовётся и rockAppearance (палитра/блеск, §5.13.15), и добычей (rockYieldMult в local.h),
+// чтобы «как выглядит» и «сколько даёт» шли от одного правила. Чистая арифметика над
+// elementDefinitions(): без RNG, без global rng (§2.3). Индекс = Z−1 (см. resource.h).
+int rockClass(int element) {
+    const std::vector<ElementDefinition>& defs = elementDefinitions();
+    const int n = int(defs.size());
+    if (n <= 0) return ROCK_SILICATE;
+    if (element < 0) element = 0; else if (element > n - 1) element = n - 1;
+    const int    z     = defs[element].atomicNumber;
+    const double metal = defs[element].metallicTrait;
+    if (z == 1 || z == 2 || z == 7 || z == 8) return ROCK_ICE;      // H/He/N/O — лёд/летучие
+    if (z == 6 || z == 16)                    return ROCK_CARBON;   // C/S — углеродистый
+    if ((z >= 26 && z <= 28) || metal > 0.35) return ROCK_METAL;    // Fe/Co/Ni + тяж. металлы
+    return ROCK_SILICATE;                                           // S-тип (дефолт)
+}
+
 void rockAppearance(int element, double& baseR, double& baseG, double& baseB, double& spec) {
     const std::vector<ElementDefinition>& defs = elementDefinitions();
     const int n = int(defs.size());
     if (n <= 0) { baseR = 150.0; baseG = 140.0; baseB = 130.0; spec = 0.0; return; } // старый серо-бурый
     if (element < 0) element = 0; else if (element > n - 1) element = n - 1;
-    const ElementDefinition& e = defs[element];
-    const int    z     = e.atomicNumber;
-    const double metal = e.metallicTrait;
-    if (z == 1 || z == 2 || z == 7 || z == 8) {           // лёд/летучие — яркий, голубовато-белый
-        baseR = 198.0; baseG = 214.0; baseB = 236.0; spec = 0.55;
-    } else if (z == 6 || z == 16) {                       // углеродистый — тёмный уголь, матовый
-        baseR = 56.0;  baseG = 52.0;  baseB = 49.0;  spec = 0.05;
-    } else if ((z >= 26 && z <= 28) || metal > 0.35) {    // металлический — стальной, яркий блик
+    switch (rockClass(element)) {                         // палитра/блеск строго по классу (§5.13.16)
+    case ROCK_ICE:                                        // лёд/летучие — яркий, голубовато-белый
+        baseR = 198.0; baseG = 214.0; baseB = 236.0; spec = 0.55; break;
+    case ROCK_CARBON:                                     // углеродистый — тёмный уголь, матовый
+        baseR = 56.0;  baseG = 52.0;  baseB = 49.0;  spec = 0.05; break;
+    case ROCK_METAL: {                                    // металлический — стальной, яркий блик
+        const double metal = defs[element].metallicTrait;
         baseR = 150.0 + metal * 28.0;                     // тяжёлые/благородные металлы чуть теплее
         baseG = 150.0;
         baseB = 158.0 - metal * 22.0;
         spec  = 0.62;
-    } else {                                              // силикат (S-тип) — тёпло-бурый, матовый
-        baseR = 150.0; baseG = 128.0; baseB = 102.0; spec = 0.08;
+        break;
+    }
+    default:                                              // силикат (S-тип) — тёпло-бурый, матовый
+        baseR = 150.0; baseG = 128.0; baseB = 102.0; spec = 0.08; break;
     }
 }
 
