@@ -787,6 +787,19 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                                     game.pushNews("Convoy saved: pirate destroyed", 2);
                                 }
                             }
+                            // (§5.13.24) Награда за розыск: пират помечен `wanted` ещё при генерации
+                            //   (детерминированный хэш ⇒ ноль lrng, поток спавна прежний, §2.3). Платит
+                            //   wantedBounty ПОВЕРХ базовой награды и поверх CONVOY SAVED, если он же был
+                            //   налётчиком — новый стимул ОХОТИТЬСЯ за пиратами, а не ослабление пиратов
+                            //   (их урон/ИИ не тронуты). Деньги ограничены ⇒ soak «money finite» держится;
+                            //   число убийств не меняется ⇒ craftDestroyed неизменно.
+                            if (c.kind == CK_PIRATE && c.wanted) {
+                                game.agents[game.playerAgent].money += c.wantedBounty;
+                                game.addResearch(1.5);
+                                scene.toast = "BOUNTY CLAIMED +" + std::to_string((int)c.wantedBounty) + " CR";
+                                scene.toastTimer = 3.0;
+                                scene.shake = std::min(40.0, std::max(scene.shake, 16.0));
+                            }
                             if (c.faction >= 0 && !c.hostile && game.playerFaction >= 0) {
                                 int fac = c.faction;
                                 game.adjustFactionRelation(game.playerFaction, fac, -8);

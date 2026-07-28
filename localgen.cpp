@@ -529,6 +529,19 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         c.y = radius * std::sin(angle);
         c.z = frand(-20.0, 20.0);
         c.tx = 0.0; c.ty = 0.0; c.tz = 0.0;
+        // (§5.13.24) Метка «в розыске» + сумма — ДЕТЕРМИНИРОВАННО из хэша (starIndex,p): ноль
+        //   lrng ⇒ поток спавна остаётся побитово прежним (§2.3), rocks/shiny/станция/трафик/радио
+        //   не меняются. ~40% пиратов в розыске; сумма 250..900 CR по второму (декоррелированному)
+        //   хэшу. Только НАГРАДА за убийство — урон/ИИ пирата не трогаем (combat-инвариант, «не
+        //   ослаблять пиратов»). Читается в блоке убийства (localsim) и HUD (§5.13.25).
+        double hw = std::sin(double(starIndex * 131 + p) * 51.017 + 4.271) * 43758.5453;
+        hw -= std::floor(hw);                                  // [0,1)
+        if (hw > 0.60) {                                       // ~40% пиратов «в розыске»
+            c.wanted = true;
+            double hb = std::sin(double(starIndex * 197 + p) * 26.651 + 9.113) * 43758.5453;
+            hb -= std::floor(hb);                              // [0,1)
+            c.wantedBounty = 250.0 + std::floor(hb * 27.0) * 25.0;  // 250..900, шаг 25
+        }
         scene.craft.push_back(c);
     }
 
