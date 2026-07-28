@@ -338,6 +338,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         scene.craft[i].underAttack = false;
         scene.craft[i].threatConvoy = false;
         scene.craft[i].threatVictimFaction = -1;
+        scene.craft[i].defending = false;   // (§5.13.12) сбрасываем маркер эскорта; выставит проход ИИ
     }
 
     // ---- (F) Умный ИИ NPC (раз в кадр: реген, выбор цели, состояние, путевая точка, огонь) ----
@@ -379,16 +380,49 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                 if (d2 < atkBest) { atkBest = d2; atkCraft = (int)j; atkPlayer = false; }
             }
         } else if (c.kind == CK_PATROL) {
-            // Патруль: ближайший пират в радиусе; спровоцированный — ещё и игрок.
+            // (§5.13.12) Эскорт-патруль. Сперва ищем БЛИЖАЙШЕГО НАЛЁТЧИКА — пирата в РАСШИРЕННОМ радиусе
+            //   бедствия PATROL_DISTRESS_R, который сам находится вплотную (< RAID_NEAR) к торговцу/
+            //   гражданскому. Это даёт реакцию «издалека» и приоритет над случайным пиратом. Детект идёт
+            //   по СЫРЫМ позициям (не по кадровым SOS-флагам §5.13.11) — значит порядок обработки кораблей
+            //   не важен и разметка бедствия здесь не нужна (нет зависимости индекс-жертвы-от-индекс-пирата).
+            int raider = -1;
+            double raiderBest = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
+            const double RAID2 = LocalCfg::RAID_NEAR * LocalCfg::RAID_NEAR;
             for (size_t j = 0; j < scene.craft.size(); ++j) {
                 if (j == i) continue;
                 LocalCraft& o = scene.craft[j];
                 if (o.hullHP <= 0.0 || o.kind != CK_PIRATE) continue;
                 double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
                 double d2 = dx*dx + dy*dy + dz*dz;
-                if (d2 < atkBest) { atkBest = d2; atkCraft = (int)j; atkPlayer = false; }
+                if (d2 >= raiderBest) continue;         // уже есть более близкий налётчик
+                bool raiding = false;                    // пират у беззащитного борта (конвой)?
+                for (size_t k = 0; k < scene.craft.size(); ++k) {
+                    if (k == j) continue;
+                    const LocalCraft& v = scene.craft[k];
+                    if (v.hullHP <= 0.0) continue;
+                    if (v.kind != CK_TRADER && v.kind != CK_CIVILIAN) continue;
+                    double vx = v.x - o.x, vy = v.y - o.y, vz = v.z - o.z;
+                    if (vx*vx + vy*vy + vz*vz < RAID2) { raiding = true; break; }
+                }
+                if (raiding) { raiderBest = d2; raider = (int)j; }
             }
-            if (c.hostile && playerTargetable && pd2 < atkBest) { atkBest = pd2; atkPlayer = true; atkCraft = -1; }
+            if (raider >= 0) {
+                atkCraft = raider; atkBest = raiderBest; atkPlayer = false; c.defending = true;
+            } else {
+                // Фолбэк — прежняя логика: ближайший пират в радиусе осведомлённости AW2.
+                for (size_t j = 0; j < scene.craft.size(); ++j) {
+                    if (j == i) continue;
+                    LocalCraft& o = scene.craft[j];
+                    if (o.hullHP <= 0.0 || o.kind != CK_PIRATE) continue;
+                    double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+                    double d2 = dx*dx + dy*dy + dz*dz;
+                    if (d2 < atkBest) { atkBest = d2; atkCraft = (int)j; atkPlayer = false; }
+                }
+            }
+            // Спровоцированный патруль всё ещё может предпочесть БОЛЕЕ БЛИЗКОГО игрока (тогда не «эскорт»).
+            if (c.hostile && playerTargetable && pd2 < atkBest) {
+                atkBest = pd2; atkPlayer = true; atkCraft = -1; c.defending = false;
+            }
         } else { // CK_TRADER / CK_CIVILIAN
             // Спровоцированный торговец/гражданский считает игрока целью.
             if (c.hostile && playerTargetable && pd2 < atkBest) { atkBest = pd2; atkPlayer = true; atkCraft = -1; }
@@ -443,6 +477,8 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
             c.threatConvoy = true;
             c.threatVictimFaction = victim.faction;
         }
+        // (§5.13.12) «Эскорт» — только когда патруль ФАКТИЧЕСКИ идёт в атаку на налётчика (не бежит/патрулирует).
+        if (c.kind == CK_PATROL && c.aiState != 1) c.defending = false;
 
         if (c.aiState == 2) {
             // Бегство: путевая точка в направлении (self - threat) на 400 LU + короткий форсаж.

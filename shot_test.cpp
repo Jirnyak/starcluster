@@ -435,6 +435,48 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_convoy_distress.bmp");
     }
 
+    // (17) ЭСКОРТ-ПАТРУЛЬ (§5.13.12): патруль летит на перехват налётчика у торговца. Патруль помечен
+    //      defending -> зелёное кольцо-эскорт у борта + зелёная рамка/метка/чип «ESCORT» в панели цели
+    //      (наводим на патруль). В кадре разом: SOS-жертва (красный маяк), пират (красный треуг.+muzzle)
+    //      и патруль (зелёный маяк + cyan-muzzle к пирату). Флаги форсируем — sim в headless не крутится.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 3) { LocalCraft c; s.craft.push_back(c); } // гарантируем 3 борта
+        LocalCraft& v = s.craft[0];                    // ЖЕРТВА-торговец
+        v.hostile = false; v.kind = CK_TRADER; v.label = "TRADER"; v.faction = 1;
+        v.r = 90; v.g = 200; v.b = 235; v.errand = 0; v.errandBody = -1;
+        v.underAttack = true;
+        v.x = 600.0; v.y = 0.0; v.z = 180.0; v.vx = v.vy = v.vz = 0.0;
+        v.maxHullHP = 60.0; v.hullHP = v.maxHullHP * 0.5; v.maxShield = 0.0; v.shield = 0.0;
+        LocalCraft& pir = s.craft[1];                  // НАЛЁТЧИК-пират
+        pir.hostile = true; pir.kind = CK_PIRATE; pir.label = "PIRATE"; pir.faction = -1;
+        pir.r = 230; pir.g = 90; pir.b = 80;
+        pir.aiState = 1; pir.errand = 0; pir.errandBody = -1;
+        pir.threatConvoy = true; pir.threatVictimFaction = v.faction;
+        pir.x = 600.0; pir.y = 45.0; pir.z = 175.0; pir.vx = pir.vy = pir.vz = 0.0;
+        pir.maxHullHP = 45.0; pir.hullHP = pir.maxHullHP;
+        LocalCraft& pat = s.craft[2];                  // ПАТРУЛЬ-ЭСКОРТ (идёт на перехват)
+        pat.hostile = false; pat.kind = CK_PATROL; pat.label = "PATROL"; pat.faction = 1;
+        pat.r = 110; pat.g = 215; pat.b = 170;
+        pat.aiState = 1; pat.errand = 0; pat.errandBody = -1;
+        pat.defending = true;                          // ФОРСИРУЕМ маркер эскорта
+        pat.x = 560.0; pat.y = -40.0; pat.z = 205.0; pat.vx = pat.vy = pat.vz = 0.0; // ~99 LU от пирата (< WEAPON_RANGE)
+        pat.maxHullHP = 70.0; pat.hullHP = pat.maxHullHP; pat.maxShield = 20.0; pat.shield = 20.0;
+        s.px = 520.0; s.py = -85.0; s.pz = 225.0; s.pvx = s.pvy = s.pvz = 0.0;        // камера позади патруля
+        localSetForward(s, pir.x - s.px, pir.y - s.py, pir.z - s.pz);                 // нос на пирата (общий фокус)
+        s.targetCraft = 2;                             // цель — патруль -> панель покажет ESCORT
+        s.fxClock = 0.20;                              // фаза: и SOS-, и зелёный пульс ярко видны
+        { double dx=v.x-pir.x, dy=v.y-pir.y, dz=v.z-pir.z, d=std::sqrt(dx*dx+dy*dy+dz*dz), inv=(d>1e-6)?1.0/d:0.0;
+          LocalFx f; f.x=pir.x+dx*inv*4.0; f.y=pir.y+dy*inv*4.0; f.z=pir.z+dz*inv*4.0; f.vx=f.vy=f.vz=0.0;
+          f.kind=FX_MUZZLE; f.size=2.2; f.life=0.05; f.maxLife=0.05; f.r=255; f.g=90; f.b=70; f.a=255; s.fx.push_back(f); }
+        { double dx=pir.x-pat.x, dy=pir.y-pat.y, dz=pir.z-pat.z, d=std::sqrt(dx*dx+dy*dy+dz*dz), inv=(d>1e-6)?1.0/d:0.0;
+          LocalFx f; f.x=pat.x+dx*inv*4.0; f.y=pat.y+dy*inv*4.0; f.z=pat.z+dz*inv*4.0; f.vx=f.vy=f.vz=0.0;
+          f.kind=FX_MUZZLE; f.size=2.2; f.life=0.05; f.maxLife=0.05; f.r=150; f.g=230; f.b=255; f.a=255; s.fx.push_back(f); }
+        std::printf("  [escort] patrol ~99 LU from raider (defending), targeting patrol -> green escort ring+ESCORT panel\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_patrol_escort.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);

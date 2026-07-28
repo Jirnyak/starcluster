@@ -72,6 +72,12 @@ cluster map stays orthographic) and the player flies a ship in 3D around:
   destroying a pirate while it is threatening a convoy pays out a bonus, research, a
   `CONVOY SAVED` toast, and a positive reputation bump with the victim's faction. Purely
   additive: pirates are **not** nerfed, so the choice to intervene stays a real risk;
+- **escort patrols that answer distress**: patrol ships now hear a raid from far off (a wide
+  awareness radius) and prioritise intercepting the *raider* — the pirate actually pressing an
+  attack on a nearby convoy — instead of chasing whichever pirate is closest; a patrol on an
+  intercept wears a pulsing green **escort** ring, an off-screen green edge marker signals that
+  help is inbound, and the target panel shows an `ESCORT` state. The patrol still has to fly in
+  and fight at weapon range — its awareness grew, not its guns — so pirates stay unnerfed;
 - local NPC ships (traders, pirates), mining, docking, and scooping interactions.
 
 The local mode is fully deterministic and self-contained: it draws its own seeded
@@ -447,8 +453,8 @@ flat tint plus three hashed blobs, byte-for-byte.
 | `camera.h` | Shared camera/projection: orthographic macro path plus the perspective path used only by local flight mode. |
 | `local.h` | Local-mode data structures (`LocalScene`, `LocalInput`) and the `buildLocalCamera` helper. |
 | `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). Seeds non-combat NPCs with an opening market-bound errand and randomizes the arrival timer. |
-| `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior, and the living-traffic lifecycle (errand state machine, edge-despawn of departing ships, timed arrivals up to a population cap). Emits a cyan "warp" FX signature (`emitWarp`) on arrival/departure and a thruster puff when a ship leaves a berth. Marks convoy distress: a pre-pass clears the flags, then a pirate attacking a non-pirate flags the victim `underAttack` and itself `threatConvoy`; raid onset raises a `CONVOY RAID` toast, and killing a threatening pirate grants a bonus + research + `CONVOY SAVED` toast + positive faction rep bump (strictly additive — pirates are not weakened). |
-| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble), and a volumetric nebula backdrop (`renderNebula` — per-pixel gas field on the celestial sphere: multi-octave noise, domain warp, density gradient, translucent) — all perspective view only. Also draws the pulsing amber berth ring for docked ships, the radar-panel `IN / DOCK` traffic tally, and the convoy-distress cues (pulsing red SOS ring on an `underAttack` victim, off-screen SOS edge marker to the nearest victim, and a distinct SOS target-panel state). |
+| `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior, and the living-traffic lifecycle (errand state machine, edge-despawn of departing ships, timed arrivals up to a population cap). Emits a cyan "warp" FX signature (`emitWarp`) on arrival/departure and a thruster puff when a ship leaves a berth. Marks convoy distress: a pre-pass clears the flags, then a pirate attacking a non-pirate flags the victim `underAttack` and itself `threatConvoy`; raid onset raises a `CONVOY RAID` toast, and killing a threatening pirate grants a bonus + research + `CONVOY SAVED` toast + positive faction rep bump (strictly additive — pirates are not weakened). Escort patrols (`CK_PATROL`) hear raids from a wide awareness radius and prioritise intercepting the *raider* (a pirate near a non-pirate, detected from raw positions so it is order-independent), flagging themselves `defending`; firing is still gated by weapon range, so their awareness grew, not their guns. |
+| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble), and a volumetric nebula backdrop (`renderNebula` — per-pixel gas field on the celestial sphere: multi-octave noise, domain warp, density gradient, translucent) — all perspective view only. Also draws the pulsing amber berth ring for docked ships, the radar-panel `IN / DOCK` traffic tally, the convoy-distress cues (pulsing red SOS ring on an `underAttack` victim, off-screen SOS edge marker to the nearest victim, and a distinct SOS target-panel state), and the escort cues (pulsing green ring on a `defending` patrol drawn outside the cyan target box, off-screen green edge marker to the nearest defender, and an `ESCORT` target-panel state). |
 | `shot_test.cpp` | Headless screenshot harness for local-mode scenarios (`make shots`). |
 | `soak_test.cpp` | Headless long-run soak harness for the local simulation (`make soak`). |
 | `architecture.md` | High-level architecture and data-oriented rules. |
@@ -511,10 +517,12 @@ Important rules from the project documents:
   and legible from the cockpit (warp-in/out FX, berth ring, `IN / DOCK` tally). Pirate raids on
   traders are now a readable, actionable event: victims raise a distress beacon (SOS ring +
   off-screen edge marker + `CONVOY RAID` toast), and killing the attacking pirate pays a
-  `CONVOY SAVED` bonus plus a faction-standing bump. What is still missing is a write-back to the
-  macro simulation: killing or despawning a local ship that mirrors a macro agent does not affect
-  that agent, and NPC trading moves no real cargo or credits — the errands are behavioral, not yet
-  economic.
+  `CONVOY SAVED` bonus plus a faction-standing bump. Patrol ships now answer that distress —
+  they hear a raid from far off and prioritise intercepting the raider (green escort ring +
+  edge marker + `ESCORT` panel), though they still fly in and fight at weapon range rather than
+  sniping. What is still missing is a write-back to the macro simulation: killing or despawning a
+  local ship that mirrors a macro agent does not affect that agent, and NPC trading moves no real
+  cargo or credits — the errands are behavioral, not yet economic.
 - Non-player faction memory overlays are not exposed through a debug selector.
 - The active build is POSIX/SDL2 via `sdl2-config`; the old platform makefiles
   are not synchronized with the current source list.

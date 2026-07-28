@@ -1293,6 +1293,12 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             strokeCircle(renderer, p.x, p.y, int(sz) + 9,  rgba(238, 88, 82, da));
             strokeCircle(renderer, p.x, p.y, int(sz) + 13, rgba(238, 88, 82, da / 3));
         }
+        if (c.defending) { // (§5.13.12) эскорт: зелёный пульс вокруг патруля, идущего на перехват («свои»)
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 4.5 + double(i) * 0.9); // ≠ SOS-красный/янтарь
+            int da = 80 + int(pl * 120.0);                 // 80..200 — уверенный
+            strokeCircle(renderer, p.x, p.y, int(sz) + 8,  rgba(90, 220, 130, da));       // вне cyan-рамки цели (sz+6)
+            strokeCircle(renderer, p.x, p.y, int(sz) + 13, rgba(90, 220, 130, da / 3));
+        }
         if (c.hullHP < c.maxHullHP) {
             double frac = c.hullHP / std::max(1.0, c.maxHullHP);
             bar(renderer, p.x - 8, p.y - int(sz) - 6, 16, 2, frac, c.hostile ? P.red : P.green);
@@ -1531,6 +1537,14 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                        (c.z - scene.pz) * (c.z - scene.pz);
             if (d < bestVic) { bestVic = d; nearVic = (int)i; }
         }
+        int nearDef = -1; double bestDef = 1e18; // (§5.13.12) ближайший патруль-эскорт (идёт на перехват)
+        for (size_t i = 0; i < scene.craft.size(); ++i) {
+            if (!scene.craft[i].defending || scene.craft[i].hullHP <= 0.0) continue;
+            const LocalCraft& c = scene.craft[i];
+            double d = (c.x - scene.px) * (c.x - scene.px) + (c.y - scene.py) * (c.y - scene.py) +
+                       (c.z - scene.pz) * (c.z - scene.pz);
+            if (d < bestDef) { bestDef = d; nearDef = (int)i; }
+        }
         if (nearMkt >= 0) {
             const LocalBody& bd = scene.bodies[nearMkt];
             drawEdgeMarker(renderer, cx, cy, winW, winH, bd.x, bd.y, bd.z, view, basis, P.green);
@@ -1542,6 +1556,10 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         if (nearVic >= 0) { // (§5.13.11) краевой маркер бедствия — ведёт к жертве за кадром (SOS-красный)
             const LocalCraft& c = scene.craft[nearVic];
             drawEdgeMarker(renderer, cx, cy, winW, winH, c.x, c.y, c.z, view, basis, rgba(238, 88, 82, 255));
+        }
+        if (nearDef >= 0) { // (§5.13.12) краевой маркер эскорта — «помощь идёт» из-за кадра (зелёный «свои»)
+            const LocalCraft& c = scene.craft[nearDef];
+            drawEdgeMarker(renderer, cx, cy, winW, winH, c.x, c.y, c.z, view, basis, rgba(90, 220, 130, 255));
         }
         if (nearLoot >= 0) {
             const LocalLoot& lt = scene.loot[nearLoot];
@@ -1689,19 +1707,26 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         int tx = winW - 236, ty = 12;
         const bool hasShield = t.maxShield > 0.0;
         const bool sos = t.underAttack;   // (§5.13.11) цель — жертва бедствия
-        panel(renderer, tx, ty, 224, hasShield ? 72 : 60);
+        const bool esc = t.defending;     // (§5.13.12) цель — патруль-эскорт на перехвате (взаимоискл. с sos)
+        int ph = hasShield ? 72 : 60;
+        panel(renderer, tx, ty, 224, ph);
         if (sos) {   // пульсирующая SOS-красная рамка вокруг панели — «эта цель под атакой»
             double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 6.0);
-            int ph = hasShield ? 72 : 60;
             strokeRect(renderer, tx - 2, ty - 2, 224 + 4, ph + 4, rgba(238, 88, 82, 120 + int(pl * 135.0)));
             strokeRect(renderer, tx - 3, ty - 3, 224 + 6, ph + 6, rgba(238, 88, 82, 60));
+        } else if (esc) {   // зелёная рамка — «цель на нашей стороне, идёт на перехват налётчика»
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 4.5);
+            strokeRect(renderer, tx - 2, ty - 2, 224 + 4, ph + 4, rgba(90, 220, 130, 110 + int(pl * 120.0)));
+            strokeRect(renderer, tx - 3, ty - 3, 224 + 6, ph + 6, rgba(90, 220, 130, 55));
         }
         drawText(renderer, tx + 8, ty + 8, t.label.empty() ? std::string("CONTACT") : t.label,
-                 sos ? rgba(238, 88, 82, 255) : (t.hostile ? P.red : P.text), 1);
+                 sos ? rgba(238, 88, 82, 255) : (esc ? rgba(90, 220, 130, 255) : (t.hostile ? P.red : P.text)), 1);
         if (scene.lockTarget >= 0 && scene.lockTarget == scene.targetCraft) {
             drawText(renderer, tx + 224 - 8 - textWidth("LOCK", 1), ty + 8, "LOCK", P.cyan, 1);
         } else if (sos) {   // «SOS»-чип, если панель не занята значком захвата
             drawText(renderer, tx + 224 - 8 - textWidth("SOS", 1), ty + 8, "SOS", rgba(238, 88, 82, 255), 1);
+        } else if (esc) {   // «ESCORT»-чип для дружественного перехватчика
+            drawText(renderer, tx + 224 - 8 - textWidth("ESCORT", 1), ty + 8, "ESCORT", rgba(90, 220, 130, 255), 1);
         }
         std::snprintf(buf, sizeof(buf), "DIST %.0F LU", dist);
         drawText(renderer, tx + 8, ty + 22, buf, P.dim, 1);
