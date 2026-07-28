@@ -634,6 +634,56 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                 SDL_RenderDrawLine(renderer, pv.x, pv.y - 7, pv.x, pv.y - 4);
             }
         }
+        // Лид-маркер (упреждение): куда целить, чтобы попасть по движущейся цели.
+        // Снаряд игрока несёт скорость корабля (pv) + PROJ_SPEED вдоль носа (localsim),
+        // поэтому решаем перехват в относительной скорости u = targetVel − playerVel:
+        //   |r + u·t| = S·t  →  (u·u − S²)t² + 2(r·u)t + r·r = 0,  берём наименьший t>0.
+        // Целевое направление ∝ (r + u·t); ставим пип на том же радиусе 600 LU, что и мушка.
+        if (scene.targetCraft >= 0 && (size_t)scene.targetCraft < scene.craft.size()) {
+            const LocalCraft& tc = scene.craft[scene.targetCraft];
+            const double rxL = tc.x - scene.px, ryL = tc.y - scene.py, rzL = tc.z - scene.pz;
+            const double distL = std::sqrt(rxL * rxL + ryL * ryL + rzL * rzL);
+            if (distL < 1500.0) {   // показываем только на дистанции завязки боя
+                const double uxL = tc.vx - scene.pvx, uyL = tc.vy - scene.pvy, uzL = tc.vz - scene.pvz;
+                const double S = LocalCfg::PROJ_SPEED;
+                const double a = uxL * uxL + uyL * uyL + uzL * uzL - S * S;
+                const double b = 2.0 * (rxL * uxL + ryL * uyL + rzL * uzL);
+                const double cc = rxL * rxL + ryL * ryL + rzL * rzL;
+                double tHit = -1.0;
+                if (std::fabs(a) < 1e-6) {
+                    if (std::fabs(b) > 1e-9) tHit = -cc / b;
+                } else {
+                    const double disc = b * b - 4.0 * a * cc;
+                    if (disc >= 0.0) {
+                        const double sq = std::sqrt(disc);
+                        const double t1 = (-b - sq) / (2.0 * a), t2 = (-b + sq) / (2.0 * a);
+                        tHit = 1e30;
+                        if (t1 > 1e-4 && t1 < tHit) tHit = t1;
+                        if (t2 > 1e-4 && t2 < tHit) tHit = t2;
+                        if (tHit >= 1e30) tHit = -1.0;
+                    }
+                }
+                if (tHit > 0.0) {
+                    const double axL = rxL + uxL * tHit, ayL = ryL + uyL * tHit, azL = rzL + uzL * tHit;
+                    const double al = std::sqrt(axL * axL + ayL * ayL + azL * azL);
+                    if (al > 1e-6) {
+                        const double k2 = 600.0 / al;
+                        ProjectedPoint lp = projectPointWithBasis(scene.px + axL * k2, scene.py + ayL * k2,
+                                                                  scene.pz + azL * k2, winW, winH, view, basis);
+                        if (!lp.behind) {
+                            SDL_Color lc = tc.hostile ? rgba(255, 150, 90, 205)   // амбер-красный (враг)
+                                                      : rgba(240, 205, 130, 185); // янтарный (нейтрал)
+                            strokeCircle(renderer, lp.x, lp.y, 5, lc);
+                            SDL_SetRenderDrawColor(renderer, lc.r, lc.g, lc.b, lc.a);
+                            SDL_RenderDrawLine(renderer, lp.x - 9, lp.y, lp.x - 5, lp.y);
+                            SDL_RenderDrawLine(renderer, lp.x + 5, lp.y, lp.x + 9, lp.y);
+                            SDL_RenderDrawLine(renderer, lp.x, lp.y - 9, lp.x, lp.y - 5);
+                            SDL_RenderDrawLine(renderer, lp.x, lp.y + 5, lp.x, lp.y + 9);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Маркеры off-screen целей: ближайший рынок (зелёный), враг (красный), лут (янтарь).
@@ -812,7 +862,8 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                                 (t.y - scene.py) * (t.y - scene.py) +
                                 (t.z - scene.pz) * (t.z - scene.pz));
         int tx = winW - 236, ty = 12;
-        panel(renderer, tx, ty, 224, 58);
+        const bool hasShield = t.maxShield > 0.0;
+        panel(renderer, tx, ty, 224, hasShield ? 72 : 60);
         drawText(renderer, tx + 8, ty + 8, t.label.empty() ? std::string("CONTACT") : t.label,
                  t.hostile ? P.red : P.text, 1);
         if (scene.lockTarget >= 0 && scene.lockTarget == scene.targetCraft) {
@@ -820,8 +871,22 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         }
         std::snprintf(buf, sizeof(buf), "DIST %.0F LU", dist);
         drawText(renderer, tx + 8, ty + 22, buf, P.dim, 1);
+        // Скорость сближения: closing = −d(dist)/dt = −dot(r,u)/dist, u = targetVel − playerVel.
+        // Плюс = сближаемся (янтарь), минус = расходимся (серый).
+        double closing = 0.0;
+        if (dist > 1e-6) {
+            const double ux = t.vx - scene.pvx, uy = t.vy - scene.pvy, uz = t.vz - scene.pvz;
+            closing = -((t.x - scene.px) * ux + (t.y - scene.py) * uy + (t.z - scene.pz) * uz) / dist;
+        }
+        std::snprintf(buf, sizeof(buf), "CLS %+.0F", closing);
+        drawText(renderer, tx + 224 - 8 - textWidth(buf, 1), ty + 22, buf, closing >= 0.0 ? P.amber : P.dim, 1);
+        int by = ty + 38;
+        if (hasShield) {   // щит цели (циан), над корпусом
+            bar(renderer, tx + 8, by, 208, 6, t.shield / std::max(1.0, t.maxShield), P.cyan);
+            by += 12;
+        }
         double frac = t.hullHP / std::max(1.0, t.maxHullHP);
-        bar(renderer, tx + 8, ty + 38, 208, 6, frac, t.hostile ? P.red : P.green);
+        bar(renderer, tx + 8, by, 208, 6, frac, t.hostile ? P.red : P.green);
     }
 
     // Индикатор добычи (по центру, над подсказкой стыковки).

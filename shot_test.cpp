@@ -133,6 +133,27 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.55, 0.8, "shot_deepspace_skybox.bmp");
     }
 
+    // (6) ЛИД-ПРИЦЕЛ (звезда 2), кокпит: цель идёт наперерез, нос наведён на её ТЕКУЩУЮ
+    //     позицию (мушка на цели), поэтому янтарный пип упреждения заметно смещён от центра —
+    //     наглядная проверка геометрии перехвата. Кадр статичный: сим НЕ шагаем, чтобы
+    //     скорости/позиции были детерминированы и читаемы (перехват: |r+u·t|=S·t).
+    {
+        LocalScene s; buildLocalScene(game, 2, s); s.active = true;
+        if (!s.craft.empty()) {
+            LocalCraft& t = s.craft[0];
+            t.hostile = true; t.kind = CK_PIRATE; t.label = "PIRATE";
+            t.x = s.px + 250.0; t.y = s.py; t.z = s.pz;    // прямо по носу, 250 LU
+            t.vx = -80.0; t.vy = 220.0; t.vz = 0.0;         // сближение + сильный поперечный снос
+            if (t.maxShield <= 0.0) t.maxShield = 120.0;
+            t.shield = t.maxShield * 0.6;
+            s.pvx = s.pvy = s.pvz = 0.0;                     // игрок неподвижен: чистый лид
+            localSetForward(s, 250.0, 0.0, 0.0);            // мушка — на текущую позицию цели
+            s.targetCraft = 0; s.lockTarget = 0;
+        }
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_combat_lead.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);
