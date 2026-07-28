@@ -1883,9 +1883,11 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     // Индикатор добычи (по центру, над подсказкой стыковки).
     if (scene.miningRock >= 0 && scene.miningRock < (int)scene.rocks.size()) {
         // (§5.13.16) Класс породы в индикаторе: игрок видит, что даёт текущая глыба (металл богаче).
+        // (§5.13.23) + остаток руды `mr.ore`: видно, как глыба истощается к «ROCK DEPLETED»; запас
+        // теперь варьируется по классу/насыщенности системы (§5.13.22), так что это живой отклик.
         const LocalRock& mr = scene.rocks[scene.miningRock];
-        std::snprintf(buf, sizeof(buf), "MINING %s  +%.0F",
-                      rockClassName(rockClass(mr.element)), scene.miningAccum);
+        std::snprintf(buf, sizeof(buf), "MINING %s  +%.0F  ORE %.0F",
+                      rockClassName(rockClass(mr.element)), scene.miningAccum, mr.ore);
         drawText(renderer, cx - textWidth(buf, 2) / 2, winH - 182, buf, P.amber, 2);
     }
 
@@ -1898,10 +1900,14 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         drawText(renderer, x, y, msg, P.green, 2);
     }
 
-    // Подсказка добычи: доступен ближайший астероид (если ещё не добываем).
-    if (scene.minePrompt >= 0 && scene.miningRock < 0) {
-        const char* msg = "PRESS M TO MINE";
-        drawText(renderer, cx - textWidth(msg, 2) / 2, winH - 124, msg, P.amber, 2);
+    // Подсказка добычи: доступен ближайший астероид (если ещё не добываем). (§5.13.23) Показываем
+    // КЛАСС + остаток руды цели ДО начала бурения — игрок выбирает, стоит ли глыба того (металл в
+    // богатой системе несёт заметно больше руды, §5.13.22). Ноль RNG, читаем существующие поля камня.
+    if (scene.minePrompt >= 0 && scene.minePrompt < (int)scene.rocks.size() && scene.miningRock < 0) {
+        const LocalRock& tr = scene.rocks[scene.minePrompt];
+        std::snprintf(buf, sizeof(buf), "PRESS M TO MINE - %s  ORE %.0F",
+                      rockClassName(rockClass(tr.element)), tr.ore);
+        drawText(renderer, cx - textWidth(buf, 2) / 2, winH - 124, buf, P.amber, 2);
     }
 
     // Toast (всплывающее событие) — сверху по центру.
