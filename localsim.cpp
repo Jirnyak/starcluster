@@ -379,6 +379,40 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                 double d2 = dx*dx + dy*dy + dz*dz;
                 if (d2 < atkBest) { atkBest = d2; atkCraft = (int)j; atkPlayer = false; }
             }
+            // (§5.13.30) ЗАЩИТА СТАИ — БЭКАП ЗАГНАННОМУ ИЗГОЮ. Пират, который САМ не нашёл цели
+            //   (idle: atkCraft<0 && !atkPlayer), но «слышит» закон вплотную рядом — патруль в
+            //   PATROL_DISTRESS_R, у которого есть СВОЙ розыскной-пират в этом же радиусе (ровно
+            //   условие охоты §5.13.28, ВЫВЕДЕННОЕ заново из живых полей, как в рендере §5.13.29:
+            //   ищем сам патруль kind==CK_PATROL, а НЕ читаем кадровый флаг c.defending ⇒ результат
+            //   не зависит от порядка обработки бортов / своп-попа мёртвых) — слетается АТАКОВАТЬ этот
+            //   патруль: стая обороняет объявленного вне закона. СТРОГО АДДИТИВНО, комбат-инвариант
+            //   УСИЛЕН (не ослаблен): гейт (atkCraft<0 && !atkPlayer) ⇒ НИКОГДА не уводит пирата от
+            //   игрока/торговца (их урон/агрессия целы), лишь ПРОСТАИВАЮЩИЙ (0 урона) пират становится
+            //   атакующим ⇒ агрессии больше, направлена на закон (охота за головой ТРУДНЕЕ, не мягче).
+            //   Патрулей в headless-soak нет (§5.13.28) ⇒ внешний цикл ничего не находит ⇒ в соаке блок
+            //   no-op ПО ПОСТРОЕНИЮ, 120k-бейзлайн побитово цел. Ноль RNG, без нового поля.
+            if (atkCraft < 0 && !atkPlayer) {
+                const double RALLY2 = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
+                int rallyPatrol = -1; double rallyBest = RALLY2;
+                for (size_t j = 0; j < scene.craft.size(); ++j) {
+                    if (j == i) continue;
+                    LocalCraft& o = scene.craft[j];
+                    if (o.hullHP <= 0.0 || o.kind != CK_PATROL) continue;   // патруль (в соаке таких нет)
+                    double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+                    double d2 = dx*dx + dy*dy + dz*dz;
+                    if (d2 >= rallyBest) continue;                          // уже есть более близкий охотник
+                    bool hunting = false;                                   // патруль реально ведёт охоту? (§5.13.28)
+                    for (size_t k = 0; k < scene.craft.size(); ++k) {
+                        if (k == j) continue;
+                        const LocalCraft& w = scene.craft[k];
+                        if (w.hullHP <= 0.0 || w.kind != CK_PIRATE || !w.wanted) continue;
+                        double wx = w.x - o.x, wy = w.y - o.y, wz = w.z - o.z;
+                        if (wx*wx + wy*wy + wz*wz < RALLY2) { hunting = true; break; }
+                    }
+                    if (hunting) { rallyBest = d2; rallyPatrol = (int)j; }
+                }
+                if (rallyPatrol >= 0) { atkCraft = rallyPatrol; atkBest = rallyBest; atkPlayer = false; }
+            }
         } else if (c.kind == CK_PATROL) {
             // (§5.13.28) ПРИОРИТЕТ 0 — ОХОТА НА РОЗЫСКНОГО. Патруль/милиция активно преследует пирата
             //   «в розыске» (§5.13.24 предген / §5.13.26(G) эмерджентный) — тот самый ЗОЛОТОЙ контакт,

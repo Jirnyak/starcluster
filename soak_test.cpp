@@ -437,11 +437,79 @@ int main() {
     }
     if (!patrolHuntsWantedOk) { std::printf("INVARIANT FAIL: §5.13.28 patrol wanted-hunt did not fire\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s rocks=%ld shiny=%ld trades=%ld\n",
+    // --- Детерминированная проверка §5.13.30: СТАЯ защищает загнанного изгоя (pack-rally) ---
+    // Правило добавлено в ветку CK_PIRATE (она в соаке ИСПОЛНЯЕТСЯ), но срабатывает лишь при наличии
+    //   патруля-охотника рядом; патрулей в замороженном мире НЕТ ⇒ в 120k-прогоне блок no-op ПО
+    //   ПОСТРОЕНИЮ (бейзлайн выше побитово цел), а этот изолированный пробник — единственное headless-
+    //   покрытие правила. Свежий Game, позиции пиньнутся каждый кадр (ноль дрейфа/RNG), корпуса огромны
+    //   (никто не гибнет ⇒ индексы стабильны). Три борта: патруль в 0; розыскная приманка в радиусе
+    //   охоты патруля (<1400) — делает патруль «охотником»; ПРОСТАИВАЮЩИЙ пират-стайник ВНЕ своей
+    //   осведомлённости (1100 > 750 ⇒ сам цели не видит), но В радиусе набата (<1400). Проверяем aiState
+    //   (прямой выход решения о цели), а не урон: стайник на 1100 LU > WEAPON_RANGE, стрелять не может,
+    //   но захват цели виден по aiState. (A) приманка РОЗЫСКНАЯ ⇒ стайник обязан взять патруль целью
+    //   (aiState=1 — иначе он простаивал бы). (B) приманка НЕ розыскная ⇒ патруль не охотник ⇒ набат
+    //   заперт гейтом ⇒ стайник простаивает (aiState=0).
+    bool packRalliesOutlawOk = false;
+    {
+        Game g6; g6.init(1200);
+        int star = -1;
+        for (int s : stars) { if (s >= 0) { star = s; break; } }
+        bool aOk = false, bReached = false, bViolated = false;
+        if (star >= 0) {
+            for (int phase = 0; phase < 2; ++phase) {          // phase 0 = (A) розыскная приманка; 1 = (B) простая
+                LocalScene s;
+                buildLocalScene(g6, star, s);
+                s.active = true;
+                while (s.craft.size() < 3) { LocalCraft nc; s.craft.push_back(nc); }
+                s.craft.resize(3);
+                {
+                    LocalCraft& pat = s.craft[0];              // ПАТРУЛЬ (в соаке таких нет — тут вручную)
+                    pat.kind = CK_PATROL; pat.hostile = false; pat.faction = -1; pat.agentIndex = -1;
+                    pat.heavy = 60.0; pat.light = 0.0;
+                    pat.maxHullHP = 100000.0; pat.hullHP = 100000.0;
+                    pat.maxShield = 0.0; pat.shield = 0.0; pat.fireCooldown = 0.0; pat.wanted = false;
+                    LocalCraft& bait = s.craft[1];             // приманка: делает патруль ОХОТНИКОМ, если розыскная
+                    bait.kind = CK_PIRATE; bait.hostile = true; bait.faction = -1; bait.agentIndex = -1;
+                    bait.wanted = (phase == 0); bait.wantedBounty = 650.0;
+                    bait.maxHullHP = 100000.0; bait.hullHP = 100000.0;
+                    bait.maxShield = 0.0; bait.shield = 0.0; bait.shieldRegenTimer = 999.0;
+                    LocalCraft& pack = s.craft[2];             // ПРОСТАИВАЮЩИЙ пират-стайник (набатчик)
+                    pack.kind = CK_PIRATE; pack.hostile = true; pack.faction = -1; pack.agentIndex = -1;
+                    pack.wanted = false;
+                    pack.maxHullHP = 100000.0; pack.hullHP = 100000.0;
+                    pack.maxShield = 0.0; pack.shield = 0.0; pack.shieldRegenTimer = 999.0;
+                }
+                s.px = 100000.0; s.py = 0.0; s.pz = 0.0; s.pvx = s.pvy = s.pvz = 0.0;
+                for (int f = 0; f < 60; ++f) {
+                    LocalCraft& p0 = s.craft[0]; LocalCraft& b1 = s.craft[1]; LocalCraft& k2 = s.craft[2];
+                    p0.x = 0.0;    p0.y = 0.0;    p0.z = 0.0; p0.vx = p0.vy = p0.vz = 0.0;
+                    p0.hullHP = p0.maxHullHP; p0.shield = 0.0;
+                    b1.x = 1000.0; b1.y = 0.0;    b1.z = 0.0; b1.vx = b1.vy = b1.vz = 0.0;  // в радиусе охоты патруля (<1400)
+                    b1.hullHP = b1.maxHullHP; b1.shield = 0.0; b1.shieldRegenTimer = 999.0;
+                    k2.x = 0.0;    k2.y = 1100.0; k2.z = 0.0; k2.vx = k2.vy = k2.vz = 0.0;  // вне осведомлённости (>750), в набате (<1400)
+                    k2.hullHP = k2.maxHullHP; k2.shield = 0.0; k2.shieldRegenTimer = 999.0;
+                    LocalInput in;
+                    updateLocalScene(g6, s, in, dtReal);
+                    if (s.craft.size() >= 3) {
+                        if (phase == 0 && s.craft[2].aiState == 1) aOk = true;            // (A) стайник взял патруль целью
+                        if (phase == 1) { bReached = true; if (s.craft[2].aiState == 1) bViolated = true; }  // (B) не должен
+                    }
+                }
+            }
+        }
+        bool bOk = bReached && !bViolated;
+        packRalliesOutlawOk = aOk && bOk;
+        std::printf("pack-rallies-outlaw probe: rallyFires=%s gatedOnHunt=%s\n",
+                    aOk ? "YES (ok)" : "NO", bOk ? "YES (ok)" : "NO");
+    }
+    if (!packRalliesOutlawOk) { std::printf("INVARIANT FAIL: §5.13.30 pack-rally did not fire or was not gated\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
                 patrolHuntsWantedOk ? "ok" : "FAILED",
+                packRalliesOutlawOk ? "ok" : "FAILED",
                 rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }
