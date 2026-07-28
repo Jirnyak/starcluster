@@ -670,7 +670,8 @@ void drawControlHints(SDL_Renderer* renderer, int screenW, int screenH) {
         "P PLAYER",
         "0 RESET",
         "X STOP SHIP",
-        "ENTER OPEN SYS"
+        "ENTER OPEN SYS",
+        "L ENTER SYSTEM"
     };
     const int w = 144;
     const int h = 18 + int(sizeof(hints) / sizeof(hints[0])) * 12;
@@ -1635,13 +1636,13 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
         const int newsLines = screenH < 780 ? 8 : 14;
         const int newsH = 26 + newsLines * 12;
         const int newsW = std::min(620, std::max(280, screenW - 12 - 168));
-        const int newsY = std::max(y + 8, screenH - newsH - 52);
+        const int newsY = std::max(y + 8, screenH - newsH - 72);
         drawNewsFeed(renderer, game, 12, newsY, newsW, newsLines);
     }
 
     if (!game.lastEvent.empty()) {
         const int w = std::min(screenW - 24, 640);
-        const int eventY = std::max(12, screenH - 50);
+        const int eventY = std::max(12, screenH - 70);
         panel(renderer, 12, eventY, w, 34);
         drawText(renderer, 22, eventY + 12, game.lastEvent, P.amber, 1);
     }

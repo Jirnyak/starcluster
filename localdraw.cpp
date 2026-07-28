@@ -601,6 +601,12 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         drawText(renderer, x, y, msg, P.green, 2);
     }
 
+    // Подсказка добычи: доступен ближайший астероид (если ещё не добываем).
+    if (scene.minePrompt >= 0 && scene.miningRock < 0) {
+        const char* msg = "PRESS E TO MINE";
+        drawText(renderer, cx - textWidth(msg, 2) / 2, winH - 124, msg, P.amber, 2);
+    }
+
     // Toast (всплывающее событие) — сверху по центру.
     if (scene.toastTimer > 0.0 && !scene.toast.empty()) {
         drawText(renderer, cx - textWidth(scene.toast, 2) / 2, 24, scene.toast, P.text, 2);
@@ -688,6 +694,6 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
 
     // Подсказка управления — вдоль самого низа.
     drawText(renderer, 12, winH - 14,
-             "W THRUST   S BRAKE   A/D TURN   R/F PITCH   SPACE FIRE   SHIFT WARP   E MINE   K DOCK   TAB LOCK   L/ESC EXIT",
+             "W THRUST   S BRAKE   A/D TURN   R/F PITCH   SHIFT WARP   (BUTTONS BELOW: FIRE MINE DOCK LOCK EXIT)",
              P.dim, 1);
 }

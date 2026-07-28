@@ -3,6 +3,7 @@
 #include "ui.h"
 #include "camera.h"
 #include "local.h"
+#include "render2d.h"
 #include <SDL.h>
 #include <algorithm>
 #include <cmath>
@@ -12,6 +13,25 @@
 #include <iostream>
 #include <string>
 #include <vector>
+
+// --- Единая панель действий: кликабельные кнопки с состоянием вкл/выкл. ---
+// Снимает нагрузку «помни десятки горячих клавиш»: доступные действия — цветные,
+// недоступные в этот момент — затемнены. Клавиатура продолжает работать параллельно.
+enum ActionId {
+    ACT_NONE = 0,
+    // Макро-режим (звёздная карта):
+    ACT_ENTER, ACT_GO, ACT_STOP, ACT_TRADE, ACT_SHIPYARD, ACT_REPAIR, ACT_HIRE, ACT_PAUSE, ACT_SPEED,
+    // Локальный режим (полёт):
+    ACT_FIRE, ACT_MINE, ACT_DOCK, ACT_TARGET, ACT_ZOOM_IN, ACT_ZOOM_OUT, ACT_EXIT
+};
+struct ActionButton {
+    SDL_Rect rect;
+    std::string label;
+    SDL_Color color;
+    bool enabled;
+    bool on;        // подсветка активного тумблера (пауза идёт / добыча идёт / цель залочена)
+    int action;
+};
 
 struct InfluenceSource {
     int x = 0;
@@ -528,6 +548,7 @@ int main(int argc, char** argv) {
     bool localMineEdge = false;    // фронт нажатия E за кадр
     bool localDockEdge = false;    // фронт нажатия K за кадр
     bool localTargetEdge = false;  // фронт нажатия Tab за кадр
+    bool localFireClick = false;   // одноразовый выстрел по кнопке панели (в этот кадр)
     if (localSmoke) {
         buildLocalScene(game, selectedStar >= 0 ? selectedStar : 0, localScene);
         localScene.active = true;
@@ -539,6 +560,139 @@ int main(int argc, char** argv) {
             localScene.pz = localScene.rocks[0].z;
         }
     }
+
+    // ---------- Единая панель действий: раскладка, отрисовка, диспетчеризация ----------
+    auto playerDocked = [&]() -> int {
+        // Индекс звезды, где игрок пристыкован (не в пути), иначе -1.
+        if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()) &&
+            !game.agents[game.playerAgent].ship.enRoute) {
+            return game.agents[game.playerAgent].currentStar;
+        }
+        return -1;
+    };
+    auto playerEnRoute = [&]() -> bool {
+        return game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()) &&
+               game.agents[game.playerAgent].ship.enRoute;
+    };
+    auto anchorStar = [&]() -> int {
+        int d = playerDocked();
+        return d >= 0 ? d : selectedStar; // может быть -1, если ничего не выбрано
+    };
+
+    auto buildBar = [&](std::vector<ActionButton>& out) {
+        out.clear();
+        struct Spec { int action; std::string label; SDL_Color color; bool enabled; bool on; };
+        std::vector<Spec> specs;
+        if (localScene.active) {
+            const bool mining = localScene.miningRock >= 0;
+            specs.push_back(Spec{ACT_FIRE, "SPC FIRE", UI::P.red,
+                                 localScene.fireCooldown <= 0.0 && !localScene.playerDestroyed, false});
+            specs.push_back(Spec{ACT_MINE, mining ? "E STOP" : "E MINE", UI::P.amber,
+                                 mining || localScene.minePrompt >= 0, mining});
+            specs.push_back(Spec{ACT_DOCK, "K DOCK", UI::P.green, localScene.dockPrompt >= 0, false});
+            specs.push_back(Spec{ACT_TARGET, "TAB LOCK", UI::P.cyan,
+                                 !localScene.craft.empty(), localScene.lockTarget >= 0});
+            specs.push_back(Spec{ACT_ZOOM_OUT, "- ZOOM", UI::P.dim, localZoom > 0.0501, false});
+            specs.push_back(Spec{ACT_ZOOM_IN, "+ ZOOM", UI::P.dim, localZoom < 39.99, false});
+            specs.push_back(Spec{ACT_EXIT, "L EXIT", UI::P.cyan, true, false});
+        } else {
+            const bool docked = playerDocked() >= 0;
+            const bool enRoute = playerEnRoute();
+            bool hullHurt = false;
+            if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
+                const Ship& ps = game.agents[game.playerAgent].ship;
+                hullHurt = ps.hullHP < ps.maxHullHP - 0.5;
+            }
+            char spd[16]; std::snprintf(spd, sizeof(spd), "SPD X%d", int(simSpeed));
+            specs.push_back(Spec{ACT_ENTER, "L ENTER", UI::P.cyan, anchorStar() >= 0, false});
+            specs.push_back(Spec{ACT_GO, "G GO", UI::P.green,
+                                 selectedStar >= 0 && game.playerAgent >= 0 && !enRoute, false});
+            specs.push_back(Spec{ACT_STOP, "X STOP", UI::P.amber, enRoute, false});
+            specs.push_back(Spec{ACT_TRADE, "T TRADE", UI::P.cyan, anchorStar() >= 0, false});
+            specs.push_back(Spec{ACT_SHIPYARD, "U YARD", UI::P.cyan, anchorStar() >= 0, false});
+            specs.push_back(Spec{ACT_REPAIR, "J REPAIR", UI::P.green, docked && hullHurt, false});
+            specs.push_back(Spec{ACT_HIRE, "H HIRE", UI::P.green, docked, false});
+            specs.push_back(Spec{ACT_PAUSE, paused ? "|| PAUSE" : "> PLAY", UI::P.amber, true, paused});
+            specs.push_back(Spec{ACT_SPEED, spd, UI::P.dim, true, false});
+        }
+        // Раскладка: одна центрированная строка вдоль низа. В локальном режиме поднята
+        // выше (чтобы не наехать на нижнюю подсказку управления).
+        const int h = 24, gap = 6, pad = 14, scale = 1;
+        int total = 0;
+        for (size_t i = 0; i < specs.size(); ++i)
+            total += pad + int(specs[i].label.size()) * 6 * scale + (i ? gap : 0);
+        int x = std::max(6, (winW - total) / 2);
+        const int y = localScene.active ? (winH - h - 34) : (winH - h - 6);
+        for (size_t i = 0; i < specs.size(); ++i) {
+            ActionButton b;
+            b.rect = SDL_Rect{ x, y, pad + int(specs[i].label.size()) * 6 * scale, h };
+            b.label = specs[i].label;
+            b.color = specs[i].color;
+            b.enabled = specs[i].enabled;
+            b.on = specs[i].on;
+            b.action = specs[i].action;
+            out.push_back(b);
+            x += b.rect.w + gap;
+        }
+    };
+
+    auto drawBar = [&](const std::vector<ActionButton>& bar) {
+        for (size_t i = 0; i < bar.size(); ++i) {
+            const ActionButton& b = bar[i];
+            const SDL_Color fill = b.on
+                ? SDL_Color{ Uint8(b.color.r / 3 + 10), Uint8(b.color.g / 3 + 10), Uint8(b.color.b / 3 + 14), 235 }
+                : (b.enabled ? SDL_Color{ 16, 22, 38, 235 } : SDL_Color{ 12, 16, 26, 200 });
+            UI::fillRect(renderer, b.rect.x, b.rect.y, b.rect.w, b.rect.h, fill);
+            UI::strokeRect(renderer, b.rect.x, b.rect.y, b.rect.w, b.rect.h, b.enabled ? b.color : UI::P.dim);
+            const SDL_Color txt = b.enabled ? (b.on ? UI::P.text : b.color) : SDL_Color{ 86, 98, 118, 255 };
+            const int lw = int(b.label.size()) * 6;
+            UI::drawText(renderer, b.rect.x + (b.rect.w - lw) / 2, b.rect.y + (b.rect.h - 7) / 2, b.label, txt, 1);
+        }
+    };
+
+    auto dispatch = [&](int action) {
+        switch (action) {
+            case ACT_ENTER: {
+                buildLocalScene(game, anchorStar(), localScene);
+                localScene.active = true;
+                game.lastEvent = "entered local flight";
+                titleTick = 11;
+            } break;
+            case ACT_GO:
+                if (selectedStar >= 0 && game.commandAgentToStar(game.playerAgent, selectedStar)) {
+                    selectedAgent = game.playerAgent; followAgent = true;
+                }
+                break;
+            case ACT_STOP:
+                if (game.playerAgent >= 0) game.abortAgentRoute(game.playerAgent);
+                break;
+            case ACT_TRADE: {
+                int a = anchorStar();
+                if (a >= 0) { selectedStar = a; UI::openTradeWindow(ui, a, winW, winH); }
+            } break;
+            case ACT_SHIPYARD: {
+                int a = anchorStar();
+                if (a >= 0) { selectedStar = a; UI::openShipyardWindow(ui, a, std::max(20, winW / 2 - 235), 40); }
+            } break;
+            case ACT_REPAIR:
+                if (game.playerRepairHull()) { selectedAgent = game.playerAgent; titleTick = 11; }
+                break;
+            case ACT_HIRE:
+                game.playerHireShip(); selectedAgent = game.playerAgent;
+                break;
+            case ACT_PAUSE: paused = !paused; break;
+            case ACT_SPEED:
+                simSpeed = (simSpeed >= 10.0) ? 1.0 : (simSpeed >= 5.0 ? 10.0 : (simSpeed >= 2.0 ? 5.0 : 2.0));
+                break;
+            case ACT_FIRE:   localFireClick = true;  break;
+            case ACT_MINE:   localMineEdge = true;   break;
+            case ACT_DOCK:   localDockEdge = true;   break;
+            case ACT_TARGET: localTargetEdge = true; break;
+            case ACT_ZOOM_IN:  localZoom = clampDouble(localZoom * 1.2, 0.05, 40.0); break;
+            case ACT_ZOOM_OUT: localZoom = clampDouble(localZoom / 1.2, 0.05, 40.0); break;
+            case ACT_EXIT: localScene.active = false; game.lastEvent = "exited local flight"; break;
+        }
+    };
 
     const Uint64 perfFrequency = SDL_GetPerformanceFrequency();
     Uint64 lastCounter = SDL_GetPerformanceCounter();
@@ -578,15 +732,33 @@ int main(int argc, char** argv) {
                 selectedElement = clickSelection.element;
                 followAgent = clickSelection.followAgent;
                 if (!handled) {
-                    const int star = nearestStar(game, e.button.x, e.button.y, winW, winH, view);
-                    const int agent = nearestAgent(game, e.button.x, e.button.y, winW, winH, view);
-                    if (agent >= 0) {
-                        selectedAgent = agent;
-                        followAgent = false;
-                    } else if (star >= 0) {
-                        selectedStar = star;
-                        followAgent = false;
-                        UI::openSystemWindow(ui, selectedStar, winW, winH);
+                    // Сначала — единая панель действий (перекрывает выбор звезды).
+                    std::vector<ActionButton> bar;
+                    buildBar(bar);
+                    bool hitBtn = false;
+                    int act = ACT_NONE;
+                    for (size_t bi = 0; bi < bar.size(); ++bi) {
+                        const SDL_Rect& rr = bar[bi].rect;
+                        if (e.button.x >= rr.x && e.button.y >= rr.y &&
+                            e.button.x < rr.x + rr.w && e.button.y < rr.y + rr.h) {
+                            hitBtn = true;
+                            if (bar[bi].enabled) act = bar[bi].action;
+                            break;
+                        }
+                    }
+                    if (act != ACT_NONE) {
+                        dispatch(act);
+                    } else if (!hitBtn && !localScene.active) {
+                        const int star = nearestStar(game, e.button.x, e.button.y, winW, winH, view);
+                        const int agent = nearestAgent(game, e.button.x, e.button.y, winW, winH, view);
+                        if (agent >= 0) {
+                            selectedAgent = agent;
+                            followAgent = false;
+                        } else if (star >= 0) {
+                            selectedStar = star;
+                            followAgent = false;
+                            UI::openSystemWindow(ui, selectedStar, winW, winH);
+                        }
                     }
                 }
             }
@@ -795,7 +967,7 @@ int main(int argc, char** argv) {
             li.yawR   = ks[SDL_SCANCODE_D] != 0;
             li.pitchU = ks[SDL_SCANCODE_R] != 0;
             li.pitchD = ks[SDL_SCANCODE_F] != 0;
-            li.fire   = ks[SDL_SCANCODE_SPACE] != 0;
+            li.fire   = ks[SDL_SCANCODE_SPACE] != 0 || localFireClick;
             li.warp   = ks[SDL_SCANCODE_LSHIFT] != 0 || ks[SDL_SCANCODE_RSHIFT] != 0;
             li.mineToggle = localMineEdge;
             li.dock   = localDockEdge;
@@ -835,7 +1007,7 @@ int main(int argc, char** argv) {
         } else if (!paused) {
             advanceGame(game, realDt * simYearsPerSecond);
         }
-        localMineEdge = localDockEdge = localTargetEdge = false;
+        localMineEdge = localDockEdge = localTargetEdge = localFireClick = false;
         if (selectedAgent >= 0 && selectedAgent < int(game.agents.size())) {
             if (!game.playerCanSeeAgent(selectedAgent)) {
                 selectedAgent = game.playerAgent;
@@ -853,6 +1025,7 @@ int main(int argc, char** argv) {
         if (localScene.active) {
             const CameraBasis localBasis = makeCameraBasis(localView);
             renderLocalScene(renderer, game, localScene, localView, localBasis, winW, winH);
+            { std::vector<ActionButton> bar; buildBar(bar); drawBar(bar); }
             SDL_RenderPresent(renderer);
             if (smoke && ++frames >= 12) quit = true;
             if (!quit) {
@@ -1085,6 +1258,7 @@ int main(int argc, char** argv) {
         hud.simYearsPerSecond = simYearsPerSecond;
         UI::drawHud(renderer, game, winW, winH, hud);
         UI::drawWindows(renderer, game, winW, winH, hud, ui);
+        { std::vector<ActionButton> bar; buildBar(bar); drawBar(bar); }
 
         SDL_RenderPresent(renderer);
         if (smoke && ++frames >= 12) quit = true;

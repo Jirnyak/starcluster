@@ -728,6 +728,21 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         scene.dockPrompt = best;
     }
 
+    // ---- Подсказка добычи: ближайший астероид с рудой в зоне (для HUD/кнопки) ----
+    scene.minePrompt = -1;
+    {
+        int best = -1; double bestD2 = 0.0;
+        for (size_t i = 0; i < scene.rocks.size(); ++i) {
+            const LocalRock& rk = scene.rocks[i];
+            if (rk.ore <= 0.0) continue;
+            double dx = rk.x - scene.px, dy = rk.y - scene.py, dz = rk.z - scene.pz;
+            double d2 = dx*dx + dy*dy + dz*dz;
+            double range = rk.radius + LocalCfg::MINE_RANGE;
+            if (d2 <= range*range && (best < 0 || d2 < bestD2)) { best = (int)i; bestD2 = d2; }
+        }
+        scene.minePrompt = best;
+    }
+
     // ---- (J) Лут: интеграция, автосбор (с уважением к трюму), отсев ----
     {
         size_t ec = elementCount();
