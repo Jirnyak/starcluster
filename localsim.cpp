@@ -586,6 +586,26 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                     std::uniform_real_distribution<double> ul(LocalCfg::DOCK_LINGER_MIN_H, LocalCfg::DOCK_LINGER_MAX_H);
                     c.errand = 1; c.errandTimer = ul(wr);
                     c.vx *= 0.15; c.vy *= 0.15; c.vz *= 0.15; // сброс хода на «швартовку»
+                    // (§5.13.18) Живая экономика: зеркало-торговец (co-located макро-агент) при
+                    //   швартовке продаёт передний стак груза на местном рынке — тот же
+                    //   детерминированный sellCargo, что макро-updateTrader зовёт на прибытии
+                    //   (game.cpp ~:2339). SELL-ONLY (без buy/journey — те трогают rng и локацию).
+                    //   Макро-сим на время локального полёта заморожен (main.cpp) ⇒ нет двойного счёта.
+                    //   Строго аддитивно: чисто-локальные craft (agentIndex<0) и не-торговцы не тронуты.
+                    if (c.kind == CK_TRADER && c.agentIndex >= 0
+                        && c.agentIndex < (int)game.agents.size() && scene.starIndex >= 0
+                        && !game.agents[c.agentIndex].ship.cargo.empty()) {
+                        std::string sold = game.agents[c.agentIndex].ship.cargo[0].element; // символ стака, что продаст sellCargo
+                        if (localDockSellCargo(game, c.agentIndex, scene.starIndex)) {
+                            ++scene.tradesExecuted;
+                            // Дебаунс toast (как distress §5.13.11 / mining) — не дребезжим при пачке швартовок.
+                            if (scene.tradeCooldown <= 0.0 && scene.toastTimer <= 0.0) {
+                                scene.toast = std::string("TRADER SOLD ") + sold;
+                                scene.toastTimer = 2.5;
+                            }
+                            scene.tradeCooldown = 5.0;
+                        }
+                    }
                 }
             }
             c.thrustGlow = (c.errand == 2) ? 0.8 : 0.6;
@@ -1203,6 +1223,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
 
     // ---- Таймер тоста ----
     scene.toastTimer = std::max(0.0, scene.toastTimer - dtReal);
+    scene.tradeCooldown = std::max(0.0, scene.tradeCooldown - dtReal); // (§5.13.18) дебаунс «TRADER SOLD»
 
     // ---- Действие стыковки ----
     if (in.dock && scene.dockPrompt >= 0) return scene.starIndex; // main откроет рынок

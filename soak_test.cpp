@@ -28,6 +28,7 @@ int main() {
     const int stars[] = {-1, 0, 1, 2, 3, 5, 7, 11, 23, 99};
     long totalFrames = 0, invariantFails = 0, deaths = 0, claims = 0, kills = 0;
     long rocksSeen = 0, rocksShiny = 0;   // (§5.13.15) счётчик пород + блестящих (лёд/металл)
+    long tradesTotal = 0;                 // (§5.13.18) сделки продажи груза зеркалом-торговцем за весь soak
     const double dtReal = 0.05; // 50 мс/кадр
 
     for (int starIdx : stars) {
@@ -129,9 +130,20 @@ int main() {
         for (size_t k = 0; k < scene.radio.size(); ++k) if (scene.radio[k].resolved) ++resolved;
         claims += resolved;
         kills += std::max(0, craftStart - (int)scene.craft.size());
+        tradesTotal += scene.tradesExecuted;   // (§5.13.18) продажи зеркал-торговцев в этой сцене
         std::printf("star %5d: bodies=%2d rocks=%3d craft=%2d->%2d radio=%d resolved=%d fxPeak=%d\n",
                     starIdx, (int)scene.bodies.size(), (int)scene.rocks.size(),
                     craftStart, (int)scene.craft.size(), radioTotal, resolved, fxPeak);
+    }
+
+    // (§5.13.18) Инвариант: деньги всех макро-агентов конечны после локальных сделок продажи —
+    // зеркала-торговцы писали в game.agents[].money через детерминированный sellCargo (тот же
+    // персистентный мир). Ловим NaN/Inf, если write-back где-то повредил экономику.
+    for (size_t a = 0; a < game.agents.size(); ++a) {
+        if (!std::isfinite(game.agents[a].money)) {
+            std::printf("INVARIANT FAIL: non-finite agent money a=%zu\n", a);
+            ++invariantFails; break;
+        }
     }
 
     // --- Детерминированная проверка ветки смерти игрока + аварийного прыжка ---
@@ -209,9 +221,69 @@ int main() {
     }
     if (!writeBackOk) { std::printf("INVARIANT FAIL: §5.13.14 macro write-back did not fire\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s rocks=%ld shiny=%ld\n",
+    // --- Детерминированная проверка write-back ПРОДАЖИ груза (§5.13.18) ---
+    // Зеркало-торговец (co-located макро-агент) при швартовке в локальном полёте продаёт передний
+    // стак груза на местном рынке через детерминированный sellCargo — тот же путь, что макро-updateTrader
+    // зовёт на прибытии. Свежий Game — полная изоляция. Берём элемент с макс. рыночной ценой (гарантия,
+    // что выручка > 0), кладём макро-агенту в трюм, пиним зеркало-торговца на теле-цели → срабатывает
+    // переход швартовки (errand 0→1) → продажа. Проверяем в ПОСТОЯННОМ мире: груз уменьшился, деньги
+    // выросли, счётчик сделок сцены > 0. Это доказывает живую экономику без двойного счёта.
+    bool sellWriteBackOk = false;
+    {
+        Game g3; g3.init(1200);
+        const int ai = (g3.playerAgent == 0 ? 1 : 0);          // любой не-игрок агент
+        if (ai < (int)g3.agents.size()) {
+            for (int starIdx : stars) {
+                if (starIdx < 0 || starIdx >= (int)g3.cluster.stars.size()) continue;
+                if (starIdx >= (int)g3.markets.size()) continue; // нужен реальный рынок
+                LocalScene scene;
+                buildLocalScene(g3, starIdx, scene);
+                scene.active = true;
+                if (scene.craft.empty() || scene.bodies.empty()) continue;
+                // Элемент с макс. рыночной ценой — гарантированно положительная выручка при продаже.
+                const Market& mk = g3.markets[starIdx];
+                int bestEl = -1; double bestPrice = 0.0;
+                for (size_t e = 0; e < mk.prices.size(); ++e)
+                    if (mk.prices[e] > bestPrice) { bestPrice = mk.prices[e]; bestEl = (int)e; }
+                if (bestEl < 0) continue;                        // рынок без цен — к следующей звезде
+                const std::string sym = elementDefinitions()[bestEl].symbol;
+                // Готовим макро-агента: известный груз, запоминаем деньги.
+                g3.agents[ai].ship.cargo.clear();
+                g3.agents[ai].ship.cargo.emplace_back(sym, 8.0);
+                const double moneyBefore = g3.agents[ai].money;
+                // Единственный craft — зеркало нашего агента, торговец, круиз к телу 0.
+                scene.craft.resize(1);
+                scene.craft[0].agentIndex = ai;
+                scene.craft[0].kind = CK_TRADER;
+                scene.craft[0].hostile = false;
+                scene.craft[0].faction = -1;
+                scene.craft[0].errand = 0;
+                scene.craft[0].errandBody = 0;
+                for (int f = 0; f < 2000 && !sellWriteBackOk; ++f) {
+                    LocalCraft& cc = scene.craft[0];
+                    if (cc.errand == 0) {                        // пиним торговца ровно на теле-цели
+                        const LocalBody& tb = scene.bodies[0];
+                        cc.x = tb.x; cc.y = tb.y; cc.z = tb.z;
+                        cc.vx = cc.vy = cc.vz = 0.0;
+                        cc.errandBody = 0;
+                    }
+                    LocalInput in;
+                    updateLocalScene(g3, scene, in, dtReal);
+                    const bool cargoShrank = g3.agents[ai].ship.cargo.empty()
+                        || g3.agents[ai].ship.cargo[0].amount < 8.0 - 0.01;
+                    if (scene.tradesExecuted > 0 && cargoShrank
+                        && g3.agents[ai].money > moneyBefore) sellWriteBackOk = true;
+                }
+                if (sellWriteBackOk) break;                      // одной системы достаточно
+            }
+        }
+        std::printf("sell-write-back probe: traderSold=%s\n", sellWriteBackOk ? "YES (ok)" : "NO");
+    }
+    if (!sellWriteBackOk) { std::printf("INVARIANT FAIL: §5.13.18 trader-sell write-back did not fire\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
-                rocksSeen, rocksShiny);
+                sellWriteBackOk ? "ok" : "FAILED", rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }

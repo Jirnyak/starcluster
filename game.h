@@ -285,3 +285,4 @@ public:
 
 const char* chromocoreStatLabel(int stat); // chromo.cpp
 void downgradeAgentToEscapePod(Agent& a);   // game.cpp — «смерть» макро-агента: спас-капсула + сброс груза
+bool localDockSellCargo(Game& game, int agentIndex, int starIndex); // game.cpp — торговец-зеркало продаёт груз на местном рынке при стыковке (§5.13.18)

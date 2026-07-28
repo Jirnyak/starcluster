@@ -2605,6 +2605,19 @@ bool expectTag(std::istream& in, const char* expectedTag) {
 
 }
 
+// (§5.13.18) Торговец-зеркало (co-located макро-агент) при стыковке в локальном полёте продаёт груз
+//   на местном рынке — тот же детерминированный sellCargo, что зовёт макро-updateTrader на прибытии
+//   (см. updateTrader). Продаём один передний стак (как updateTrader за тик). true, если продано.
+//   Без RNG (sellCargo — чистая арифметика по рынку/деньгам/тарифам), поэтому §2.3-safe: локальный
+//   режим может это звать, не трогая глобальный rng. Макро-симуляция на время локального полёта
+//   заморожена (main.cpp) ⇒ двойного счёта с updateTrader нет. ВНИМАНИЕ: sellCargo лежит в анонимном
+//   namespace (внутренняя линковка) — эта обёртка ОБЯЗАНА жить в game.cpp ВНЕ анонимного namespace,
+//   чтобы иметь внешнюю линковку для localsim.cpp, но при этом видеть sellCargo по неквалиф. поиску TU.
+bool localDockSellCargo(Game& game, int agentIndex, int starIndex) {
+    if (agentIndex < 0 || agentIndex >= (int)game.agents.size()) return false;
+    return sellCargo(game, game.agents[agentIndex], starIndex);
+}
+
 Game::Game() : time(0.0) {}
 
 void Game::pushNews(const std::string& text, int kind) {
