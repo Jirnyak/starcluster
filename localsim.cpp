@@ -660,7 +660,26 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                     scene.fx.push_back(f);
                 }
                 if (before > 0.0 && o.hullHP <= 0.0) {
-                    spawnWreck(o.x, o.y, o.z, o.vx, o.vy, o.vz, o.r, o.g, o.b); // без награды/фракций
+                    spawnWreck(o.x, o.y, o.z, o.vx, o.vy, o.vz, o.r, o.g, o.b);
+                    // (§5.13.26) СВИДЕТЕЛЬСТВО ПИРАТСТВА: смерть NPC-vs-NPC больше не «инертна» для макро.
+                    //   (A) Жертва-зеркало гибнет и в постоянном мире — корабль её макро-агента деградирует в
+                    //       спас-капсулу (та же семантика и помощник, что в player-kill §5.13.14: кредиты не
+                    //       трогаем, RNG не трогаем, игрока-агента исключаем). Раньше тут стоял лишь spawnWreck
+                    //       «без награды/фракций» — единственная точка мира, где чужая смерть не значила ничего.
+                    if (o.agentIndex >= 0 && o.agentIndex < (int)game.agents.size()
+                        && o.agentIndex != game.playerAgent) {
+                        downgradeAgentToEscapePod(game.agents[o.agentIndex]);
+                    }
+                    //   (G) Налётчик попадает в розыск в реальном времени: пират, убивший НЕ-пирата, получает
+                    //       (или наращивает) награду за голову. Розыск §5.13.24 перестаёт быть только
+                    //       предгенерённым — он ещё и эмерджентный: увиденное вами злодейство поднимает цену.
+                    //       Переиспользуем поля wanted/wantedBounty, без RNG и без новых полей. Золотые
+                    //       подсказки кокпита (§5.13.25) зажгутся на этом пирате, а награда выплатится при его
+                    //       убийстве (§5.13.24). Патруль, добивший пирата, наградой не метится (гейт c.kind).
+                    if (c.kind == CK_PIRATE && o.kind != CK_PIRATE) {
+                        if (!c.wanted) { c.wanted = true; c.wantedBounty = 300.0; }
+                        else           { c.wantedBounty = std::min(1500.0, c.wantedBounty + 200.0); }
+                    }
                 }
             }
         }

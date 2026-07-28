@@ -281,9 +281,68 @@ int main() {
     }
     if (!sellWriteBackOk) { std::printf("INVARIANT FAIL: §5.13.18 trader-sell write-back did not fire\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s rocks=%ld shiny=%ld trades=%ld\n",
+    // --- Детерминированная проверка write-back смерти NPC-vs-NPC (§5.13.26, часть A) ---
+    // Симметрична player-kill write-back (§5.13.14), но добивает НЕ игрок, а другой NPC: пират
+    // расстреливает борт-зеркало макро-агента. Проверяем, что и в этом случае агент в ПОСТОЯННОМ
+    // мире деградирует в спас-капсулу (раньше смерть NPC-vs-NPC была для макро инертной — единственная
+    // точка мира без последствий). Свежий Game — полная изоляция. Пират и жертва пиньятся в упор;
+    // игрок далеко (пират целит в NPC, а не в игрока) и НЕ стреляет — смерть чисто NPC-vs-NPC.
+    // Жертве держим щит=0 и корпус=1 → первый же залп пирата добивает.
+    bool npcWriteBackOk = false;
+    {
+        Game g4; g4.init(1200);
+        const int ai = (g4.playerAgent == 0 ? 1 : 0);          // жертва — любой не-игрок агент
+        if (ai < (int)g4.agents.size()) {
+            g4.agents[ai].ship.name = "Test Freighter";
+            g4.agents[ai].ship.heavyWeapons = 15.0;            // станет 0 после даунгрейда
+            g4.agents[ai].ship.cargo.clear();
+            g4.agents[ai].ship.cargo.emplace_back("H", 5.0);   // немного груза — проверим сброс
+            for (int starIdx : stars) {
+                if (starIdx < 0) continue;                     // нужна реальная звезда с трафиком
+                LocalScene scene;
+                buildLocalScene(g4, starIdx, scene);
+                scene.active = true;
+                while (scene.craft.size() < 2) { LocalCraft nc; scene.craft.push_back(nc); }
+                scene.craft.resize(2);                         // ровно два борта: пират[0] + жертва[1]
+                {
+                    LocalCraft& pir = scene.craft[0];          // ПИРАТ-налётчик (без макро-зеркала)
+                    pir.kind = CK_PIRATE; pir.hostile = true; pir.faction = -1; pir.agentIndex = -1;
+                    pir.heavy = 60.0; pir.light = 0.0;         // гарантированный урон
+                    pir.maxHullHP = 60.0; pir.hullHP = 60.0;   // здоров → не бежит (aiState=1)
+                    pir.maxShield = 0.0; pir.shield = 0.0; pir.fireCooldown = 0.0;
+                    LocalCraft& vic = scene.craft[1];          // ЖЕРТВА — зеркало нашего агента
+                    vic.kind = CK_TRADER; vic.hostile = false; vic.faction = -1; vic.agentIndex = ai;
+                    vic.armor = 800.0;
+                }
+                scene.px = 100000.0; scene.py = 0.0; scene.pz = 0.0; // игрок вне радиуса осведомлённости
+                scene.pvx = scene.pvy = scene.pvz = 0.0;
+                for (int f = 0; f < 3000 && !npcWriteBackOk; ++f) {
+                    if (scene.craft.size() >= 2) {             // пиньятся в упор; жертва — сидячая мишень
+                        LocalCraft& p0 = scene.craft[0];
+                        LocalCraft& v1 = scene.craft[1];
+                        p0.x = p0.y = p0.z = 0.0; p0.vx = p0.vy = p0.vz = 0.0;
+                        p0.hullHP = p0.maxHullHP; p0.shield = 0.0; // держим пирата здоровым (не бежит)
+                        v1.x = 40.0; v1.y = 0.0; v1.z = 0.0; v1.vx = v1.vy = v1.vz = 0.0;
+                        if (v1.hullHP > 1.0) v1.hullHP = 1.0;
+                        v1.shield = 0.0; v1.shieldRegenTimer = 999.0;
+                    }
+                    LocalInput in;                             // игрок НЕ стреляет
+                    updateLocalScene(g4, scene, in, dtReal);
+                    if (g4.agents[ai].ship.name == "Escape Pod"
+                        && g4.agents[ai].ship.heavyWeapons == 0.0
+                        && g4.agents[ai].ship.cargo.empty()) npcWriteBackOk = true;
+                }
+                break;                                          // проверили одну систему — достаточно
+            }
+        }
+        std::printf("npc-write-back probe: macroAgentDowngraded=%s\n", npcWriteBackOk ? "YES (ok)" : "NO");
+    }
+    if (!npcWriteBackOk) { std::printf("INVARIANT FAIL: §5.13.26 NPC-vs-NPC macro write-back did not fire\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
-                sellWriteBackOk ? "ok" : "FAILED", rocksSeen, rocksShiny, tradesTotal);
+                sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
+                rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }
