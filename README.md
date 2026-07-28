@@ -35,7 +35,10 @@ cluster map stays orthographic) and the player flies a ship in 3D around:
   Keplerian orbits, moons, an asteroid belt, a station, and radio sources;
 - a giant star rendered as a real sphere of plasma by a per-pixel analytic
   ray-sphere **software shader** (isotropic — correct from every view direction,
-  animated turbulence, limb darkening, corona), not a flat sprite or a fill;
+  animated turbulence, limb darkening, corona), not a flat sprite or a fill —
+  with an O→M spectral color contrast (hot stars blue-white, cool stars deep
+  red-orange), a chromospheric limb rim, slowly-drifting corona prominences, and
+  subtle sunspot cells;
 - lit planets and moons drawn by the **same ray-sphere technique**, with the star
   at the system origin as the light source: a real day/night terminator gives them
   phases and crescents, plus per-type surfaces (gas-giant bands, rocky mottling,
@@ -350,10 +353,13 @@ and projectiles are drawn in `localdraw.cpp`. The central star is not a sprite: 
 is produced by a per-pixel analytic **ray-sphere software shader**
 (`renderStarPlasma`) that, for each screen pixel, reconstructs a world-space ray
 from the eye, intersects the star sphere analytically, and shades from geometry —
-multi-octave domain-warped turbulence, limb darkening, and a soft corona. Because
-the shading is a pure function of the ray and the star's centre/radius, it is
-isotropic: the star looks like a real ball of plasma from every direction, with no
-"fill the screen yellow" shortcut. The shader writes into a half-resolution
+multi-octave domain-warped turbulence (with a second-order warp), limb darkening,
+and a soft corona. Colour follows an O→M spectral proxy (blue-white hot cores vs
+deep red-orange cool limbs); a thin chromospheric rim rides the limb, the corona
+breaks into slowly-drifting prominence plumes, and a low-frequency field darkens
+occasional sunspot cells. Because the shading is a pure function of the ray and the
+star's centre/radius, it is isotropic: the star looks like a real ball of plasma
+from every direction, with no "fill the screen yellow" shortcut. The shader writes into a half-resolution
 streaming `SDL_Texture` (bounding-box limited when the star is far away), so it
 stays SDL2-only and keeps the deterministic headless screenshot harness working —
 there is still no OpenGL path. The same ray-sphere method now lights the planets

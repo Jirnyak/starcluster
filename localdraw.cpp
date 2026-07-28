@@ -222,7 +222,7 @@ static void renderStarPlasma(SDL_Renderer* renderer, const LocalScene& scene,
 
     // Экранный bbox в координатах буфера (полуразрешение). Далеко (D>R и центр перед
     // камерой) — квадрат вокруг проекции центра радиусом screenR·coronaK; иначе весь кадр.
-    const double coronaK = 1.55;
+    const double coronaK = 1.70;   // чуть шире — простор для протуберанцев/плюмов короны
     int bx0 = 0, by0 = 0, bx1 = bw, by1 = bh;
     if (D2 > R2 * 1.05) {
         ProjectedPoint sp = projectPointWithBasis(0.0, 0.0, 0.0, winW, winH, view, basis);
@@ -237,9 +237,24 @@ static void renderStarPlasma(SDL_Renderer* renderer, const LocalScene& scene,
     }
 
     // Цвета ядра (горячее/светлее) и лимба (темнее/краснее) из спектрального цвета звезды.
+    // Прокси температуры O→M из синевы цвета (гор. звезда — сине-белая, высокая B; холодная —
+    // красно-оранжевая, низкая B). Усиливает спектральный контраст: горячие — сине-белый шар с
+    // ярким синим лимбом, холодные — жёлто-ядро + глубоко-красный сильно затемнённый лимб.
     const double sR = (double)scene.starR, sG = (double)scene.starG, sB = (double)scene.starB;
-    const double crR = std::min(255.0, sR + 15.0), crG = std::min(255.0, sG + 30.0), crB = std::min(255.0, sB + 60.0); // ядро — бело-горячее
-    const double lmR = sR * 0.92,                  lmG = sG * 0.50,                  lmB = sB * 0.26;                  // лимб — глубокий оранж-красный
+    double hot01 = (sB - 150.0) / 105.0; if (hot01 < 0.0) hot01 = 0.0; else if (hot01 > 1.0) hot01 = 1.0;
+    const double crR = std::min(255.0, sR + 10.0 + 22.0 * (1.0 - hot01)); // ядро: холод.→жёлто-белое
+    const double crG = std::min(255.0, sG + 26.0 + 10.0 * (1.0 - hot01));
+    const double crB = std::min(255.0, sB + 34.0 + 60.0 * hot01);         //        гор.→сине-белое
+    const double lmR = sR * (0.90 - 0.05 * hot01);                        // лимб: холод.→глубокий
+    const double lmG = sG * (0.40 + 0.22 * hot01);                        //  красно-оранж, гор.→
+    const double lmB = sB * (0.18 + 0.40 * hot01);                        //  синее и ярче
+    // Тон хромосферного ободка (аддитивно) и короны: холодная звезда — H-alpha красно-розовый,
+    // горячая — сине-белый (иначе красный ободок диссонирует на сине-белом диске). Холодный
+    // предел короны = ТОЧНО прежний оранж (lm·), горячий — синева → без регресса тёплых звёзд.
+    const double chR = 120.0 - 40.0 * hot01, chG = 30.0 + 90.0 * hot01, chB = 42.0 + 158.0 * hot01;
+    const double coR = lmR       * (1.0 - hot01) + 150.0 * hot01;
+    const double coG = lmG * 0.9 * (1.0 - hot01) + 180.0 * hot01;
+    const double coB = lmB * 0.8 * (1.0 - hot01) + 235.0 * hot01;
     const double tcl = scene.fxClock;
 
     void* vpix = nullptr; int pitch = 0;
@@ -249,7 +264,6 @@ static void renderStarPlasma(SDL_Renderer* renderer, const LocalScene& scene,
     const double invF  = 1.0 / focal;
     const double halfW = winW * 0.5, halfH = winH * 0.5;
     const double coronaR = R * coronaK, coronaR2 = coronaR * coronaR;
-    const double coronaDen = 1.0 / std::max(1e-6, coronaR - R);
 
     for (int by = by0; by < by1; ++by) {
         Uint32* row = (Uint32*)(rowbase + (size_t)by * pitch);
@@ -278,35 +292,60 @@ static void renderStarPlasma(SDL_Renderer* renderer, const LocalScene& scene,
                     const double nx = (ex + dx * te) / R;     // нормаль/позиция на поверхности
                     const double ny = (ey + dy * te) / R;
                     const double nz = (ez + dz * te) / R;
-                    // Многооктавная турбулентность с доменным варпом → «кипящая» плазма
-                    // (филаменты/гранулы), а не гладкий градиент. Частоты умеренные (полуразрешение).
-                    const double wrp = 0.35 * std::sin(ny * 7.0 - tcl * 0.5);
+                    // Многооктавная турбулентность + доменный варп 2-го порядка → «кипящая»
+                    // плазма (филаменты/гранулы), а не гладкий градиент. Частоты умеренные.
+                    const double wrp  = 0.35 * std::sin(ny * 7.0 - tcl * 0.5);
+                    const double wrp2 = 0.22 * std::sin((nx + nz) * 11.0 + wrp * 2.3 - tcl * 0.7); // варп варпа
                     const double n1  = std::sin(nx * 8.0 + wrp + tcl * 0.6);
-                    const double n2  = std::sin((ny + nz) * 12.0 - wrp * 1.3 - tcl * 0.9);
-                    const double n3  = std::sin((nx - nz) * 19.0 + n1 * 1.6 + tcl * 0.4);
-                    const double turb = 0.50 * n1 + 0.30 * n2 + 0.22 * n3;
+                    const double n2  = std::sin((ny + nz) * 12.0 - wrp2 * 1.3 - tcl * 0.9);
+                    const double n3  = std::sin((nx - nz) * 19.0 + n1 * 1.6 + wrp2 + tcl * 0.4);
+                    const double n4  = std::sin((ny - nx) * 31.0 + n2 * 1.4 - tcl * 0.5); // мелкая октава
+                    const double turb = 0.46 * n1 + 0.28 * n2 + 0.20 * n3 + 0.12 * n4;
                     double bright = (0.42 + 0.58 * mu) * (1.0 + 0.20 * turb);
+                    // Пятна (сунспоты): низкочаст. поле, мягко темнит редкие «клетки» (умбра+
+                    // полутень), без порога — концентрируем в мелкие ядра степенью ^4.
+                    double sf = 0.5 + 0.5 * std::sin(nx * 3.0 + tcl * 0.05)
+                                          * std::sin((ny + nz) * 2.6 - tcl * 0.04)
+                                          * std::sin(nz * 3.4 + n1 * 0.5);
+                    double spot = sf * sf; spot *= spot;      // ^4 — маленькие тёмные ядра, мягкий край
+                    bright *= 1.0 - 0.50 * spot;
                     if (bright < 0.0) bright = 0.0;
                     const double m = mu2;                     // ярче к ядру
-                    const double rr = (lmR + (crR - lmR) * m) * bright;
-                    const double gg = (lmG + (crG - lmG) * m) * bright;
-                    const double bb = (lmB + (crB - lmB) * m) * bright;
-                    const Uint32 ir = rr > 255.0 ? 255u : (Uint32)rr;
-                    const Uint32 ig = gg > 255.0 ? 255u : (Uint32)gg;
-                    const Uint32 ib = bb > 255.0 ? 255u : (Uint32)bb;
+                    double rr = (lmR + (crR - lmR) * m) * bright;
+                    double gg = (lmG + (crG - lmG) * m) * bright;
+                    double bb = (lmB + (crB - lmB) * m) * bright;
+                    // Хромосферный ободок: тонкий H-alpha (красно-розовый) слой у самого лимба
+                    // (mu→0), излучение — аддитивно поверх фотосферы, с лёгкой неровностью.
+                    double rim = 1.0 - mu; rim *= rim; rim *= rim;    // (1-mu)^4 — узкая кромка
+                    rim *= 0.85 + 0.15 * n2;
+                    rr += rim * chR; gg += rim * chG; bb += rim * chB;
+                    const Uint32 ir = rr > 255.0 ? 255u : (rr < 0.0 ? 0u : (Uint32)rr);
+                    const Uint32 ig = gg > 255.0 ? 255u : (gg < 0.0 ? 0u : (Uint32)gg);
+                    const Uint32 ib = bb > 255.0 ? 255u : (bb < 0.0 ? 0u : (Uint32)bb);
                     row[bx] = 0xFF000000u | (ir << 16) | (ig << 8) | ib;
                     continue;
                 }
             }
-            // Корона: луч мимо сферы, но проходит рядом и «вперёд» к звезде (bb0<0).
+            // Корона + протуберанцы: луч мимо сферы, но проходит рядом и «вперёд» (bb0<0).
             if (bb0 < 0.0 && dmin2 < coronaR2) {
-                double g = (coronaR - std::sqrt(dmin2)) * coronaDen;  // 1 у лимба → 0 у края
+                const double dm = std::sqrt(dmin2);
+                // Угловая позиция точки наибольшего сближения луча со звездой: P = O − d·(O·d).
+                const double px = ex - dx * bb0, py = ey - dy * bb0, pz = ez - dz * bb0;
+                const double ipl = 1.0 / std::max(1e-6, std::sqrt(px * px + py * py + pz * pz));
+                const double ax = px * ipl, ay = py * ipl, az = pz * ipl;
+                // Медленно дрейфующие угловые плюмы (несколько по лимбу) — протуберанцы/вспышки.
+                const double prom = 0.5 * (std::sin(ax * 5.0 + tcl * 0.20) * std::sin(ay * 6.0 - tcl * 0.15)
+                                           + std::sin((ay + az) * 7.0 + tcl * 0.10));
+                const double reach = coronaR * (1.0 + 0.28 * prom);   // плюмы тянутся дальше лимба
+                const double den   = 1.0 / std::max(1e-6, reach - R);
+                double g = (reach - dm) * den;                        // 1 у лимба → 0 у края плюма
                 if (g < 0.0) g = 0.0; else if (g > 1.0) g = 1.0;
-                Uint32 ia = (Uint32)(g * g * 0.6 * 255.0); if (ia > 255u) ia = 255u;
+                const double flare = 0.6 + 0.5 * (prom > 0.0 ? prom : 0.0); // яркость в плюмах
+                Uint32 ia = (Uint32)(g * g * flare * 255.0); if (ia > 255u) ia = 255u;
                 if (ia) {
-                    const Uint32 ir = (Uint32)std::min(255.0, lmR);
-                    const Uint32 ig = (Uint32)std::min(255.0, lmG * 0.9);
-                    const Uint32 ib = (Uint32)std::min(255.0, lmB * 0.8);
+                    const Uint32 ir = (Uint32)std::min(255.0, coR);
+                    const Uint32 ig = (Uint32)std::min(255.0, coG);
+                    const Uint32 ib = (Uint32)std::min(255.0, coB);
                     row[bx] = (ia << 24) | (ir << 16) | (ig << 8) | ib;
                 }
             }

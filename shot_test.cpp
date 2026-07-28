@@ -282,6 +282,32 @@ int main(int argc, char** argv) {
         }
     }
 
+    // (12) ГОРЯЧАЯ (сине-белая) ЗВЕЗДА, кокпит: проверка спектрального контраста O→M. Ищем
+    //      пульсар (stellarClass==1 → цвет 190,210,255) — самый «синий»; фолбэк — тёплая звезда
+    //      с макс. металличностью (самая синяя из обычных). Кадрируем полный диск с короной, как
+    //      shot_system_cockpit (там холодная STAR70 — красно-оранж): рядом видно, что горячая
+    //      звезда сине-белая с ярким синим лимбом/короной, а холодная — глубоко-красная.
+    {
+        const int nStars = (int)game.cluster.stars.size();
+        int hs = -1, bluest = 0; double bestMet = -1.0;
+        for (int st = 0; st < nStars; ++st) {
+            if (game.cluster.stars[st].stellarClass == 1) { hs = st; break; } // пульсар — синейший
+            if (game.cluster.stars[st].metallicity > bestMet) {
+                bestMet = game.cluster.stars[st].metallicity; bluest = st;
+            }
+        }
+        if (hs < 0) hs = bluest;            // пульсара нет → самая синяя тёплая (макс. металличность)
+        LocalScene s; buildLocalScene(game, hs, s); s.active = true;
+        const double R = s.starRadius;
+        s.px = R * 2.2; s.py = 0.0; s.pz = 0.0;       // полный диск + корона в кадре
+        s.pvx = s.pvy = s.pvz = 0.0;
+        localSetForward(s, -1.0, 0.0, 0.0);           // нос на светило
+        std::printf("  [hot-star] star=%d class=%d rgb=%d,%d,%d D/R=2.2 (спектр. контраст O->M)\n",
+                    hs, game.cluster.stars[hs].stellarClass, (int)s.starR, (int)s.starG, (int)s.starB);
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_star_hot.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);
