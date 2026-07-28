@@ -909,8 +909,25 @@ static void renderNebula(SDL_Renderer* renderer, const LocalScene& scene,
             if (dens > 1.0) dens = 1.0;
             dens *= (0.6 + 0.4*dens);                                // мягкий контраст (мид не давит)
 
-            const double a  = MAXA * dens;
-            const double wf = 0.30 * dens;                           // ядра волокон чуть белее
+            // (§5.13.19) ПЫЛЕВЫЕ ПОЛОСЫ: тёмные извилистые волокна межзвёздной пыли,
+            // поглощающие свечение газа. Отдельный домен-варп (иные фазы/частоты), чтобы
+            // полосы НЕ совпадали со сгустками. СУММА синусов → полосовая (нитевидная)
+            // структура; тьма — у нулевого контура поля. Дет. (dx..dz, fxClock), без rng.
+            const double w2 = 0.35 * std::sin(dz*2.2 - t*0.03) * std::sin(dx*2.8 + t*0.025);
+            const double lx = dx + w2, ly = dy + w2, lz = dz - w2;
+            const double laneField = std::sin(lx*3.4 + ly*2.1) + 0.6*std::sin(lz*6.0 - lx*1.7);
+            double lane = std::fabs(laneField) * 1.7;                // узкие полосы: тьма лишь у контура
+            if (lane > 1.0) lane = 1.0;
+            dens *= (0.20 + 0.80*lane);                              // ядро полосы гасит газ до ~20%
+
+            // (§5.13.19) ЭМИССИОННЫЕ ЯДРА: самые плотные волокна светятся ярче (звёздные
+            // ясли) — резкий степенной отклик только у пиков плотности (уже за пылью).
+            const double core = dens*dens*dens;                      // ~0 вне пиков → строго аддитивно
+            const double emit = 0.55 * core;
+
+            const double a  = MAXA * dens * (1.0 + 0.6*core);        // ядра чуть плотнее
+            double wf = 0.30 * dens + emit;                          // ядра волокон ярче, к белому
+            if (wf > 0.92) wf = 0.92;                                // оставить намёк на тон газа
             double rr = gR + (255.0 - gR) * wf;
             double gg = gG + (255.0 - gG) * wf;
             double bb = gB + (255.0 - gB) * wf;
