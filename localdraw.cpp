@@ -1986,7 +1986,26 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             double k = beyond ? (double(R) / std::max(1e-6, dd)) : (double(R) / RANGE);
             int bx = rcx + int(rx * k);
             int by = rcy - int(ry * k);
-            SDL_Color cc = c.hostile ? P.red : rgba(150, 165, 182, 200);
+            // (§5.13.27) Радар больше не «слеп» к состоянию: цвет блипа кодирует угрозу и
+            //   бедствие, читая уже живые поля борта — тот же язык, что и кабинные подсказки
+            //   (SOS §5.13.11 / эскорт §5.13.12 / розыск §5.13.24–.26). Только рендер: ни нового
+            //   поля, ни rng; soak сцену не рисует. Приоритет розыск→SOS→эскорт→враг→нейтраль,
+            //   темпы пульса совпадают с кабиной (5.2 / 6.0 / 4.5), фаза по i — блипы не в унисон.
+            SDL_Color cc;
+            if (c.wanted) {                        // §5.13.26(G): налётчик в розыске — золотой (темп 5.2)
+                double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 5.2 + double(i) * 1.3);
+                cc = rgba(255, 205, 60, 150 + int(pl * 105.0));
+            } else if (c.underAttack) {            // §5.13.11: жертва под огнём — SOS-красный (темп 6.0)
+                double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 6.0 + double(i));
+                cc = rgba(P.red.r, P.red.g, P.red.b, 150 + int(pl * 105.0));
+            } else if (c.defending) {              // §5.13.12: патруль на перехвате — зелёный (темп 4.5)
+                double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 4.5 + double(i) * 0.9);
+                cc = rgba(90, 220, 132, 150 + int(pl * 105.0));
+            } else if (c.hostile) {                // прочий агрессор — ровный красный
+                cc = P.red;
+            } else {                               // нейтральный трафик — тусклый серый
+                cc = rgba(150, 165, 182, 200);
+            }
             if (beyond) strokeCircle(renderer, bx, by, 2, cc);
             else        fillRect(renderer, bx - 1, by - 1, 3, 3, cc);
         }

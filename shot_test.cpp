@@ -603,6 +603,54 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_wanted.bmp");
     }
 
+    // (19) РАДАР-УГРОЗЫ (§5.13.27): раньше радар (низ-справа) красил блип только «враг=красный,
+    //      иначе серый». Теперь цвет кодирует состояние борта тем же языком, что и кабина: розыск→
+    //      золотой (пульс 5.2), SOS/под огнём→красный (пульс 6.0), эскорт-патруль→зелёный (пульс 4.5),
+    //      простой враг→ровный красный, нейтраль→серый. Приоритет розыск>SOS>эскорт>враг. Пять бортов
+    //      в разных состояниях в пределах дальности (1400 LU) -> пять цветов блипов. Только рендер.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 5) { LocalCraft c; s.craft.push_back(c); } // гарантируем 5 бортов
+        s.px = 500.0; s.py = 0.0; s.pz = 200.0; s.pvx = s.pvy = s.pvz = 0.0;
+        localSetForward(s, 1.0, 0.0, 0.0);             // нос вдоль +X (радар: вперёд=+X, право=−Y)
+        // Разнесённые смещения по (dx,dy) -> распределённые блипы (Z радаром игнорируется).
+        LocalCraft& w = s.craft[0];                    // РОЗЫСК -> золотой (перебивает hostile)
+        w.kind = CK_PIRATE; w.label = "PIRATE"; w.faction = -1; w.r = 230; w.g = 90; w.b = 80;
+        w.aiState = 1; w.errand = 0; w.errandBody = -1;
+        w.hostile = true; w.wanted = true; w.wantedBounty = 650.0;
+        w.x = s.px + 700.0; w.y = s.py + 300.0; w.z = s.pz; w.vx = w.vy = w.vz = 0.0;
+        w.maxHullHP = 45.0; w.hullHP = w.maxHullHP;
+        LocalCraft& u = s.craft[1];                    // SOS: не-пират под огнём -> красный пульс
+        u.kind = CK_TRADER; u.label = "TRADER"; u.faction = 2; u.r = 120; u.g = 170; u.b = 220;
+        u.aiState = 1; u.errand = 0; u.errandBody = -1;
+        u.hostile = false; u.underAttack = true;
+        u.x = s.px + 500.0; u.y = s.py - 400.0; u.z = s.pz; u.vx = u.vy = u.vz = 0.0;
+        u.maxHullHP = 40.0; u.hullHP = u.maxHullHP * 0.6;
+        LocalCraft& d = s.craft[2];                    // ЭСКОРТ: патруль на перехвате -> зелёный пульс
+        d.kind = CK_PATROL; d.label = "PATROL"; d.faction = 1; d.r = 110; d.g = 215; d.b = 170;
+        d.aiState = 1; d.errand = 0; d.errandBody = -1;
+        d.hostile = false; d.defending = true;
+        d.x = s.px - 300.0; d.y = s.py + 500.0; d.z = s.pz; d.vx = d.vy = d.vz = 0.0;
+        d.maxHullHP = 70.0; d.hullHP = d.maxHullHP;
+        LocalCraft& h = s.craft[3];                    // ПРОСТОЙ ВРАГ -> ровный красный
+        h.kind = CK_PIRATE; h.label = "PIRATE"; h.faction = -1; h.r = 230; h.g = 90; h.b = 80;
+        h.aiState = 1; h.errand = 0; h.errandBody = -1;
+        h.hostile = true; h.wanted = false; h.underAttack = false; h.defending = false;
+        h.x = s.px + 800.0; h.y = s.py + 100.0; h.z = s.pz; h.vx = h.vy = h.vz = 0.0;
+        h.maxHullHP = 45.0; h.hullHP = h.maxHullHP;
+        LocalCraft& n = s.craft[4];                    // НЕЙТРАЛЬ -> серый
+        n.kind = CK_TRADER; n.label = "TRADER"; n.faction = 2; n.r = 120; n.g = 170; n.b = 220;
+        n.aiState = 1; n.errand = 0; n.errandBody = -1;
+        n.hostile = false; n.wanted = false; n.underAttack = false; n.defending = false;
+        n.x = s.px - 200.0; n.y = s.py - 600.0; n.z = s.pz; n.vx = n.vy = n.vz = 0.0;
+        n.maxHullHP = 40.0; n.hullHP = n.maxHullHP;
+        s.targetCraft = -1;                            // без цели — фокус на радаре
+        s.fxClock = 0.30;                              // фаза: пульсы блипов ярко видны
+        std::printf("  [radar-threat] 5 craft wanted/SOS/escort/hostile/neutral -> gold/red-pulse/green/red/grey blips\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_radar_threat.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);
