@@ -307,6 +307,31 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
     const std::vector<ElementDefinition>& defs = elementDefinitions();
     int elemN = int(elementCount());
 
+    // (§5.13.20) --- Композиционный профиль пояса (уровень СИСТЕМЫ, без lrng) ---
+    // Пояса перестают быть «состав-слепыми»: класс камней тянется к составу системы —
+    // металличность → металлический пояс, бедность металлом → льдистый, экономический
+    // профиль (resourceFocus) → свой класс. Пулы элементов по классам и веса классов
+    // считаем ОДИН раз здесь (чистая арифметика над star/defs, ноль lrng); в цикле лишь
+    // выбираем класс/элемент по ДЕТЕРМИНИРОВАННОМУ хэшу i — розыгрыши lrng ниже не трогаем,
+    // поэтому станция/трафик/радио спавнятся ПОБИТОВО как прежде (строго аддитивно, §2.3).
+    std::vector<int> classPool[4];   // индексы элементов по rockClass (enum RockClass 0..3)
+    for (int j = 0; j < elemN; ++j) { int c = rockClass(j); if (c >= 0 && c < 4) classPool[c].push_back(j); }
+    std::vector<int> focusPool[4];   // подмножество resourceFocus, разложенное по классам
+    for (size_t f = 0; f < star.resourceFocus.size(); ++f) {
+        int fe = star.resourceFocus[f];
+        if (fe >= 0 && fe < elemN) { int c = rockClass(fe); if (c >= 0 && c < 4) focusPool[c].push_back(fe); }
+    }
+    double mNorm = (star.metallicity - 0.22) / 0.95;   // диапазон генерации [0.22,1.17] → [0,1]
+    if (mNorm < 0.0) mNorm = 0.0; else if (mNorm > 1.0) mNorm = 1.0;
+    double w[4];
+    w[ROCK_SILICATE] = 1.6;                            // S-тип — самый обычный (≈ прежний тан-дефолт)
+    w[ROCK_METAL]    = 0.5 + 2.6 * mNorm;              // металличность → металлический пояс
+    w[ROCK_ICE]      = 0.5 + 1.8 * (1.0 - mNorm);      // бедные металлом → льдистые
+    w[ROCK_CARBON]   = 0.8;                            // углеродистые — реже
+    for (int c = 0; c < 4; ++c) w[c] += 0.9 * double(focusPool[c].size());  // экономический профиль
+    for (int c = 0; c < 4; ++c) if (classPool[c].empty()) w[c] = 0.0;       // не выбирать пустой класс
+    const double wsum = w[0] + w[1] + w[2] + w[3];
+
     int rockCount = 45 + int(lrng() % 45u);
     for (int i = 0; i < rockCount; ++i) {
         LocalRock rock;
@@ -323,7 +348,9 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         rock.radius = frand(1.5, 4.5);   // астероиды — пылинки в этом масштабе
         rock.ore = frand(20.0, 120.0);
 
-        // Элемент: из resourceFocus системы, иначе первый металлический со сдвига.
+        // Элемент — базовый выбор (СТРИМ-ЯКОРЬ §5.13.20): эти irand-розыгрыши сохранены
+        // 1-в-1, чтобы поток lrng — а значит станция/трафик/радио ниже — остался ПОБИТОВО
+        // прежним. Итог ниже переопределяется композиционным взвешиванием (хэш i, без lrng).
         int elem = 25; // fallback
         if (!star.resourceFocus.empty()) {
             elem = star.resourceFocus[irand(0, int(star.resourceFocus.size()) - 1)];
@@ -339,6 +366,25 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
             else if (elem > elemN - 1) elem = elemN - 1;
         } else {
             elem = 0;
+        }
+
+        // (§5.13.20) КОМПОЗИЦИОННО-ВЗВЕШЕННЫЙ выбор: тянем класс камня к составу системы
+        // (веса w[] и пулы посчитаны до цикла). Класс — по CDF от ДЕТЕРМИНИРОВАННОГО хэша i;
+        // элемент — из focusPool своего класса (что система добывает), иначе из общего пула
+        // класса. Ноль lrng ⇒ строго аддитивно к спавну (§2.3). Хэш-константы иные, чем у
+        // §5.13.15 (цвет), чтобы класс и яркостный джиттер были декоррелированы.
+        if (wsum > 0.0) {
+            double uc = std::sin(double(i) * 78.233 + 12.9898) * 43758.5453; uc -= std::floor(uc);
+            double pick = uc * wsum, acc = 0.0;
+            int cls = ROCK_SILICATE;
+            for (int cc = 0; cc < 4; ++cc) { acc += w[cc]; if (pick < acc) { cls = cc; break; } }
+            const std::vector<int>& pool = !focusPool[cls].empty() ? focusPool[cls] : classPool[cls];
+            if (!pool.empty()) {
+                double ue = std::sin(double(i) * 39.425 + 7.311) * 43758.5453; ue -= std::floor(ue);
+                int idx = int(ue * double(pool.size()));
+                if (idx < 0) idx = 0; else if (idx >= int(pool.size())) idx = int(pool.size()) - 1;
+                elem = pool[idx];
+            }
         }
         rock.element = elem;
 
