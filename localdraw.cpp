@@ -333,19 +333,39 @@ static void renderStarPlasma(SDL_Renderer* renderer, const LocalScene& scene,
                 const double px = ex - dx * bb0, py = ey - dy * bb0, pz = ez - dz * bb0;
                 const double ipl = 1.0 / std::max(1e-6, std::sqrt(px * px + py * py + pz * pz));
                 const double ax = px * ipl, ay = py * ipl, az = pz * ipl;
-                // Медленно дрейфующие угловые плюмы (несколько по лимбу) — протуберанцы/вспышки.
+                // Медленно дрейфующие угловые плюмы (несколько по лимбу) — фоновые протуберанцы.
                 const double prom = 0.5 * (std::sin(ax * 5.0 + tcl * 0.20) * std::sin(ay * 6.0 - tcl * 0.15)
                                            + std::sin((ay + az) * 7.0 + tcl * 0.10));
-                const double reach = coronaR * (1.0 + 0.28 * prom);   // плюмы тянутся дальше лимба
+                // (§5.13.13) Вспышки-СОБЫТИЯ. Две активные области медленно дрейфуют по лимбу
+                //   (долгота = угол ap) и ПЕРИОДИЧЕСКИ извергаются: фаза внутри цикла (frac) даёт
+                //   мгновенный поджиг (env=1 в начале) с экспоненциальным спадом — резкий подъём
+                //   яркости, бело-голубой (горячий) тон и локальный вынос плазмы дальше фоновых
+                //   плюмов. Всё детерминировано по fxClock (никакого rng); эффект локализован у
+                //   долготы области (cosang), т.е. вспышка бьёт из ОДНОЙ точки лимба, а не по кольцу.
+                //   Вынос ограничен ТЕМ ЖЕ гейтом короны (coronaR2) — bbox/ambient-корона не тронуты.
+                double flareBoost = 0.0;
+                for (int k = 0; k < 2; ++k) {
+                    const double ap = tcl * (0.06 + 0.015 * double(k)) + double(k) * 2.1;
+                    double rx = std::cos(ap), ry = std::sin(ap), rz = 0.4 * std::sin(tcl * 0.05 + double(k));
+                    const double irn = 1.0 / std::sqrt(rx * rx + ry * ry + rz * rz);
+                    const double cosang = (ax * rx + ay * ry + az * rz) * irn; // близость луча к области
+                    if (cosang <= 0.6) continue;                              // только у активной долготы
+                    const double tight = (cosang - 0.6) * (1.0 / 0.4);        // 0..1 к центру области
+                    const double cyc = tcl * (0.5 + 0.1 * double(k)) + double(k) * 3.7;
+                    const double frac = cyc - std::floor(cyc);                // фаза внутри цикла 0..1
+                    flareBoost += tight * tight * std::exp(-frac * 5.0);      // поджиг → спад
+                }
+                const double reach = coronaR * (1.0 + 0.28 * prom + 0.30 * flareBoost); // вспышка — дальше
                 const double den   = 1.0 / std::max(1e-6, reach - R);
                 double g = (reach - dm) * den;                        // 1 у лимба → 0 у края плюма
                 if (g < 0.0) g = 0.0; else if (g > 1.0) g = 1.0;
-                const double flare = 0.6 + 0.5 * (prom > 0.0 ? prom : 0.0); // яркость в плюмах
+                const double flare = 0.6 + 0.5 * (prom > 0.0 ? prom : 0.0) + 1.6 * flareBoost; // ярче во вспышке
                 Uint32 ia = (Uint32)(g * g * flare * 255.0); if (ia > 255u) ia = 255u;
                 if (ia) {
-                    const Uint32 ir = (Uint32)std::min(255.0, coR);
-                    const Uint32 ig = (Uint32)std::min(255.0, coG);
-                    const Uint32 ib = (Uint32)std::min(255.0, coB);
+                    const double fb = flareBoost > 1.0 ? 1.0 : flareBoost; // тон → бело-голубой во вспышке
+                    const Uint32 ir = (Uint32)std::min(255.0, coR + (255.0 - coR) * fb);
+                    const Uint32 ig = (Uint32)std::min(255.0, coG + (248.0 - coG) * fb);
+                    const Uint32 ib = (Uint32)std::min(255.0, coB + (235.0 - coB) * fb);
                     row[bx] = (ia << 24) | (ir << 16) | (ig << 8) | ib;
                 }
             }

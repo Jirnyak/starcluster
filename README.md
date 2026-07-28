@@ -78,6 +78,10 @@ cluster map stays orthographic) and the player flies a ship in 3D around:
   intercept wears a pulsing green **escort** ring, an off-screen green edge marker signals that
   help is inbound, and the target panel shows an `ESCORT` state. The patrol still has to fly in
   and fight at weapon range — its awareness grew, not its guns — so pirates stay unnerfed;
+- **a star corona that erupts**: the plasma star's corona is no longer static — two active
+  regions drift along the limb and periodically flare, brightening, bulging outward, and
+  shifting toward a hot blue-white as they erupt. The cycle is fully deterministic (driven
+  only by the effect clock) and vanishes to under 2% at rest, so a quiet star stays isotropic;
 - local NPC ships (traders, pirates), mining, docking, and scooping interactions.
 
 The local mode is fully deterministic and self-contained: it draws its own seeded
@@ -388,7 +392,10 @@ multi-octave domain-warped turbulence (with a second-order warp), limb darkening
 and a soft corona. Colour follows an O→M spectral proxy (blue-white hot cores vs
 deep red-orange cool limbs); a thin chromospheric rim rides the limb, the corona
 breaks into slowly-drifting prominence plumes, and a low-frequency field darkens
-occasional sunspot cells. Because the shading is a pure function of the ray and the
+occasional sunspot cells. Two of those active regions drift along the limb and
+periodically erupt as bright, hot blue-white flares — a fully deterministic cycle
+that fades to nothing when the star is at rest, so a quiet star stays isotropic.
+Because the shading is a pure function of the ray and the
 star's centre/radius, it is isotropic: the star looks like a real ball of plasma
 from every direction, with no "fill the screen yellow" shortcut. The shader writes into a half-resolution
 streaming `SDL_Texture` (bounding-box limited when the star is far away), so it
@@ -454,7 +461,7 @@ flat tint plus three hashed blobs, byte-for-byte.
 | `local.h` | Local-mode data structures (`LocalScene`, `LocalInput`) and the `buildLocalCamera` helper. |
 | `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). Seeds non-combat NPCs with an opening market-bound errand and randomizes the arrival timer. |
 | `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior, and the living-traffic lifecycle (errand state machine, edge-despawn of departing ships, timed arrivals up to a population cap). Emits a cyan "warp" FX signature (`emitWarp`) on arrival/departure and a thruster puff when a ship leaves a berth. Marks convoy distress: a pre-pass clears the flags, then a pirate attacking a non-pirate flags the victim `underAttack` and itself `threatConvoy`; raid onset raises a `CONVOY RAID` toast, and killing a threatening pirate grants a bonus + research + `CONVOY SAVED` toast + positive faction rep bump (strictly additive — pirates are not weakened). Escort patrols (`CK_PATROL`) hear raids from a wide awareness radius and prioritise intercepting the *raider* (a pirate near a non-pirate, detected from raw positions so it is order-independent), flagging themselves `defending`; firing is still gated by weapon range, so their awareness grew, not their guns. |
-| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble), and a volumetric nebula backdrop (`renderNebula` — per-pixel gas field on the celestial sphere: multi-octave noise, domain warp, density gradient, translucent) — all perspective view only. Also draws the pulsing amber berth ring for docked ships, the radar-panel `IN / DOCK` traffic tally, the convoy-distress cues (pulsing red SOS ring on an `underAttack` victim, off-screen SOS edge marker to the nearest victim, and a distinct SOS target-panel state), and the escort cues (pulsing green ring on a `defending` patrol drawn outside the cyan target box, off-screen green edge marker to the nearest defender, and an `ESCORT` target-panel state). |
+| `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader (with a deterministic corona flare-cycle: two drifting active regions that periodically erupt — brighter, bulging, hot blue-white — with zero effect at rest), lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble), and a volumetric nebula backdrop (`renderNebula` — per-pixel gas field on the celestial sphere: multi-octave noise, domain warp, density gradient, translucent) — all perspective view only. Also draws the pulsing amber berth ring for docked ships, the radar-panel `IN / DOCK` traffic tally, the convoy-distress cues (pulsing red SOS ring on an `underAttack` victim, off-screen SOS edge marker to the nearest victim, and a distinct SOS target-panel state), and the escort cues (pulsing green ring on a `defending` patrol drawn outside the cyan target box, off-screen green edge marker to the nearest defender, and an `ESCORT` target-panel state). |
 | `shot_test.cpp` | Headless screenshot harness for local-mode scenarios (`make shots`). |
 | `soak_test.cpp` | Headless long-run soak harness for the local simulation (`make soak`). |
 | `architecture.md` | High-level architecture and data-oriented rules. |
