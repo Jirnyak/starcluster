@@ -485,4 +485,27 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
             }
         }
     }
+
+    // ---- (§5.13.9) Начальные РЕЙСЫ: не-боевые NPC стартуют с курсом на рынок (а не на случайное
+    //      тело) — со старта у станции/хаба виден трафик. Пираты не участвуют (они охотники).
+    //      Стартовый таймер прилётов разгоняем, чтобы первый гость появился не мгновенно.
+    {
+        std::vector<int> markets;
+        for (size_t b = 0; b < scene.bodies.size(); ++b)
+            if (scene.bodies[b].hasMarket) markets.push_back((int)b);
+        for (size_t i = 0; i < scene.craft.size(); ++i) {
+            LocalCraft& c = scene.craft[i];
+            if (c.kind == CK_PIRATE) continue;
+            c.errand = 0;
+            if (!markets.empty()) {
+                int bi = markets[(size_t)irand(0, (int)markets.size() - 1)];
+                c.errandBody = bi;
+                const LocalBody& tb = scene.bodies[bi];
+                c.tx = tb.x; c.ty = tb.y; c.tz = tb.z;
+            } else {
+                c.errandBody = -1; // рынков нет — курс останется на ранее выбранное тело/центр
+            }
+        }
+        scene.trafficTimer = frand(LocalCfg::TRAFFIC_MIN_H, LocalCfg::TRAFFIC_MAX_H);
+    }
 }

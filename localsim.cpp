@@ -277,6 +277,25 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         }
     }
 
+    // ---- Радиус «края системы» (§5.13.9): внешняя граница тел + запас. Используется рейсами
+    //      (точка отлёта) и деспауном (кто вышел за край). Пол ~600 LU для разреженных систем.
+    double edgeR = 600.0;
+    for (size_t b = 0; b < scene.bodies.size(); ++b) {
+        const LocalBody& bd = scene.bodies[b];
+        double br = std::sqrt(bd.x*bd.x + bd.y*bd.y + bd.z*bd.z) + bd.radius + 150.0;
+        if (br > edgeR) edgeR = br;
+    }
+    // Равновероятный выбор тела-назначения рейса: приоритет рыночным телам, иначе любое.
+    // Reservoir-sampling — без временных векторов, детерминирован при данном RNG.
+    auto pickMarketBody = [&scene](std::mt19937& r) -> int {
+        int marketPick = -1, anyPick = -1; uint32_t mCount = 0, aCount = 0;
+        for (size_t b = 0; b < scene.bodies.size(); ++b) {
+            ++aCount; if ((r() % aCount) == 0u) anyPick = (int)b;
+            if (scene.bodies[b].hasMarket) { ++mCount; if ((r() % mCount) == 0u) marketPick = (int)b; }
+        }
+        return (marketPick >= 0) ? marketPick : anyPick;
+    };
+
     // ---- (F) Умный ИИ NPC (раз в кадр: реген, выбор цели, состояние, путевая точка, огонь) ----
     //  Цели пересчитываются КАЖДЫЙ кадр (индексы не устаревают между кадрами); удаление
     //  мёртвых кораблей вынесено за субшаги (см. L), поэтому индексы стабильны здесь и в бою.
@@ -404,8 +423,8 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                 c.tz = tgz + pz * inv;
             }
             c.thrustGlow = 1.0;
-        } else {
-            // (0) Обычное блуждание — прежняя логика на retargetTimer (локальный движок).
+        } else if (c.kind == CK_PIRATE) {
+            // (0-пират) Обычное блуждание — прежняя логика на retargetTimer (охотник, не курьер).
             if (c.retargetTimer <= 0.0) {
                 std::mt19937 wr((uint32_t)i * 2654435761u ^ (uint32_t)(int)scene.localHours);
                 if (!scene.bodies.empty()) {
@@ -419,6 +438,57 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                 c.retargetTimer = ur(wr);
             }
             c.thrustGlow = 0.6;
+        } else if (c.errand == 1) {
+            // (0-стоянка) «У причала»: держимся рядом с (орбитирующим) телом, разнос по индексу,
+            // гасим ход. По истечении таймера — выбираем новый рейс (круиз к рынку / отлёт).
+            if (c.errandBody >= 0 && c.errandBody < (int)scene.bodies.size()) {
+                const LocalBody& tb = scene.bodies[c.errandBody];
+                double pa = (double)i * 1.3, off = tb.radius + 12.0;
+                c.tx = tb.x + std::cos(pa) * off;
+                c.ty = tb.y + std::sin(pa) * off;
+                c.tz = tb.z + ((i & 1u) ? 4.0 : -4.0);
+            }
+            c.errandTimer -= dtHours;
+            c.thrustGlow = 0.25;
+            if (c.errandTimer <= 0.0) {
+                std::mt19937 wr((uint32_t)i * 2654435761u
+                                ^ (uint32_t)(uint64_t)(scene.localHours * 7.0 + 11.0));
+                std::uniform_real_distribution<double> u01(0.0, 1.0);
+                bool canLeave = (c.agentIndex < 0); // только чисто локальные покидают систему
+                if (canLeave && u01(wr) < LocalCfg::ERRAND_DEPART_PROB) {
+                    double a = u01(wr) * 6.2831853;
+                    c.tx = std::cos(a) * (edgeR + 120.0);
+                    c.ty = std::sin(a) * (edgeR + 120.0);
+                    c.tz = (u01(wr) - 0.5) * edgeR * 0.3;
+                    c.errand = 2; c.errandBody = -1; c.boost = 1.5; // короткий форсаж «на выход»
+                } else {
+                    int bi = pickMarketBody(wr);
+                    c.errand = 0; c.errandBody = bi;
+                    if (bi >= 0) { const LocalBody& tb = scene.bodies[bi]; c.tx = tb.x; c.ty = tb.y; c.tz = tb.z; }
+                }
+            }
+        } else {
+            // (0-круиз/отлёт) Летим к цели. Круиз (errand 0) следит за орбитой тела-назначения;
+            // по прибытии в радиус стыковки — «швартуемся» (переход в стоянку). Отлёт (errand 2) —
+            // к фикс. точке за краем; деспаун делает цикл удаления (L).
+            if (c.errand == 0 && c.errandBody >= 0 && c.errandBody < (int)scene.bodies.size()) {
+                const LocalBody& tb = scene.bodies[c.errandBody];
+                c.tx = tb.x; c.ty = tb.y; c.tz = tb.z;
+            }
+            if (c.errand == 0) {
+                double dx = c.tx - c.x, dy = c.ty - c.y, dz = c.tz - c.z;
+                double d2 = dx*dx + dy*dy + dz*dz;
+                double reach = (c.errandBody >= 0 && c.errandBody < (int)scene.bodies.size())
+                             ? scene.bodies[c.errandBody].radius + LocalCfg::DOCK_RANGE : 30.0;
+                if (d2 < reach*reach) {
+                    std::mt19937 wr((uint32_t)i * 2654435761u
+                                    ^ (uint32_t)(uint64_t)(scene.localHours * 13.0 + 3.0));
+                    std::uniform_real_distribution<double> ul(LocalCfg::DOCK_LINGER_MIN_H, LocalCfg::DOCK_LINGER_MAX_H);
+                    c.errand = 1; c.errandTimer = ul(wr);
+                    c.vx *= 0.15; c.vy *= 0.15; c.vz *= 0.15; // сброс хода на «швартовку»
+                }
+            }
+            c.thrustGlow = (c.errand == 2) ? 0.8 : 0.6;
         }
 
         // Огонь с УПРЕЖДЕНИЕМ (только в атаке, в пределах дальности, по перезарядке).
@@ -641,13 +711,66 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         }
     }
 
-    // ---- (L) Удаляем уничтоженные корабли ОДИН раз после субшагов (индексы были стабильны) ----
+    // ---- (L) Удаляем уничтоженные И покинувшие систему корабли ОДИН раз после субшагов ----
+    //      Деспаун отлёта (errand==2) — только для чисто локальных (agentIndex<0), вышедших за
+    //      край: зеркала макро-агентов не «исчезают» (это рассинхрон с макро). §5.13.9.
+    double despawnR2 = (edgeR + 60.0) * (edgeR + 60.0);
     for (size_t i = 0; i < scene.craft.size(); ) {
-        if (scene.craft[i].hullHP <= 0.0) {
+        LocalCraft& c = scene.craft[i];
+        bool dead = (c.hullHP <= 0.0);
+        bool departed = false;
+        if (!dead && c.errand == 2 && c.agentIndex < 0) {
+            double d2 = c.x*c.x + c.y*c.y + c.z*c.z;
+            if (d2 > despawnR2) departed = true;
+        }
+        if (dead || departed) {
             scene.craft[i] = scene.craft.back();
             scene.craft.pop_back();
         } else {
             ++i;
+        }
+    }
+
+    // ---- (L2) ПРИЛЁТЫ (§5.13.9): поддерживаем живой трафик — новый торговец входит с края и
+    //      идёт к рынку. Только реальные системы (звезда + тела). Чисто локальный (agentIndex=-1),
+    //      неагрессивный; global rng не трогаем (§2.3). Потолок TRAFFIC_CAP + пейсинг держат
+    //      scene.craft ограниченным (инвариант soak). Таймер сбрасывается даже при достигнутом
+    //      потолке, чтобы не дёргать RNG каждый кадр.
+    if (scene.starIndex >= 0 && !scene.bodies.empty()) {
+        scene.trafficTimer -= dtHours;
+        if (scene.trafficTimer <= 0.0) {
+            if ((int)scene.craft.size() < LocalCfg::TRAFFIC_CAP) {
+                std::mt19937 sr((uint32_t)scene.craft.size() * 2654435761u
+                                ^ (uint32_t)(uint64_t)(scene.localHours * 100.0 + 17.0)
+                                ^ (uint32_t)(scene.bodies.size() * 40503u));
+                std::uniform_real_distribution<double> u01(0.0, 1.0);
+                LocalCraft c;
+                c.faction = -1; c.agentIndex = -1; c.hostile = false;
+                c.maxSpeed = 50.0; c.accel = c.maxSpeed * 0.3;
+                c.hullHP = 40.0; c.maxHullHP = 40.0;
+                c.heavy = 6.0; c.light = 4.0; c.armor = 4.0;
+                c.kind = (u01(sr) < 0.5) ? CK_TRADER : CK_CIVILIAN;
+                c.maxShield = c.armor * 1.5 + c.maxHullHP * 0.15; c.shield = c.maxShield;
+                if (c.kind == CK_TRADER) { c.label = "TRADER";   c.r = 90;  c.g = 200; c.b = 235; }
+                else                     { c.label = "CIVILIAN"; c.r = 150; c.g = 190; c.b = 160; }
+                double a = u01(sr) * 6.2831853;
+                c.x = std::cos(a) * edgeR;
+                c.y = std::sin(a) * edgeR;
+                c.z = (u01(sr) - 0.5) * edgeR * 0.2;
+                int bi = pickMarketBody(sr);
+                c.errand = 0; c.errandBody = bi;
+                if (bi >= 0) { const LocalBody& tb = scene.bodies[bi]; c.tx = tb.x; c.ty = tb.y; c.tz = tb.z; }
+                else         { c.tx = 0.0; c.ty = 0.0; c.tz = 0.0; }
+                // Начальная скорость внутрь — чтобы сразу «летел», а не разгонялся из нуля у края.
+                double idx = -c.x, idy = -c.y, idz = -c.z;
+                double il = 1.0 / std::max(1e-6, std::sqrt(idx*idx + idy*idy + idz*idz));
+                c.vx = idx*il*c.maxSpeed*0.6; c.vy = idy*il*c.maxSpeed*0.6; c.vz = idz*il*c.maxSpeed*0.6;
+                scene.craft.push_back(c);
+            }
+            std::mt19937 tr((uint32_t)(scene.craft.size() * 40503u)
+                            ^ (uint32_t)(uint64_t)(scene.localHours * 50.0 + 7.0));
+            std::uniform_real_distribution<double> ut(LocalCfg::TRAFFIC_MIN_H, LocalCfg::TRAFFIC_MAX_H);
+            scene.trafficTimer = ut(tr);
         }
     }
 

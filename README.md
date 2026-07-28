@@ -57,6 +57,11 @@ cluster map stays orthographic) and the player flies a ship in 3D around:
   turns in lockstep with the skybox stars), built from multi-octave product noise (puffy
   clumps plus filaments), a domain warp, and a large-scale density gradient; it is
   translucent so the stars shine through it;
+- **a living, goal-driven NPC population**: non-combat ships (traders, civilians, idle
+  patrols) run errands — cruise to a market body, linger "docked" around it, then pick a
+  new errand — while purely-local ships occasionally depart to the system edge and despawn,
+  and fresh traders warp in from the edge on a timer up to a population cap, so traffic flows
+  in and out and the system stays alive (pirates keep hunting — their aggression is untouched);
 - local NPC ships (traders, pirates), mining, docking, and scooping interactions.
 
 The local mode is fully deterministic and self-contained: it draws its own seeded
@@ -431,8 +436,8 @@ flat tint plus three hashed blobs, byte-for-byte.
 | `render2d.h`, `render2d.cpp` | Low-level 2D primitives and the 5x7 bitmap font, shared by `ui.cpp` and `localdraw.cpp`. |
 | `camera.h` | Shared camera/projection: orthographic macro path plus the perspective path used only by local flight mode. |
 | `local.h` | Local-mode data structures (`LocalScene`, `LocalInput`) and the `buildLocalCamera` helper. |
-| `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). |
-| `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior. |
+| `localgen.cpp` | Procedural generation of a local star system (star, planets, moons, belt, station, radio sources, NPCs). Seeds non-combat NPCs with an opening market-bound errand and randomizes the arrival timer. |
+| `localsim.cpp` | Local flight simulation: ship flight, thrust, projectiles, mining/docking, NPC behavior, and the living-traffic lifecycle (errand state machine, edge-despawn of departing ships, timed arrivals up to a population cap). |
 | `localdraw.cpp` | Local-mode rendering: bodies, orbits, HUD, the per-pixel ray-sphere software star shader, lit ray-sphere planet/moon spheres, perspective gas-giant rings (ray↔plane annulus with Cassini gaps and planet shadow), lit asteroid boulders (`renderRockLit` — carved silhouette, craters, tumble), and a volumetric nebula backdrop (`renderNebula` — per-pixel gas field on the celestial sphere: multi-octave noise, domain warp, density gradient, translucent) — all perspective view only. |
 | `shot_test.cpp` | Headless screenshot harness for local-mode scenarios (`make shots`). |
 | `soak_test.cpp` | Headless long-run soak harness for the local simulation (`make soak`). |
@@ -492,6 +497,10 @@ Important rules from the project documents:
 - The nebula backdrop is a single translucent layer painted on the celestial sphere:
   it does not yet have dust lanes that absorb light, emission brightening around the
   bright skybox stars embedded in it, or multiple parallax layers for a sense of depth.
+- Local NPC traffic is now goal-driven (errands to markets, timed arrivals and departures),
+  but it is not yet wired back to the macro simulation: killing or despawning a local ship
+  that mirrors a macro agent does not affect that agent, and NPC trading moves no real cargo
+  or credits — the errands are behavioral, not yet economic.
 - Non-player faction memory overlays are not exposed through a debug selector.
 - The active build is POSIX/SDL2 via `sdl2-config`; the old platform makefiles
   are not synchronized with the current source list.
