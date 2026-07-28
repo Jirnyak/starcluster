@@ -330,7 +330,7 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     //     геометрию: по дистанции глаза D=|eye| и радиусу R угловой радиус силуэта
     //     alpha=asin(R/D), экранный радиус = focal·tan(alpha) = focal·R/sqrt(D²−R²).
     //     При D→R диск раздувается на весь экран (звезда гигантская — влетаем в её
-    //     вещество), при D≤R глаз ВНУТРИ звезды => заливаем кадр плазмой. Это и есть
+    //     вещество), при D≤R·1.7 заливаем кадр плазмой целиком (см. ниже). Это и есть
     //     «умный масштаб»: одна сфера показывает структуру любого размера, а ray-sphere
     //     окклюзия (occ) честно прячет за ней планеты/корабли.
     if (scene.hasStar && view.perspective) {
@@ -340,8 +340,11 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                                    view.centerZ * view.centerZ);
         const double gp = 1.0 + 0.04 * std::sin(scene.fxClock * 2.0);
         const int maxDim = 4 * std::max(winW, winH);
-        if (D <= R * 1.0008) {
-            // Глаз в веществе звезды — плазма непрозрачна, заливаем весь кадр.
+        if (D <= R * 1.7) {
+            // D/R ≤ 1.7: диск и так переполняет экран (полное покрытие уже при ~1.45), поэтому
+            // заливаем кадр плазмой целиком — бесшовно и без тангенциального тёмного зазора,
+            // что возникал у тонкой кромки диска в полосе (1.0,1.7)·R. Тела рисуются ПОСЛЕ
+            // (шаг 4) => близкие планеты перед звездой видны поверх заливки.
             fillRect(renderer, 0, 0, winW, winH, rgba(scene.starR, scene.starG, scene.starB, 255));
         } else if (!sp.behind) {
             double screenR = view.focal * R / std::sqrt(D * D - R * R);
@@ -672,9 +675,10 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                 const double th = (double(i) / double(N)) * kTwoPi;
                 ProjectedPoint d = projectDirectionWithBasis(std::cos(th), std::sin(th), 0.0,
                                                              winW, winH, view, basis);
-                // camZ>0.06: отсекаем почти-рёберные направления (линия уходит в бесконечность
-                // у горизонта) — иначе focal/camZ раздувает координату в штрих на весь экран.
-                const bool ok = (!d.behind) && (d.camZ > 0.06) &&
+                // camZ>0.14: отсекаем почти-рёберные направления (линия уходит в бесконечность
+                // у горизонта) — иначе focal/camZ выбрасывает соседние точки в разные стороны
+                // за экран => длинные «спицы». Порог поднят с 0.06 => лучей у горизонта нет.
+                const bool ok = (!d.behind) && (d.camZ > 0.14) &&
                                 d.x > -winW && d.x < 2 * winW && d.y > -winH && d.y < 2 * winH;
                 if (ok && havePrev)
                     SDL_RenderDrawLine(renderer, prev.x, prev.y, d.x, d.y);

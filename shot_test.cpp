@@ -160,10 +160,10 @@ int main(int argc, char** argv) {
     {
         LocalScene s; buildLocalScene(game, 0, s); s.active = true;
         const double R = s.starRadius;
-        s.px = R * 1.25; s.py = 0.0; s.pz = 0.0;      // сразу снаружи поверхности
+        s.px = R * 1.25; s.py = 0.0; s.pz = 0.0;      // снаружи поверхности, но D/R=1.25 (<1.7)
         s.pvx = s.pvy = s.pvz = 0.0;
         localSetForward(s, -1.0, 0.0, 0.0);           // нос на светило (в центре)
-        std::printf("  [near-star] D=%.1f LU  starR=%.1f LU  (диск ~огромный)\n", s.px, R);
+        std::printf("  [near-star] D=%.1f LU  starR=%.1f LU  (D/R=1.25<1.7 => стена плазмы)\n", s.px, R);
         total += 1;
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_star_near.bmp");
     }
