@@ -4,6 +4,14 @@ Combat is required because the player loop includes robbery, escort, piracy,
 war, and eventual cluster conquest. It must stay economical and data-driven, not
 become an arcade subsystem.
 
+> **Локальный режим полёта (микромир, ветка `local-flight-mode`).** Этот план — про МАКРО-бой.
+> В локальном режиме от первого лица (`localsim.cpp`/`localdraw.cpp`) из тех же макро-правил вырос
+> **эмерджентный ЗАКОН-ЦИКЛ**: пират, убивший не-пирата, попадает в розыск (`wanted` + bounty,
+> пишется и в постоянный макро-мир), патруль приоритетно его выслеживает, а простаивающая стая
+> пиратов сбегается на его оборону — «преступление → розыск → погоня → оборона». Канон и
+> хронология — `master_prompt.md` §5.13 (особенно §5.13.11/.12/.24–.30) и плейбук §0.2.
+> **Комбат-инвариант:** урон/агрессию врага НЕ ослаблять — только аддитивные фичи.
+
 ## Goal
 
 Combat should answer:

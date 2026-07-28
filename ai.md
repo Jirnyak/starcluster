@@ -3,6 +3,14 @@
 This document defines behavior for fleets and player-like agents. The system
 must be expandable, data-driven, and compatible with delayed information.
 
+> **Локальный режим полёта (микромир, ветка `local-flight-mode`).** Этот план — про МАКРО-ИИ
+> флотов. В локальном режиме есть отдельный ИИ бортов от первого лица (`localsim.cpp`, структура
+> `LocalCraft`, enum `CK_TRADER/PIRATE/PATROL/CIVILIAN`): торговцы летают рейсами (§5.13.9),
+> патрули приоритетно охотятся на розыскных пиратов (§5.13.28), простаивающие пираты сбегаются
+> оборонять загнанного изгоя (§5.13.30). Ключевой приём — **ре-деривация** решения из живых полей
+> (`kind/wanted/позиции`) вместо кадровых флагов ⇒ порядко-независимо (§5.13.29/.30). Канон —
+> `master_prompt.md` §5.13 и плейбук §0.2.
+
 ## Goal
 
 Agents are ships or fleets making decisions under the same world rules as the
