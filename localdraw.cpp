@@ -1613,7 +1613,16 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         double pulse = 0.55 + 0.45 * std::sin(scene.fxClock * 5.2);
         SDL_Color gold = rgba(255, 205 + int(heat * 50.0), 60 + int(heat * 195.0),
                               70 + int(heat * 50.0) + int(pulse * 150.0));
-        SDL_SetRenderDrawColor(renderer, gold.r, gold.g, gold.b, gold.a);
+        // (§5.13.41) СТОЯНИЕ КРАСИТ ПРИГЛАШЕНИЕ: та же трасса «закон гонит розыскного — помоги»
+        //   теперь ЗАРАНЕЕ показывает, чем обернётся co-op-добивка по §5.13.40. Тон берём у того же
+        //   классификатора, что панель STANDING (§5.13.37) и прицел (§5.13.39) — по стоянию игрока с
+        //   ФРАКЦИЕЙ патруля-охотника (pc.faction): зелёный — благодарность (+rep), красный — месть
+        //   (−rep, тиры Enemy/Hostile §5.13.40), янтарь — Tense (пока +rep, но на грани). Нейтрал/
+        //   бесфракц. ⇒ standingCue=false ⇒ РОВНО прежнее золото (нулевой визуальный регресс). Жар/
+        //   пульс/марш/альфа не трогаем — «горячая охота» (§5.13.35) цела, меняется лишь HUE. Ноль RNG/полей.
+        SDL_Color vec = gold;
+        { SDL_Color sc; if (standingCue(game, pc.faction, sc)) vec = rgba(sc.r, sc.g, sc.b, gold.a); }
+        SDL_SetRenderDrawColor(renderer, vec.r, vec.g, vec.b, vec.a);
         // маршевые штрихи patrol→quarry (период 18 px, штрих 9 px), фаза бежит от fxClock;
         // (§5.13.35) скорость марша растёт с жаром: 34→51 (×1.5) на потолке награды
         const double period = 18.0, dash = 9.0;
@@ -2340,7 +2349,11 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             radarXY(scene.craft[i], ax, ay);
             radarXY(scene.craft[q], qx, qy);
             double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 5.2);
-            SDL_SetRenderDrawColor(renderer, 255, 205, 60, 45 + int(pl * 120.0));
+            // (§5.13.41) та же покраска по стоянию, что и мировой вектор — радарная связка не должна
+            //   спорить с ним цветом (единый классификатор §5.13.37/39, тот же pc.faction). Нейтрал ⇒ золото.
+            SDL_Color rc = rgba(255, 205, 60, 45 + int(pl * 120.0));
+            { SDL_Color sc; if (standingCue(game, scene.craft[i].faction, sc)) rc = rgba(sc.r, sc.g, sc.b, rc.a); }
+            SDL_SetRenderDrawColor(renderer, rc.r, rc.g, rc.b, rc.a);
             SDL_RenderDrawLine(renderer, ax, ay, qx, qy);
         }
 

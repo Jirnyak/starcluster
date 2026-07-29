@@ -848,6 +848,73 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_standing_reticle.bmp");
     }
 
+    // (26) МЕСТЬ ФРАКЦИИ НА ВЕКТОРЕ (§5.13.41): draw-only углубление §5.13.40 — тот же золотой вектор
+    //      перехвата (§5.13.29, defending-патруль → его розыскная жертва) теперь ЗАРАНЕЕ красится по
+    //      стоянию игрока с ФРАКЦИЕЙ патруля-охотника тем же классификатором, что панель STANDING
+    //      (§5.13.37) и прицел (§5.13.39). Фракция патруля ВРАЖДЕБНА игроку (Enemy, rep=-100) => вектор
+    //      И связка на радаре КРАСНЫЕ: ещё до выстрела видно, что co-op-добивка тут СТОИЛА БЫ репутации
+    //      (§5.13.40 отдал бы −rep). Геометрия/награда (650 CR) = shot_law_pursuit — меняется ТОЛЬКО
+    //      стояние, поэтому цвет ведёт репутация, не боевой флаг. Ноль полей/RNG/шага sim; combat-фильтр
+    //      §0.2-G пройден тривиально (только чтение репутации). Пара — зелёный shot_gratitude_vector ниже.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 2) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(2);                             // ровно два борта: патруль-охотник + его розыскная жертва
+        const int patFac = 1;                          // валидная NPC-фракция != playerFaction (как патрули §5.13.29)
+        game.setFactionRelation(game.playerFaction, patFac, -100);   // ENEMY (<=-96) => красный вектор/связка
+        LocalCraft& pat = s.craft[0];                  // ПАТРУЛЬ, ведущий охоту (defending)
+        pat.kind = CK_PATROL; pat.label = "PATROL"; pat.faction = patFac; pat.r = 110; pat.g = 215; pat.b = 170;
+        pat.hostile = false; pat.defending = true; pat.aiState = 1; pat.errand = 0; pat.errandBody = -1;
+        pat.x = 760.0; pat.y = -140.0; pat.z = 195.0; pat.vx = pat.vy = pat.vz = 0.0;
+        pat.maxHullHP = 70.0; pat.hullHP = pat.maxHullHP; pat.maxShield = 20.0; pat.shield = 20.0;
+        LocalCraft& pir = s.craft[1];                  // РОЗЫСКНАЯ ЖЕРТВА — награда 650 CR (как law-pursuit)
+        pir.kind = CK_PIRATE; pir.label = "PIRATE"; pir.faction = -1; pir.r = 230; pir.g = 90; pir.b = 80;
+        pir.hostile = true; pir.wanted = true; pir.wantedBounty = 650.0;
+        pir.aiState = 1; pir.errand = 0; pir.errandBody = -1;
+        pir.x = 760.0; pir.y = 160.0; pir.z = 205.0; pir.vx = pir.vy = pir.vz = 0.0;   // 300 LU от патруля вдоль +Y (<1400 => pursuitQuarry ловит)
+        pir.maxHullHP = 45.0; pir.hullHP = pir.maxHullHP * 0.7;
+        s.px = 250.0; s.py = 10.0; s.pz = 240.0; s.pvx = s.pvy = s.pvz = 0.0;          // борт-обзор: пара симметрична, вектор тянется поперёк экрана (звезда позади камеры)
+        localSetForward(s, 760.0 - s.px, 10.0 - s.py, 200.0 - s.pz);                  // нос на середину пары
+        s.targetCraft = 0;                             // цель — патруль => панель STANDING ENEMY + рамка/пип §5.13.39 в тон вектору
+        s.fxClock = 0.30;                              // фаза пульса/марша штрихов
+        std::printf("  [reprisal-vector] hunting patrol's faction is ENEMY -> pursuit vector + radar link RED (co-op kill would COST rep §5.13.40)\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_reprisal_vector.bmp");
+    }
+
+    // (27) БЛАГОДАРНОСТЬ ФРАКЦИИ НА ВЕКТОРЕ (§5.13.41): пара к shot_reprisal_vector. ТА ЖЕ геометрия и
+    //      награда дичи (650 CR), но фракция патруля-охотника СОЮЗНА игроку (Ally, rep=+96) => тот же
+    //      вектор перехвата (§5.13.29) и связка на радаре ЗЕЛЁНЫЕ: co-op-добивка тут ПРИНЕСЛА БЫ
+    //      репутацию (§5.13.40 отдал бы +rep). Рядом с красным собратом наглядно, что §5.13.40 меняет не
+    //      величину, а ЗНАК — и знак читается ещё до выстрела, прямо на приглашающей геометрии. Нейтраль/
+    //      бесфракц. патруль дал бы прежнее золото (shot_law_pursuit) => нулевой регресс. Ноль полей/RNG/шага.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 2) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(2);                             // ровно два борта: патруль-охотник + его розыскная жертва
+        const int patFac = 1;                          // та же фракция, что в reprisal-варианте
+        game.setFactionRelation(game.playerFaction, patFac, 96);     // ALLY (>=80) => зелёный вектор/связка
+        LocalCraft& pat = s.craft[0];                  // ПАТРУЛЬ, ведущий охоту (defending)
+        pat.kind = CK_PATROL; pat.label = "PATROL"; pat.faction = patFac; pat.r = 110; pat.g = 215; pat.b = 170;
+        pat.hostile = false; pat.defending = true; pat.aiState = 1; pat.errand = 0; pat.errandBody = -1;
+        pat.x = 760.0; pat.y = -140.0; pat.z = 195.0; pat.vx = pat.vy = pat.vz = 0.0;
+        pat.maxHullHP = 70.0; pat.hullHP = pat.maxHullHP; pat.maxShield = 20.0; pat.shield = 20.0;
+        LocalCraft& pir = s.craft[1];                  // РОЗЫСКНАЯ ЖЕРТВА — та же награда 650 CR
+        pir.kind = CK_PIRATE; pir.label = "PIRATE"; pir.faction = -1; pir.r = 230; pir.g = 90; pir.b = 80;
+        pir.hostile = true; pir.wanted = true; pir.wantedBounty = 650.0;
+        pir.aiState = 1; pir.errand = 0; pir.errandBody = -1;
+        pir.x = 760.0; pir.y = 160.0; pir.z = 205.0; pir.vx = pir.vy = pir.vz = 0.0;   // 300 LU от патруля вдоль +Y (та же геометрия, что reprisal-вариант)
+        pir.maxHullHP = 45.0; pir.hullHP = pir.maxHullHP * 0.7;
+        s.px = 250.0; s.py = 10.0; s.pz = 240.0; s.pvx = s.pvy = s.pvz = 0.0;          // борт-обзор: пара симметрична, вектор тянется поперёк экрана (звезда позади камеры)
+        localSetForward(s, 760.0 - s.px, 10.0 - s.py, 200.0 - s.pz);                  // нос на середину пары
+        s.targetCraft = 0;                             // цель — патруль => панель STANDING ALLY + рамка/пип §5.13.39 в тон вектору
+        s.fxClock = 0.30;                              // фаза пульса/марша штрихов
+        std::printf("  [gratitude-vector] hunting patrol's faction is ALLY -> pursuit vector + radar link GREEN (co-op kill would EARN rep §5.13.40)\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_gratitude_vector.bmp");
+        game.setFactionRelation(game.playerFaction, patFac, 0);      // восстановить нейтраль (гигиена для будущих сцен)
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);
