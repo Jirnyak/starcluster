@@ -1143,6 +1143,48 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         return best;
     };
 
+    // (§5.13.31) КОГО ТАРАНИТ СТАЯ — draw-only зеркало набата §5.13.30 (localsim.cpp:394-414).
+    //   aiState==1 — дешёвый НЕОБХОДИМЫЙ гейт (набат в АТАКЕ; lowHull-беглец => aiState 2 => не рисуем),
+    //   но НЕ достаточный (пират у торговца тоже ==1) => ниже перевыводим idle-гейт (нет игрока/не-пирата
+    //   в AW2=750) и сам скан набата (ближайший строгий '<' патруль-ОХОТНИК в PATROL_DISTRESS_R). Ноль RNG.
+    auto rallyTarget = [&](int ci) -> int {
+        const LocalCraft& c = scene.craft[ci];
+        if (c.kind != CK_PIRATE || c.hullHP <= 0.0 || c.aiState != 1) return -1;
+        const double AW2 = 750.0 * 750.0;                       // = localsim.cpp:367
+        const bool playerTargetable = (game.playerAgent >= 0 &&
+            game.playerAgent < (int)game.agents.size() && !scene.playerDestroyed);
+        if (playerTargetable) {
+            double dx = scene.px - c.x, dy = scene.py - c.y, dz = scene.pz - c.z;
+            if (dx*dx + dy*dy + dz*dz < AW2) return -1;         // игрок в радиусе => пират цел. в него (не набат)
+        }
+        for (size_t j = 0; j < scene.craft.size(); ++j) {       // любой живой не-пират в радиусе => норм. цель
+            if ((int)j == ci) continue;
+            const LocalCraft& o = scene.craft[j];
+            if (o.hullHP <= 0.0 || o.kind == CK_PIRATE) continue;
+            double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+            if (dx*dx + dy*dy + dz*dz < AW2) return -1;
+        }
+        const double RALLY2 = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
+        int rallyPatrol = -1; double rallyBest = RALLY2;
+        for (size_t j = 0; j < scene.craft.size(); ++j) {       // ближайший патруль-ОХОТНИК в радиусе набата
+            if ((int)j == ci) continue;
+            const LocalCraft& o = scene.craft[j];
+            if (o.hullHP <= 0.0 || o.kind != CK_PATROL) continue;
+            double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z; double d2 = dx*dx + dy*dy + dz*dz;
+            if (d2 >= rallyBest) continue;
+            bool hunting = false;                               // у патруля есть СВОЙ розыскной пират в PATROL_DISTRESS_R?
+            for (size_t k = 0; k < scene.craft.size(); ++k) {
+                if ((int)k == (int)j) continue;
+                const LocalCraft& w = scene.craft[k];
+                if (w.hullHP <= 0.0 || w.kind != CK_PIRATE || !w.wanted) continue;
+                double wx = w.x - o.x, wy = w.y - o.y, wz = w.z - o.z;
+                if (wx*wx + wy*wy + wz*wz < RALLY2) { hunting = true; break; }
+            }
+            if (hunting) { rallyBest = d2; rallyPatrol = (int)j; }
+        }
+        return rallyPatrol;
+    };
+
     // (2) ОРБИТАЛЬНЫЕ КОЛЬЦА — плоские окружности, осмысленны только в орто-карте
     //     (в перспективе орбита проецируется в эллипс; пропускаем).
     if (scene.hasStar && !view.perspective) {
@@ -1505,6 +1547,49 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                 int(pa.x + ux * a1), int(pa.y + uy * a1));
         }
         // остриё стрелки, вклинивающееся в жертву (подчёркивает направление погони)
+        const double ah = 11.0, spread = 0.5;
+        double cs = std::cos(spread), sn = std::sin(spread);
+        SDL_RenderDrawLine(renderer, pb.x, pb.y,
+            int(pb.x - (ux * cs - uy * sn) * ah), int(pb.y - (ux * sn + uy * cs) * ah));
+        SDL_RenderDrawLine(renderer, pb.x, pb.y,
+            int(pb.x - (ux * cs + uy * sn) * ah), int(pb.y - (-ux * sn + uy * cs) * ah));
+    }
+
+    // (7в, §5.13.31) ВЕКТОР ТАРАНА СТАИ — горячо-оранжевая «маршевая» трасса от каждого простаивающего
+    //   пирата (rallyTarget), сбегающегося оборонять изгоя, к патрулю-ОХОТНИКУ, которого он идёт таранить.
+    //   Дорисовывает недостающее звено закон-цикла с ДРУГОЙ стороны: золото (7б) — «закон гонит изгоя»,
+    //   оранж — «стая отвечает, тараня закон». Быстрее и жарче золота (пульс 7.0 vs 5.2, марш 46 vs 34) —
+    //   агрессия, не охота. Рисуем ПОСЛЕ золота ⇒ на пересечении (патруль-охотник = цель тарана) оранж
+    //   ложится поверх. Чистый рендер: перевывод из живых полей, ноль состояния/RNG/шага sim.
+    for (size_t i = 0; i < scene.craft.size(); ++i) {
+        int rp = rallyTarget((int)i);
+        if (rp < 0) continue;
+        const LocalCraft& pc = scene.craft[i];    // пират, идущий на таран
+        const LocalCraft& tc = scene.craft[rp];   // патруль-охотник — цель тарана
+        if (occ(pc.x, pc.y, pc.z) || occ(tc.x, tc.y, tc.z)) continue;   // конец за звездой — не тянем сквозь неё
+        ProjectedPoint pa = projectPointWithBasis(pc.x, pc.y, pc.z, winW, winH, view, basis);
+        ProjectedPoint pb = projectPointWithBasis(tc.x, tc.y, tc.z, winW, winH, view, basis);
+        if (view.perspective && (pa.behind || pb.behind)) continue;    // конец за ближней плоскостью
+        double lx = double(pb.x - pa.x), ly = double(pb.y - pa.y);
+        double llen = std::sqrt(lx * lx + ly * ly);
+        if (llen < 2.0) continue;
+        double ux = lx / llen, uy = ly / llen;
+        double pulse = 0.5 + 0.5 * std::sin(scene.fxClock * 7.0);
+        SDL_Color orange = rgba(255, 120, 32, 60 + int(pulse * 160.0));
+        SDL_SetRenderDrawColor(renderer, orange.r, orange.g, orange.b, orange.a);
+        // маршевые штрихи pirate→patrol (период 16 px, штрих 8 px), фаза бежит быстрее золота
+        const double period = 16.0, dash = 8.0;
+        double phase = std::fmod(scene.fxClock * 46.0, period);
+        int guard = 0;
+        for (double s = -phase; s < llen && guard < 240; s += period, ++guard) {
+            double a0 = s < 0.0 ? 0.0 : s;
+            double a1 = std::min(s + dash, llen);
+            if (a1 <= 0.0) continue;
+            SDL_RenderDrawLine(renderer,
+                int(pa.x + ux * a0), int(pa.y + uy * a0),
+                int(pa.x + ux * a1), int(pa.y + uy * a1));
+        }
+        // остриё, вклинивающееся в патруль (направление тарана)
         const double ah = 11.0, spread = 0.5;
         double cs = std::cos(spread), sn = std::sin(spread);
         SDL_RenderDrawLine(renderer, pb.x, pb.y,
@@ -1931,6 +2016,9 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         if (wnt) ph += 14;                // (§5.13.25) место под строку «BOUNTY N CR» под корпусом
         const int tPursuit = esc ? pursuitQuarry(scene.targetCraft) : -1;  // (§5.13.29) кого преследует патруль
         if (tPursuit >= 0) ph += 14;      // место под строку «IN PURSUIT …» под корпусом
+        int packN = 0;                    // (§5.13.31) сколько простаивающих пиратов сбегается таранить ЭТОТ патруль
+        if (esc) for (size_t j = 0; j < scene.craft.size(); ++j) if (rallyTarget((int)j) == scene.targetCraft) ++packN;
+        if (packN > 0) ph += 14;          // место под строку «UNDER PACK Xn» под корпусом
         panel(renderer, tx, ty, 224, ph);
         if (sos) {   // пульсирующая SOS-красная рамка вокруг панели — «эта цель под атакой»
             double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 6.0);
@@ -1986,6 +2074,11 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             std::snprintf(buf, sizeof(buf), "IN PURSUIT %s",
                           qy.label.empty() ? "WANTED" : qy.label.c_str());
             drawText(renderer, tx + 8, by, buf, rgba(255, 205, 60, 255), 1);
+        }
+        if (packN > 0) {   // (§5.13.31) стая пиратов таранит этот патруль в защиту изгоя — сколько бортов
+            by += 12;
+            std::snprintf(buf, sizeof(buf), "UNDER PACK X%d", packN);
+            drawText(renderer, tx + 8, by, buf, rgba(255, 120, 32, 255), 1);
         }
     }
 
@@ -2073,6 +2166,19 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             radarXY(scene.craft[q], qx, qy);
             double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 5.2);
             SDL_SetRenderDrawColor(renderer, 255, 205, 60, 45 + int(pl * 120.0));
+            SDL_RenderDrawLine(renderer, ax, ay, qx, qy);
+        }
+
+        // (§5.13.31) ЛИНИЯ ТАРАНА НА РАДАРЕ: оранжевая связка блип-пират → блип-патруль, та же
+        //   перевыведенная цель (rallyTarget), тот же базис. После золота ⇒ на пересечении оранж поверх.
+        for (size_t i = 0; i < scene.craft.size(); ++i) {
+            int rp = rallyTarget((int)i);
+            if (rp < 0) continue;
+            int ax, ay, qx, qy;
+            radarXY(scene.craft[i], ax, ay);
+            radarXY(scene.craft[rp], qx, qy);
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 7.0);
+            SDL_SetRenderDrawColor(renderer, 255, 120, 32, 45 + int(pl * 120.0));
             SDL_RenderDrawLine(renderer, ax, ay, qx, qy);
         }
 

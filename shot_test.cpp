@@ -681,6 +681,42 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_law_pursuit.bmp");
     }
 
+    // (21) НАБАТ СТАИ (§5.13.31): draw-only спутник §5.13.30. Патруль-ОХОТНИК (defending, §5.13.28)
+    //      прижал РОЗЫСКНОГО изгоя вплотную (близкий бой, золотой IN PURSUIT §5.13.29), а поодаль
+    //      ПРОСТАИВАЮЩИЙ пират (>750 LU от патруля => сам цели не нашёл, но <1400 => «слышит» закон)
+    //      срывается таранить патруль в защиту изгоя (§5.13.30). Рендер перевыводит набат из живых
+    //      полей (rallyTarget: тот же idle-гейт + скан, что и sim) => горячо-оранжевый вектор тарана
+    //      pack→patrol в 3D, оранжевая связка на радаре, строка «UNDER PACK X1» РЯДОМ с золотым
+    //      «IN PURSUIT OUTLAW» в панели патруля — весь закон-цикл в одном кадре. Ноль полей/RNG/шага.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 3) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(3);                             // патруль-охотник + изгой + пират-набат
+        LocalCraft& pat = s.craft[0];                  // ПАТРУЛЬ (defending) — цель панели, жертва тарана
+        pat.kind = CK_PATROL; pat.label = "PATROL"; pat.faction = 1; pat.r = 110; pat.g = 215; pat.b = 170;
+        pat.hostile = false; pat.defending = true; pat.aiState = 1; pat.errand = 0; pat.errandBody = -1;
+        pat.x = 900.0; pat.y = 0.0; pat.z = 150.0; pat.vx = pat.vy = pat.vz = 0.0;
+        pat.maxHullHP = 70.0; pat.hullHP = pat.maxHullHP; pat.maxShield = 20.0; pat.shield = 20.0;
+        LocalCraft& out = s.craft[1];                  // ИЗГОЙ в розыске — вплотную к патрулю (близкий бой)
+        out.kind = CK_PIRATE; out.label = "OUTLAW"; out.faction = -1; out.r = 230; out.g = 90; out.b = 80;
+        out.hostile = true; out.wanted = true; out.wantedBounty = 800.0;
+        out.aiState = 1; out.errand = 0; out.errandBody = -1;
+        out.x = 900.0; out.y = 210.0; out.z = 150.0; out.vx = out.vy = out.vz = 0.0;    // 210 LU (<750 => idle-гейт изгоя ЗАКРЫТ => без оранжа)
+        out.maxHullHP = 45.0; out.hullHP = out.maxHullHP * 0.65;
+        LocalCraft& pak = s.craft[2];                  // ПРОСТАИВАЮЩИЙ пират — набат: таранит патруль
+        pak.kind = CK_PIRATE; pak.label = "RAIDER"; pak.faction = -1; pak.r = 230; pak.g = 110; pak.b = 70;
+        pak.hostile = true; pak.wanted = false; pak.aiState = 1; pak.errand = 0; pak.errandBody = -1;
+        pak.x = 900.0; pak.y = -790.0; pak.z = 150.0; pak.vx = pak.vy = pak.vz = 0.0;   // 790 LU от патруля: >750 (idle) & <1400 (набат)
+        pak.maxHullHP = 45.0; pak.hullHP = pak.maxHullHP;                                // полный корпус => не бегство (aiState 1, не 2)
+        s.px = 90.0; s.py = -360.0; s.pz = 270.0; s.pvx = s.pvy = s.pvz = 0.0;           // 925 LU от набата (>750: гейт игрока открыт), 459 от звезды
+        localSetForward(s, 900.0 - s.px, -300.0 - s.py, 150.0 - s.pz);                   // нос между патрулём и набатом
+        s.targetCraft = 0;                             // цель — патруль -> панель: ESCORT + IN PURSUIT + UNDER PACK
+        s.fxClock = 0.30;                              // фаза оранжевого пульса/марша
+        std::printf("  [pack-rally] idle raider charges the hunting patrol to defend the outlaw -> orange ram vector + radar link + UNDER PACK\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_pack_rally.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);
