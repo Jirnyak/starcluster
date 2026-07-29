@@ -504,12 +504,90 @@ int main() {
     }
     if (!packRalliesOutlawOk) { std::printf("INVARIANT FAIL: §5.13.30 pack-rally did not fire or was not gated\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s rocks=%ld shiny=%ld trades=%ld\n",
+    // --- Детерминированная проверка §5.13.32: ПОДМОГА загнанному охотнику (patrol backup) ---
+    // Правило добавлено в ветку CK_PATROL (в соаке НЕ исполняется — патрулей в замороженном мире нет) и
+    //   вдобавок срабатывает ЛИШЬ при ≥2 патрулях (осаждённый охотник + свободный подмога); в обоих прежних
+    //   пробниках патруль РОВНО один ⇒ бейзлайн и оба пробника no-op ПО ПОСТРОЕНИЮ (числа выше побитово целы).
+    //   Этот изолированный пробник — единственное headless-покрытие. Свежий Game, позиции пиньнутся каждый
+    //   кадр (ноль дрейфа/RNG), корпуса огромны (индексы стабильны), игрок отставлен на 100000 LU. Четыре
+    //   борта: охотник A в 0; розыскная приманка на 300 LU от A (<1400 ⇒ A становится ОХОТНИКОМ, если wanted)
+    //   и >1400 от B; ПИРАТ-стайник на 1000 LU от A (в его бедствии) и ~1100 LU от B (750<d<1400 ⇒ B достанет
+    //   его ТОЛЬКО подмогой, не фолбэком AW2=750); свободный патруль B на 2100 LU по Y (до розыскного
+    //   ~2121>1400 ⇒ P0 у B пуст). Проверяем aiState B (прямой выход решения о цели): B на 1100 LU >
+    //   WEAPON_RANGE ⇒ урона нет, но захват цели виден. (A) приманка РОЗЫСКНАЯ ⇒ A охотник ⇒ стайник «в
+    //   бедствии охотника» ⇒ B берёт его целью (aiState=1 — только подмога дотянется дальше 750). (B) приманка
+    //   НЕ розыскная ⇒ A не охотник ⇒ подмога заперта, рейдера нет (нет торговцев), фолбэк капнут 750 (стайник
+    //   на 1100) ⇒ B простаивает (aiState=0).
+    bool patrolBacksUpSwarmedOk = false;
+    {
+        Game g7; g7.init(1200);
+        int star = -1;
+        for (int s : stars) { if (s >= 0) { star = s; break; } }
+        bool aOk = false, bReached = false, bViolated = false;
+        if (star >= 0) {
+            for (int phase = 0; phase < 2; ++phase) {          // phase 0 = (A) розыскная приманка ⇒ A охотник; 1 = (B) простая
+                LocalScene s;
+                buildLocalScene(g7, star, s);
+                s.active = true;
+                while (s.craft.size() < 4) { LocalCraft nc; s.craft.push_back(nc); }
+                s.craft.resize(4);
+                {
+                    LocalCraft& hunterA = s.craft[0];          // ПАТРУЛЬ-ОХОТНИК (его облепит стая)
+                    hunterA.kind = CK_PATROL; hunterA.hostile = false; hunterA.faction = -1; hunterA.agentIndex = -1;
+                    hunterA.heavy = 60.0; hunterA.light = 0.0;
+                    hunterA.maxHullHP = 100000.0; hunterA.hullHP = 100000.0;
+                    hunterA.maxShield = 0.0; hunterA.shield = 0.0; hunterA.fireCooldown = 0.0; hunterA.wanted = false;
+                    LocalCraft& outlaw = s.craft[1];           // розыскная приманка: делает A охотником, если wanted
+                    outlaw.kind = CK_PIRATE; outlaw.hostile = true; outlaw.faction = -1; outlaw.agentIndex = -1;
+                    outlaw.wanted = (phase == 0); outlaw.wantedBounty = 650.0;
+                    outlaw.maxHullHP = 100000.0; outlaw.hullHP = 100000.0;
+                    outlaw.maxShield = 0.0; outlaw.shield = 0.0; outlaw.shieldRegenTimer = 999.0;
+                    LocalCraft& pack = s.craft[2];             // ПИРАТ-стайник в бедствии охотника A (цель подмоги)
+                    pack.kind = CK_PIRATE; pack.hostile = true; pack.faction = -1; pack.agentIndex = -1;
+                    pack.wanted = false;
+                    pack.maxHullHP = 100000.0; pack.hullHP = 100000.0;
+                    pack.maxShield = 0.0; pack.shield = 0.0; pack.shieldRegenTimer = 999.0;
+                    LocalCraft& respB = s.craft[3];            // СВОБОДНЫЙ патруль-подмога (своего розыскного нет)
+                    respB.kind = CK_PATROL; respB.hostile = false; respB.faction = -1; respB.agentIndex = -1;
+                    respB.heavy = 60.0; respB.light = 0.0;
+                    respB.maxHullHP = 100000.0; respB.hullHP = 100000.0;
+                    respB.maxShield = 0.0; respB.shield = 0.0; respB.fireCooldown = 0.0; respB.wanted = false;
+                }
+                s.px = 100000.0; s.py = 0.0; s.pz = 0.0; s.pvx = s.pvy = s.pvz = 0.0;
+                for (int f = 0; f < 60; ++f) {
+                    LocalCraft& a0 = s.craft[0]; LocalCraft& o1 = s.craft[1];
+                    LocalCraft& k2 = s.craft[2]; LocalCraft& b3 = s.craft[3];
+                    a0.x = 0.0;    a0.y = 0.0;    a0.z = 0.0; a0.vx = a0.vy = a0.vz = 0.0;   // осаждаемый охотник
+                    a0.hullHP = a0.maxHullHP; a0.shield = 0.0;
+                    o1.x = 300.0;  o1.y = 0.0;    o1.z = 0.0; o1.vx = o1.vy = o1.vz = 0.0;   // <1400 от A (A охотник), >1400 от B
+                    o1.hullHP = o1.maxHullHP; o1.shield = 0.0; o1.shieldRegenTimer = 999.0;
+                    k2.x = 0.0;    k2.y = 1000.0; k2.z = 0.0; k2.vx = k2.vy = k2.vz = 0.0;   // <1400 от A (в бедствии) и от B, >750 от B
+                    k2.hullHP = k2.maxHullHP; k2.shield = 0.0; k2.shieldRegenTimer = 999.0;
+                    b3.x = 0.0;    b3.y = 2100.0; b3.z = 0.0; b3.vx = b3.vy = b3.vz = 0.0;   // до k2 ≈1100 (750<d<1400), до o1 ≈2121 (>1400)
+                    b3.hullHP = b3.maxHullHP; b3.shield = 0.0;
+                    LocalInput in;
+                    updateLocalScene(g7, s, in, dtReal);
+                    if (s.craft.size() >= 4) {
+                        if (phase == 0 && s.craft[3].aiState == 1) aOk = true;            // (A) свободный патруль пришёл на помощь
+                        if (phase == 1) { bReached = true; if (s.craft[3].aiState == 1) bViolated = true; }  // (B) не должен
+                    }
+                }
+            }
+        }
+        bool bOk = bReached && !bViolated;
+        patrolBacksUpSwarmedOk = aOk && bOk;
+        std::printf("patrol-backs-up-swarmed probe: respondsToSwarm=%s gatedOnHunt=%s\n",
+                    aOk ? "YES (ok)" : "NO", bOk ? "YES (ok)" : "NO");
+    }
+    if (!patrolBacksUpSwarmedOk) { std::printf("INVARIANT FAIL: §5.13.32 patrol backup did not fire or was not gated\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
                 patrolHuntsWantedOk ? "ok" : "FAILED",
                 packRalliesOutlawOk ? "ok" : "FAILED",
+                patrolBacksUpSwarmedOk ? "ok" : "FAILED",
                 rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }

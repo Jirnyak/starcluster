@@ -437,42 +437,84 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
             if (wantedPir >= 0) {
                 atkCraft = wantedPir; atkBest = wantedBest; atkPlayer = false; c.defending = true;
             } else {
-                // (§5.13.12) ПРИОРИТЕТ 1 — БЛИЖАЙШИЙ НАЛЁТЧИК: пират в РАСШИРЕННОМ радиусе бедствия
-                //   PATROL_DISTRESS_R, который сам находится вплотную (< RAID_NEAR) к торговцу/гражданскому.
-                //   Реакция «издалека» и приоритет над случайным пиратом. Детект по СЫРЫМ позициям (не по
-                //   кадровым SOS-флагам §5.13.11) — порядок обработки кораблей не важен, разметка не нужна.
-                int raider = -1;
-                double raiderBest = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
-                const double RAID2 = LocalCfg::RAID_NEAR * LocalCfg::RAID_NEAR;
+                const double DISTR2 = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
+                // (§5.13.32) ПРИОРИТЕТ 0.5 — ПОДМОГА ЗАГНАННОМУ ОХОТНИКУ. Свободный патруль (P0 не нашёл
+                //   СВОЕГО розыскного) сходится на драку, где стая (§5.13.30) облепила ДРУГОГО патруля-
+                //   охотника (§5.13.28): берёт целью ближайшего ПИРАТА в своём PATROL_DISTRESS_R, который сам
+                //   в радиусе бедствия некоего патруля q!=i, а q РЕАЛЬНО охотится (у q есть живой wanted-пират
+                //   в его PATROL_DISTRESS_R). «q охотится» ВЫВЕДЕНО заново из живых полей kind/wanted/x/y/z
+                //   (не из кадрового q.defending/q.aiState — валидного лишь для меньших индексов) ⇒ порядок
+                //   бортов / своп-поп мёртвых не важны (паттерн D, как §5.13.29/.30). Цель — ВСЕГДА пират
+                //   (не патруль ⇒ friendly-fire невозможен); пиратов не трогаем, лишь ДОБАВЛЯЕМ агрессию
+                //   закона (патруль берёт врага раньше и дальше ⇒ охота ТРУДНЕЕ, не мягче). Огонь всё так же
+                //   заперт WEAPON_RANGE. Требует ≥2 патрулей: в headless-soak их 0, в обоих существующих
+                //   пробниках ровно 1 ⇒ тир no-op ПО ПОСТРОЕНИЮ, 120k-бейзлайн §5.13.28/30 побитово цел.
+                //   Ноль RNG, без нового поля (реюз PATROL_DISTRESS_R и маркера c.defending).
+                int backupPir = -1; double backupBest = DISTR2;
                 for (size_t j = 0; j < scene.craft.size(); ++j) {
                     if (j == i) continue;
                     LocalCraft& o = scene.craft[j];
-                    if (o.hullHP <= 0.0 || o.kind != CK_PIRATE) continue;
+                    if (o.hullHP <= 0.0 || o.kind != CK_PIRATE) continue;   // цель подмоги — только пират
                     double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
                     double d2 = dx*dx + dy*dy + dz*dz;
-                    if (d2 >= raiderBest) continue;         // уже есть более близкий налётчик
-                    bool raiding = false;                    // пират у беззащитного борта (конвой)?
-                    for (size_t k = 0; k < scene.craft.size(); ++k) {
-                        if (k == j) continue;
-                        const LocalCraft& v = scene.craft[k];
-                        if (v.hullHP <= 0.0) continue;
-                        if (v.kind != CK_TRADER && v.kind != CK_CIVILIAN) continue;
-                        double vx = v.x - o.x, vy = v.y - o.y, vz = v.z - o.z;
-                        if (vx*vx + vy*vy + vz*vz < RAID2) { raiding = true; break; }
+                    if (d2 >= backupBest) continue;                          // уже есть более близкий
+                    bool inHunterMelee = false;                              // o в бедствии ДРУГОГО патруля-охотника?
+                    for (size_t q = 0; q < scene.craft.size() && !inHunterMelee; ++q) {
+                        if (q == i || q == j) continue;
+                        const LocalCraft& pat = scene.craft[q];
+                        if (pat.hullHP <= 0.0 || pat.kind != CK_PATROL) continue;
+                        double px = o.x - pat.x, py = o.y - pat.y, pz = o.z - pat.z;
+                        if (px*px + py*py + pz*pz >= DISTR2) continue;       // пират не в радиусе этого патруля
+                        for (size_t w = 0; w < scene.craft.size(); ++w) {    // pat реально охотится? (§5.13.28)
+                            if (w == q) continue;
+                            const LocalCraft& out = scene.craft[w];
+                            if (out.hullHP <= 0.0 || out.kind != CK_PIRATE || !out.wanted) continue;
+                            double wx = out.x - pat.x, wy = out.y - pat.y, wz = out.z - pat.z;
+                            if (wx*wx + wy*wy + wz*wz < DISTR2) { inHunterMelee = true; break; }
+                        }
                     }
-                    if (raiding) { raiderBest = d2; raider = (int)j; }
+                    if (inHunterMelee) { backupBest = d2; backupPir = (int)j; }
                 }
-                if (raider >= 0) {
-                    atkCraft = raider; atkBest = raiderBest; atkPlayer = false; c.defending = true;
+                if (backupPir >= 0) {
+                    atkCraft = backupPir; atkBest = backupBest; atkPlayer = false; c.defending = true;
                 } else {
-                    // Фолбэк — прежняя логика: ближайший пират в радиусе осведомлённости AW2.
+                    // (§5.13.12) ПРИОРИТЕТ 1 — БЛИЖАЙШИЙ НАЛЁТЧИК: пират в РАСШИРЕННОМ радиусе бедствия
+                    //   PATROL_DISTRESS_R, который сам находится вплотную (< RAID_NEAR) к торговцу/гражданскому.
+                    //   Реакция «издалека» и приоритет над случайным пиратом. Детект по СЫРЫМ позициям (не по
+                    //   кадровым SOS-флагам §5.13.11) — порядок обработки кораблей не важен, разметка не нужна.
+                    int raider = -1;
+                    double raiderBest = DISTR2;
+                    const double RAID2 = LocalCfg::RAID_NEAR * LocalCfg::RAID_NEAR;
                     for (size_t j = 0; j < scene.craft.size(); ++j) {
                         if (j == i) continue;
                         LocalCraft& o = scene.craft[j];
                         if (o.hullHP <= 0.0 || o.kind != CK_PIRATE) continue;
                         double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
                         double d2 = dx*dx + dy*dy + dz*dz;
-                        if (d2 < atkBest) { atkBest = d2; atkCraft = (int)j; atkPlayer = false; }
+                        if (d2 >= raiderBest) continue;         // уже есть более близкий налётчик
+                        bool raiding = false;                    // пират у беззащитного борта (конвой)?
+                        for (size_t k = 0; k < scene.craft.size(); ++k) {
+                            if (k == j) continue;
+                            const LocalCraft& v = scene.craft[k];
+                            if (v.hullHP <= 0.0) continue;
+                            if (v.kind != CK_TRADER && v.kind != CK_CIVILIAN) continue;
+                            double vx = v.x - o.x, vy = v.y - o.y, vz = v.z - o.z;
+                            if (vx*vx + vy*vy + vz*vz < RAID2) { raiding = true; break; }
+                        }
+                        if (raiding) { raiderBest = d2; raider = (int)j; }
+                    }
+                    if (raider >= 0) {
+                        atkCraft = raider; atkBest = raiderBest; atkPlayer = false; c.defending = true;
+                    } else {
+                        // Фолбэк — прежняя логика: ближайший пират в радиусе осведомлённости AW2.
+                        for (size_t j = 0; j < scene.craft.size(); ++j) {
+                            if (j == i) continue;
+                            LocalCraft& o = scene.craft[j];
+                            if (o.hullHP <= 0.0 || o.kind != CK_PIRATE) continue;
+                            double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+                            double d2 = dx*dx + dy*dy + dz*dz;
+                            if (d2 < atkBest) { atkBest = d2; atkCraft = (int)j; atkPlayer = false; }
+                        }
                     }
                 }
             }
