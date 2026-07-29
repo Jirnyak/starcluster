@@ -1131,7 +1131,29 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                                     scene.shake = std::min(40.0, std::max(scene.shake, 20.0));
                                 }
                             }
-                            if (c.faction >= 0 && !c.hostile && game.playerFaction >= 0) {
+                            // (§5.13.48) КОПОУБИЙЦА: убийство ПАТРУЛЯ игроком — тяжелее гибели гражданского
+                            //   борта и НЕ прощается, даже если патруль уже был hostile. Патруль-специфичная,
+                            //   hostile-agnostic ветка ЗАМЕНЯЕТ generic −8 §5.13.14 для CK_PATROL (иначе двойной
+                            //   штраф): штраф вдвое (−COP_KILL_REP), плюс уцелевшие борты фракции звереют — та же
+                            //   каскадная агрессия, что у generic-ветки. Глубже реп ⇒ раньше порог §5.13.42, горячее
+                            //   §5.13.44, крупнее стая §5.13.46 (уже ВИДНО баннером §5.13.47). Строго ADDITIVE к бою:
+                            //   двигаем лишь реп + hostile соседей; урон/uptime пирата не трогаем ⇒ §0.2-G УСИЛЕН.
+                            //   В headless-soak патрулей нет ⇒ ветка no-op ПО ПОСТРОЕНИЮ (бейзлайн побитово),
+                            //   покрытие — пробник copKillDeeperReprisal. Не-патрули идут прежней generic-веткой БАЙТ-в-БАЙТ.
+                            if (c.kind == CK_PATROL && c.faction >= 0 && game.playerFaction >= 0) {
+                                int fac = c.faction;
+                                game.adjustFactionRelation(game.playerFaction, fac, -LocalCfg::COP_KILL_REP);
+                                game.pushNews("Cop killed: this faction's law will hunt you", 3);
+                                scene.toast = "COP KILLED -REP";
+                                scene.toastTimer = 3.0;
+                                scene.shake = std::min(40.0, std::max(scene.shake, 20.0));
+                                // Все уцелевшие корабли той же фракции звереют на игрока.
+                                for (size_t k = 0; k < scene.craft.size(); ++k) {
+                                    if (k == j) continue;
+                                    LocalCraft& o = scene.craft[k];
+                                    if (o.hullHP > 0.0 && o.faction == fac) { o.hostile = true; o.aiState = 1; }
+                                }
+                            } else if (c.faction >= 0 && !c.hostile && game.playerFaction >= 0) {
                                 int fac = c.faction;
                                 game.adjustFactionRelation(game.playerFaction, fac, -8);
                                 game.pushNews("Reprisal: faction ship destroyed", 3);

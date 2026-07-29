@@ -832,6 +832,67 @@ int main() {
     }
     if (!factionReprisalOk) { std::printf("INVARIANT FAIL: §5.13.40 faction reprisal sign did not flip by standing tier\n"); ++invariantFails; }
 
+    // (§5.13.48) КОПОУБИЙЦА: убийство ПАТРУЛЯ игроком тяжелее гибели гражданского (−8 §5.13.14) — ВДВОЕ
+    //   (−COP_KILL_REP) — и карается ДАЖЕ за уже-hostile патруль (до-.48 дыра: там штраф был 0). В замороженном
+    //   soak-мире патрулей нет ⇒ ветка no-op в 120k-цикле (числовой бейзлайн цел), этот изолированный пробник —
+    //   единственное headless-покрытие. Свежий Game, ТРИ сцены (мишень пиньнута по носу, hullHP=1 ⇒ гибнет от
+    //   первого выстрела игрока, in.fire=true, как §5.13.40-пробник): (A) НЕ-hostile патруль, реп 0 ⇒ Δ=−COP_KILL_REP;
+    //   (B) уже-hostile патруль, реп 0 ⇒ ВСЁ РАВНО −COP_KILL_REP (пиньнит hostile-agnostic — старый гейт !hostile
+    //   дал бы 0); (C) НЕ-hostile ТОРГОВЕЦ (контроль), реп 0 ⇒ Δ=−8 (пиньнит патруль-СПЕЦИФИЧНОСТЬ). Трёхсторонний:
+    //   застрявший «всегда −8» валит A/B, «всегда −16» валит C, «только !hostile-патруль» валит B. Все итоги в clamp.
+    bool copKillDeeperReprisalOk = false;
+    {
+        bool res[3] = { false, false, false };            // (A) !hostile patrol ; (B) hostile patrol ; (C) trader control
+        const int  KIND[3] = { CK_PATROL, CK_PATROL, CK_TRADER };
+        const bool HOST[3] = { false,     true,      false     };
+        const int  WANT[3] = { -LocalCfg::COP_KILL_REP, -LocalCfg::COP_KILL_REP, -8 };
+        Game glg; glg.init(1200);
+        int pf = glg.playerFaction;
+        int F = -1;
+        for (int f = 0; f < (int)glg.factions.size(); ++f) if (f != pf) { F = f; break; }
+        int star = -1;
+        for (int s : stars) { if (s >= 0) { star = s; break; } }
+        if (pf >= 0 && F >= 0 && star >= 0) {
+            glg.agents[glg.playerAgent].ship.heavyWeapons = 60.0;   // гарантированный урон игрока
+            for (int scn = 0; scn < 3; ++scn) {
+                LocalScene ss;
+                buildLocalScene(glg, star, ss);
+                ss.active = true;
+                while (ss.craft.empty()) { LocalCraft nc; ss.craft.push_back(nc); }
+                ss.craft.resize(1);
+                ss.craft[0] = LocalCraft();                  // сброс к дефолтам (детерминизм; ноль остатков от gen)
+                LocalCraft& T = ss.craft[0];                 // МИШЕНЬ — патруль/торговец фракции F
+                T.kind = KIND[scn]; T.hostile = HOST[scn]; T.faction = F; T.agentIndex = -1;
+                T.wanted = false; T.threatConvoy = false; T.underAttack = false;
+                T.maxHullHP = 100.0; T.armor = 800.0;        // большой hr ⇒ выстрел попадает на 26 LU
+                T.maxShield = 0.0; T.shield = 0.0; T.shieldRegenTimer = 999.0;
+                int cur = glg.factionRelation(pf, F);
+                glg.adjustFactionRelation(pf, F, 0 - cur);   // посев: rep(pf,F) = 0 (Neutral)
+                int rel0 = glg.factionRelation(pf, F);
+                bool moved = false;
+                for (int f = 0; f < 3000; ++f) {
+                    if (!ss.craft.empty() && ss.craft[0].hullHP > 0.0) {
+                        LocalCraft& t = ss.craft[0];
+                        t.x = ss.px + 26.0; t.y = ss.py; t.z = ss.pz;      // сидячая мишень по носу
+                        t.vx = t.vy = t.vz = 0.0;
+                        if (t.hullHP > 1.0) t.hullHP = 1.0;
+                        t.shield = 0.0; t.armor = 800.0;
+                        t.hostile = HOST[scn];               // (§5.13.48) пиньнить hostile КАЖДЫЙ кадр ⇒ сцена B явно кроет hostile-agnostic путь (иначе покрытие лишь косвенное — держится на frame-0 убийстве)
+                        localSetForward(ss, t.x - ss.px, t.y - ss.py, t.z - ss.pz);
+                    }
+                    LocalInput in; in.fire = true;
+                    updateLocalScene(glg, ss, in, dtReal);
+                    if (glg.factionRelation(pf, F) != rel0) { moved = (glg.factionRelation(pf, F) == rel0 + WANT[scn]); break; }
+                }
+                res[scn] = moved;
+            }
+        }
+        copKillDeeperReprisalOk = res[0] && res[1] && res[2];
+        std::printf("cop-kill-deeper-reprisal probe: nonHostilePatrol[-16]=%s hostilePatrol[-16]=%s traderControl[-8]=%s\n",
+                    res[0] ? "YES (ok)" : "NO", res[1] ? "YES (ok)" : "NO", res[2] ? "YES (ok)" : "NO");
+    }
+    if (!copKillDeeperReprisalOk) { std::printf("INVARIANT FAIL: §5.13.48 cop-kill reprisal wrong (not 2x for a patrol, forgave a hostile patrol, or hit a trader)\n"); ++invariantFails; }
+
     // (§5.13.38) КОП-КИЛЛ: убийство патруля-ОХОТНИКА его же дичью поднимает награду СИЛЬНЕЕ базового +200.
     //   Как и §5.13.28/30/32/34/36 — в замороженном soak-мире патрулей нет (их родит лишь со-локальный
     //   «military»/«patrol» макро-агент, localgen.cpp) ⇒ правило no-op ПО ПОСТРОЕНИЮ в 120k-цикле выше (числовой
@@ -1274,7 +1335,7 @@ int main() {
     }
     if (!lawPackHuntsPlayerOk) { std::printf("INVARIANT FAIL: §5.13.46 law-pack override did not fire for a pair, or a lone patrol wrongly took the player\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s lawHuntsHostile=%s patrolTargetSignal=%s vendettaScalesWithStanding=%s lawPackHuntsPlayer=%s rocks=%ld shiny=%ld trades=%ld\n",
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s copKillDeeperReprisal=%s lawHuntsHostile=%s patrolTargetSignal=%s vendettaScalesWithStanding=%s lawPackHuntsPlayer=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
@@ -1285,6 +1346,7 @@ int main() {
                 lawGratitudeOk ? "ok" : "FAILED",
                 copKillRaisesBountyOk ? "ok" : "FAILED",
                 factionReprisalOk ? "ok" : "FAILED",
+                copKillDeeperReprisalOk ? "ok" : "FAILED",
                 lawHuntsHostileOk ? "ok" : "FAILED",
                 patrolTargetSignalOk ? "ok" : "FAILED",
                 vendettaScalesWithStandingOk ? "ok" : "FAILED",
