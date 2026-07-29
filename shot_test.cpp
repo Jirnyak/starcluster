@@ -790,6 +790,33 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_manhunt.bmp");
     }
 
+    // (24) СТОЯНИЕ С ФРАКЦИЕЙ (§5.13.37): draw-only итог репутации — прямой ПОКАЗ последствия §5.13.36.
+    //      Патруль дружественной фракции; со-оп-добивы розыскных изгоев (§5.13.36) и спасения конвоев
+    //      (§5.13.11) подняли стояние игрока с этой фракцией до ALLY. Панель цели теперь несёт строку
+    //      «STANDING <WORD> <±N>», перевыведенную НА ЛЁТУ из game.factionRelation(playerFaction, t.faction)
+    //      тем же классификатором порогов, что и макрослой (faction.cpp) — накопленный итог закон-цикла
+    //      читается прямо из кокпита. Ноль полей/RNG/шага sim; пираты бесфракционны (faction=-1) => им
+    //      строка не показывается, combat-фильтр §0.2-G пройден тривиально (только чтение репутации).
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 1) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(1);                             // один борт: дружественный патруль в фокусе панели
+        const int stFac = 0;                           // faction 0 всегда валидна и != playerFaction (= число NPC-фракций)
+        game.setFactionRelation(game.playerFaction, stFac, 96);   // ALLY (>=80) => ярко-зелёная строка «STANDING ALLY +96»
+        LocalCraft& pat = s.craft[0];                  // ПАТРУЛЬ дружественной фракции — цель панели
+        pat.kind = CK_PATROL; pat.label = "PATROL"; pat.faction = stFac; pat.r = 110; pat.g = 215; pat.b = 170;
+        pat.hostile = false; pat.defending = true; pat.aiState = 1; pat.errand = 0; pat.errandBody = -1;
+        pat.x = 8000.0; pat.y = 0.0; pat.z = 150.0; pat.vx = pat.vy = pat.vz = 0.0;   // далеко от звезды => без ореола/окклюзии
+        pat.maxHullHP = 70.0; pat.hullHP = pat.maxHullHP; pat.maxShield = 20.0; pat.shield = 20.0;
+        s.px = 7080.0; s.py = -140.0; s.pz = 250.0; s.pvx = s.pvy = s.pvz = 0.0;      // ~935 LU: патруль крупно, панель читаема
+        localSetForward(s, 8000.0 - s.px, 0.0 - s.py, 150.0 - s.pz);                  // нос на патруль
+        s.targetCraft = 0;                             // цель — патруль => панель: ESCORT-рамка/чип + STANDING ALLY +96
+        s.fxClock = 0.30;                              // фаза зелёного пульса рамки эскорта
+        std::printf("  [law-standing] friendly patrol targeted -> panel carries STANDING ALLY +96 (faction rep readout §5.13.37)\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_law_standing.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);

@@ -2129,6 +2129,12 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             }
         }
         if (backupN > 0) ph += 14;        // место под строку «BACKUP INBOUND Xn» под корпусом
+        // (§5.13.37) строка «STANDING <WORD> <±N>» — репутация игрока с ФРАКЦИЕЙ цели, если
+        // цель не наша: живой итог со-оп-добива (§5.13.36) / спасения конвоя (§5.13.11) / расправ.
+        // Читается на лету из game.factionRelation ⇒ ни нового поля, ни RNG; пираты бесфракционны
+        // (faction=-1) ⇒ строка им не показывается (фильтр §0.2-G тривиально пройден — только чтение).
+        const bool showStanding = (t.faction >= 0 && game.playerFaction >= 0 && t.faction != game.playerFaction);
+        if (showStanding) ph += 14;
         panel(renderer, tx, ty, 224, ph);
         if (sos) {   // пульсирующая SOS-красная рамка вокруг панели — «эта цель под атакой»
             double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 6.0);
@@ -2202,6 +2208,22 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             by += 12;
             std::snprintf(buf, sizeof(buf), "BACKUP INBOUND X%d", backupN);
             drawText(renderer, tx + 8, by, buf, rgba(120, 180, 255, 255), 1);
+        }
+        if (showStanding) {   // (§5.13.37) репутация с фракцией цели — на лету, тот же классификатор, что и макрослой
+            const int rel = game.factionRelation(game.playerFaction, t.faction);
+            const char* word = "NEUTRAL";
+            SDL_Color scol = P.dim;
+            switch (classifyFactionRelationTension(rel)) {   // единый источник порогов (faction.cpp)
+                case FactionRelationTension::Enemy:    word = "ENEMY";    scol = rgba(238,  88,  82, 255); break;
+                case FactionRelationTension::Hostile:  word = "HOSTILE";  scol = rgba(238, 120,  82, 255); break;
+                case FactionRelationTension::Tense:    word = "TENSE";    scol = rgba(245, 191,  78, 255); break;
+                case FactionRelationTension::Neutral:  word = "NEUTRAL";  scol = P.dim;                    break;
+                case FactionRelationTension::Friendly: word = "FRIENDLY"; scol = rgba( 90, 220, 132, 255); break;
+                case FactionRelationTension::Ally:     word = "ALLY";     scol = rgba(120, 240, 150, 255); break;
+            }
+            by += 12;   // растёт вверх зелёным по мере накопления репутации; красным — если фракция во вражде
+            std::snprintf(buf, sizeof(buf), "STANDING %s %+d", word, rel);
+            drawText(renderer, tx + 8, by, buf, scol, 1);
         }
     }
 
