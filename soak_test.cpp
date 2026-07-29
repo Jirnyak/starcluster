@@ -1016,7 +1016,91 @@ int main() {
     }
     if (!lawHuntsHostileOk) { std::printf("INVARIANT FAIL: §5.13.42 hostile-standing patrol did not hunt player, or hunted at neutral\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s lawHuntsHostile=%s rocks=%ld shiny=%ld trades=%ld\n",
+    // (§5.13.43) СИГНАЛ ЦЕЛИ для кокпит-подсказки «HUNTING YOU». Это РЕНДЕР-срез: сама подсказка рисуется в
+    //   localdraw.cpp (вне headless-пути соака), но ЧИТАЕТ поле c.aiTarget, которое теперь заполняет симуляция
+    //   (localsim.cpp §5.13.43 — до сих пор поле было мёртвым; запись строго read-only ⇒ 120k-бейзлайн выше
+    //   побитово цел). Здесь фиксируем ИМЕННО контракт данных подсказки: предикат
+    //   c.kind==CK_PATROL && c.aiState==1 && c.aiTarget==LOCAL_TARGET_PLAYER && !c.hostile. Как и §5.13.42,
+    //   в основном 120k-цикле ветка патруля не исполняется (гарнизоны disjoint-маршруту) ⇒ изолированный пробник.
+    //   (A) Патруль фракции F, Enemy-стояние (реп −100), игрок в 300 LU, В СЦЕНЕ БОЛЬШЕ НИКОГО (resize(1)):
+    //       единственная возможная цель — игрок ⇒ aiState==1 && aiTarget==LOCAL_TARGET_PLAYER (подсказка ГОРИТ).
+    //   (B, анти-ложняк) тот же патруль + Enemy-стояние, НО ближе (80 LU) — РОЗЫСКНОЙ пират, игрок дальше (300 LU):
+    //       патруль охотится на пирата (§5.13.28; пират ближе игрока ⇒ override §5.13.42 по pd2<atkBest НЕ
+    //       срабатывает) ⇒ aiState==1 && aiTarget>=0 (индекс пирата), но НИКОГДА ==LOCAL_TARGET_PLAYER (подсказка
+    //       ГАСНЕТ). Ловит регресс, при котором «HUNTING YOU» светила бы на патруле, идущем на пирата, а не на игрока.
+    bool patrolTargetSignalOk = false;
+    {
+        Game gts; gts.init(1200);
+        int pf = gts.playerFaction;
+        int F = -1;
+        for (int f = 0; f < (int)gts.factions.size(); ++f) if (f != pf) { F = f; break; }
+        int star = -1;
+        for (int s : stars) { if (s >= 0) { star = s; break; } }
+        bool aOk = false;                        // (A) видели aiTarget==LOCAL_TARGET_PLAYER
+        bool bHunted = false, bFalsePos = false; // (B) видели индекс пирата ; НИКОГДА игрока
+        if (pf >= 0 && F >= 0 && star >= 0) {
+            // (A) только патруль + игрок
+            {
+                LocalScene ss; buildLocalScene(gts, star, ss); ss.active = true;
+                while (ss.craft.size() < 1) { LocalCraft nc; ss.craft.push_back(nc); }
+                ss.craft.resize(1);
+                LocalCraft& P = ss.craft[0];
+                P.kind = CK_PATROL; P.hostile = false; P.faction = F; P.agentIndex = -1;
+                P.heavy = 60.0; P.light = 0.0; P.wanted = false;
+                P.maxHullHP = 100000.0; P.hullHP = 100000.0;
+                P.maxShield = 0.0; P.shield = 0.0; P.fireCooldown = 0.0;
+                int cur = gts.factionRelation(pf, F);
+                gts.adjustFactionRelation(pf, F, -100 - cur);        // Enemy
+                for (int f = 0; f < 60; ++f) {
+                    LocalCraft& p = ss.craft[0];
+                    p.x = ss.px; p.y = ss.py + 300.0; p.z = ss.pz;   // 300 LU: >WEAPON_RANGE, <AW2
+                    p.vx = p.vy = p.vz = 0.0; p.hullHP = p.maxHullHP; p.shield = 0.0; p.hostile = false;
+                    LocalInput in; in.fire = false;                  // игрок не стреляет ⇒ провокации нет
+                    updateLocalScene(gts, ss, in, dtReal);
+                    if (!ss.craft.empty() && ss.craft[0].aiState == 1 &&
+                        ss.craft[0].aiTarget == LOCAL_TARGET_PLAYER) aOk = true;
+                }
+            }
+            // (B) патруль + игрок + БЛИЖЕ розыскной пират
+            {
+                LocalScene ss; buildLocalScene(gts, star, ss); ss.active = true;
+                while (ss.craft.size() < 2) { LocalCraft nc; ss.craft.push_back(nc); }
+                ss.craft.resize(2);
+                LocalCraft& P = ss.craft[0];
+                P.kind = CK_PATROL; P.hostile = false; P.faction = F; P.agentIndex = -1;
+                P.heavy = 60.0; P.light = 0.0; P.wanted = false;
+                P.maxHullHP = 100000.0; P.hullHP = 100000.0;
+                P.maxShield = 0.0; P.shield = 0.0; P.fireCooldown = 0.0;
+                LocalCraft& W = ss.craft[1];                         // РОЗЫСКНОЙ пират, ближе игрока
+                W.kind = CK_PIRATE; W.hostile = true; W.faction = -1; W.agentIndex = -1;
+                W.wanted = true; W.wantedBounty = 650.0;
+                W.maxHullHP = 100000.0; W.hullHP = 100000.0;
+                W.maxShield = 0.0; W.shield = 0.0; W.shieldRegenTimer = 999.0;
+                int cur = gts.factionRelation(pf, F);
+                gts.adjustFactionRelation(pf, F, -100 - cur);        // Enemy: игрок — валидная цель по стоянию
+                for (int f = 0; f < 60; ++f) {
+                    LocalCraft& p = ss.craft[0]; LocalCraft& w = ss.craft[1];
+                    p.x = ss.px; p.y = ss.py + 300.0; p.z = ss.pz;   // патруль в 300 LU от игрока
+                    p.vx = p.vy = p.vz = 0.0; p.hullHP = p.maxHullHP; p.shield = 0.0; p.hostile = false;
+                    w.x = ss.px; w.y = ss.py + 380.0; w.z = ss.pz;   // пират в 80 LU от патруля (ближе игрока)
+                    w.vx = w.vy = w.vz = 0.0; w.hullHP = w.maxHullHP; w.shield = 0.0; w.shieldRegenTimer = 999.0;
+                    LocalInput in; in.fire = false;
+                    updateLocalScene(gts, ss, in, dtReal);
+                    if (!ss.craft.empty() && ss.craft[0].aiState == 1) {
+                        if (ss.craft[0].aiTarget == LOCAL_TARGET_PLAYER) bFalsePos = true;
+                        else if (ss.craft[0].aiTarget >= 0)              bHunted   = true;
+                    }
+                }
+            }
+        }
+        bool bOk = bHunted && !bFalsePos;
+        patrolTargetSignalOk = aOk && bOk;
+        std::printf("patrol-target-signal probe: playerTargetSentinel=%s pirateNotPlayer=%s\n",
+                    aOk ? "YES (ok)" : "NO", bOk ? "YES (ok)" : "NO");
+    }
+    if (!patrolTargetSignalOk) { std::printf("INVARIANT FAIL: §5.13.43 aiTarget signal wrong (player sentinel missing, or false-positive on pirate hunt)\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s lawHuntsHostile=%s patrolTargetSignal=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
@@ -1028,6 +1112,7 @@ int main() {
                 copKillRaisesBountyOk ? "ok" : "FAILED",
                 factionReprisalOk ? "ok" : "FAILED",
                 lawHuntsHostileOk ? "ok" : "FAILED",
+                patrolTargetSignalOk ? "ok" : "FAILED",
                 rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }

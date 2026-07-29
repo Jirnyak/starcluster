@@ -997,6 +997,18 @@ static bool standingCue(const Game& game, int targetFaction, SDL_Color& col) {
     return false;   // недостижимо (enum исчерпан), но снимает предупреждение о конце non-void
 }
 
+// (§5.13.43) Единый предикат «патруль ОХОТИТСЯ на ИГРОКА по СТОЯНИЮ» — общий для on-screen cue (строка ~1536)
+//   и off-screen краевого маркера nearHunt (~2004), чтобы две площадки НЕ разъехались (адверсарное ревью §5.13.43,
+//   item #4: предикат дублировался). Истинно ⟺ сработал override §5.13.42 И патруль АКТИВНО атакует, И жив:
+//   при низком корпусе патруль БЕЖИТ (aiState=2 ⇒ localsim пломбирует aiTarget=-1) ⇒ здесь false — «бегущий не
+//   охотится» (потому строгое «⟺ сработал override» неточно: точно «override сработал И не в бегстве»).
+//   Провоцированный (hostile) патруль исключён: его враждебность самоочевидна без подсказки. Заполнение aiTarget —
+//   localsim.cpp:630; для патруля aiTarget==LOCAL_TARGET_PLAYER возможно ТОЛЬКО через §5.13.42 (единств. путь atkPlayer=true).
+static bool huntsPlayerByStanding(const LocalCraft& c) {
+    return c.kind == CK_PATROL && c.aiState == 1 && c.aiTarget == LOCAL_TARGET_PLAYER &&
+           !c.hostile && c.hullHP > 0.0;
+}
+
 } // namespace
 
 void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene& scene,
@@ -1525,6 +1537,20 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             strokeCircle(renderer, p.x, p.y, int(sz) + 9,  rgba(255, 205, 60, da));       // вне cyan-рамки цели и зелёного эскорта
             strokeCircle(renderer, p.x, p.y, int(sz) + 14, rgba(255, 205, 60, da / 3));
         }
+        // (§5.13.43) «HUNTING YOU»: патруль, взявший игрока на прицел БЕЗ провокации — т.е. по СТОЯНИЮ
+        //   фракции (§5.13.42). Предикат — общий хелпер huntsPlayerByStanding (см. его комментарий; провоцированный
+        //   hostile-патруль и бегущий/мёртвый исключены). Цвет — по стоянию (тот же классификатор, что рамка §5.13.39
+        //   / вектор §5.13.41): Enemy — багровый, Hostile — оранжево-красный; fallback P.red. Самый быстрый/агрессивный
+        //   пульс (7.4 ≠ 3.0/4.5/5.2/6.0), круги — как прочие «статусные» пульсы (розыск/эскорт/SOS), плюс подпись над бортом.
+        if (huntsPlayerByStanding(c)) {
+            SDL_Color hc = P.red; { SDL_Color sc; if (standingCue(game, c.faction, sc)) hc = sc; }
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 7.4 + double(i) * 0.7);
+            int da = 110 + int(pl * 145.0);                // 110..255 — ярче всех статусных пульсов
+            strokeCircle(renderer, p.x, p.y, int(sz) + 10, rgba(hc.r, hc.g, hc.b, da));       // вне розыска (sz+9) и эскорта (sz+8)
+            strokeCircle(renderer, p.x, p.y, int(sz) + 15, rgba(hc.r, hc.g, hc.b, da / 3));
+            const char* hs = "HUNTING YOU";
+            drawText(renderer, p.x - textWidth(hs, 1) / 2, p.y - int(sz) - 18, hs, rgba(hc.r, hc.g, hc.b, 255), 1);
+        }
         if (c.hullHP < c.maxHullHP) {
             double frac = c.hullHP / std::max(1.0, c.maxHullHP);
             bar(renderer, p.x - 8, p.y - int(sz) - 6, 16, 2, frac, c.hostile ? P.red : P.green);
@@ -1981,6 +2007,14 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                        (c.z - scene.pz) * (c.z - scene.pz);
             if (d < bestWanted) { bestWanted = d; nearWanted = (int)i; }
         }
+        int nearHunt = -1; double bestHunt = 1e18; // (§5.13.43) ближайший патруль-охотник по СТОЯНИЮ (§5.13.42)
+        for (size_t i = 0; i < scene.craft.size(); ++i) {
+            const LocalCraft& c = scene.craft[i];
+            if (!huntsPlayerByStanding(c)) continue; // тот же общий предикат, что on-screen cue (hullHP>0 внутри хелпера)
+            double d = (c.x - scene.px) * (c.x - scene.px) + (c.y - scene.py) * (c.y - scene.py) +
+                       (c.z - scene.pz) * (c.z - scene.pz);
+            if (d < bestHunt) { bestHunt = d; nearHunt = (int)i; }
+        }
         if (nearMkt >= 0) {
             const LocalBody& bd = scene.bodies[nearMkt];
             drawEdgeMarker(renderer, cx, cy, winW, winH, bd.x, bd.y, bd.z, view, basis, P.green);
@@ -2000,6 +2034,11 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         if (nearWanted >= 0) { // (§5.13.25) краевой маркер розыска — ведёт к премиальной цели за кадром (золото)
             const LocalCraft& c = scene.craft[nearWanted];
             drawEdgeMarker(renderer, cx, cy, winW, winH, c.x, c.y, c.z, view, basis, rgba(255, 205, 60, 255));
+        }
+        if (nearHunt >= 0) { // (§5.13.43) краевой маркер: неспровоцированный охотник-патруль за кадром (цвет стояния)
+            const LocalCraft& c = scene.craft[nearHunt];
+            SDL_Color hc = P.red; { SDL_Color sc; if (standingCue(game, c.faction, sc)) hc = sc; }
+            drawEdgeMarker(renderer, cx, cy, winW, winH, c.x, c.y, c.z, view, basis, hc);
         }
         if (nearLoot >= 0) {
             const LocalLoot& lt = scene.loot[nearLoot];

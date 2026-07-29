@@ -915,6 +915,103 @@ int main(int argc, char** argv) {
         game.setFactionRelation(game.playerFaction, patFac, 0);      // восстановить нейтраль (гигиена для будущих сцен)
     }
 
+    // (28) ОХОТА ПО СТОЯНИЮ (§5.13.43): draw-only спутник §5.13.42 — кокпит-подсказка «HUNTING YOU».
+    //      Патруль фракции, с которой игрок стоит Enemy (rep=-100), взял ИГРОКА целью БЕЗ провокации
+    //      (hostile=false): в симуляции это выражено полем aiTarget==LOCAL_TARGET_PLAYER при aiState==1
+    //      (localsim.cpp §5.13.43; в реальной игре так бывает ТОЛЬКО через override §5.13.42 по стоянию).
+    //      Рендер рисует над бортом багрово-красную подпись «HUNTING YOU» + быстрый пульс (темп 7.4) цветом
+    //      стояния, плюс краевую стрелку, если охотник уходит за кадр. Пара — shot_hunted_none ниже, где
+    //      тот же патруль при том же Enemy-стоянии охотится на ПИРАТА (aiTarget=индекс), и подсказка ГАСНЕТ:
+    //      видно, что триггер — именно «патруль идёт на ТЕБЯ», а не просто «враждебная фракция рядом».
+    //      Ноль полей/RNG/шага sim (aiTarget заполнен зеркально симуляции; combat-фильтр §0.2-G — только чтение репутации).
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 1) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(1);                             // один борт: патруль-охотник в фокусе
+        const int stFac = 0;                           // валидная NPC-фракция != playerFaction
+        game.setFactionRelation(game.playerFaction, stFac, -100);  // ENEMY (<=-96) => багровая подсказка/пульс
+        LocalCraft& pat = s.craft[0];                  // ПАТРУЛЬ вражеской фракции, идёт на ИГРОКА по стоянию
+        pat.kind = CK_PATROL; pat.label = "PATROL"; pat.faction = stFac; pat.r = 110; pat.g = 215; pat.b = 170;
+        pat.hostile = false;                           // НЕ спровоцирован: подсказку зажигает СТОЯНИЕ, не боевой флаг
+        pat.defending = false; pat.underAttack = false; pat.wanted = false;
+        pat.aiState = 1; pat.aiTarget = LOCAL_TARGET_PLAYER;   // взял игрока целью (в игре — только override §5.13.42)
+        pat.errand = 0; pat.errandBody = -1;
+        pat.x = 8000.0; pat.y = 0.0; pat.z = 150.0; pat.vx = pat.vy = pat.vz = 0.0;   // далеко от звезды => без ореола
+        pat.maxHullHP = 70.0; pat.hullHP = pat.maxHullHP; pat.maxShield = 20.0; pat.shield = 20.0;
+        s.px = 7080.0; s.py = -140.0; s.pz = 250.0; s.pvx = s.pvy = s.pvz = 0.0;      // ~935 LU: патруль крупно, подпись читаема
+        localSetForward(s, 8000.0 - s.px, 0.0 - s.py, 150.0 - s.pz);                  // нос на патруль
+        s.targetCraft = 0;                             // цель — патруль => панель STANDING ENEMY для контекста
+        s.fxClock = 0.30;                              // фаза быстрого пульса подсказки
+        std::printf("  [hunted-standing] enemy-faction patrol targets the PLAYER unprovoked -> red HUNTING YOU cue + pulse (§5.13.43)\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_hunted_standing.bmp");
+    }
+
+    // (29) АНТИ-ЛОЖНЯК ПОДСКАЗКИ (§5.13.43): пара к shot_hunted_standing. ТОТ ЖЕ патруль при ТОМ ЖЕ Enemy-
+    //      стоянии (rep=-100), но его цель — ПИРАТ (aiTarget=индекс борта, не LOCAL_TARGET_PLAYER): предикат
+    //      подсказки не выполняется => «HUNTING YOU» НЕ рисуется, хотя фракция патруля враждебна и он в бою
+    //      (aiState=1). Наглядно, что подсказка ведётся полем aiTarget (§5.13.43), а не просто CK_PATROL +
+    //      hostile-стояние — иначе патруль, гоняющий пирата, ложно кричал бы «охочусь на тебя». Панель по-
+    //      прежнему честно показывает STANDING ENEMY (тир не изменился). Ноль полей/RNG/шага sim.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 2) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(2);                             // патруль + пират (его фактическая цель)
+        const int stFac = 0;
+        game.setFactionRelation(game.playerFaction, stFac, -100);  // тот же ENEMY, что в паре
+        LocalCraft& pat = s.craft[0];                  // ПАТРУЛЬ вражеской фракции — но охотится на ПИРАТА
+        pat.kind = CK_PATROL; pat.label = "PATROL"; pat.faction = stFac; pat.r = 110; pat.g = 215; pat.b = 170;
+        pat.hostile = false; pat.defending = false; pat.underAttack = false; pat.wanted = false;
+        pat.aiState = 1; pat.aiTarget = 1;             // цель — борт №1 (пират), НЕ игрок => подсказка гаснет
+        pat.errand = 0; pat.errandBody = -1;
+        pat.x = 8000.0; pat.y = 0.0; pat.z = 150.0; pat.vx = pat.vy = pat.vz = 0.0;
+        pat.maxHullHP = 70.0; pat.hullHP = pat.maxHullHP; pat.maxShield = 20.0; pat.shield = 20.0;
+        LocalCraft& pir = s.craft[1];                  // ПИРАТ — фактическая цель патруля (aiTarget=1)
+        pir.kind = CK_PIRATE; pir.label = "PIRATE"; pir.faction = -1; pir.r = 230; pir.g = 90; pir.b = 80;
+        pir.hostile = true; pir.wanted = false; pir.aiState = 1; pir.errand = 0; pir.errandBody = -1;
+        pir.x = 8120.0; pir.y = 80.0; pir.z = 150.0; pir.vx = pir.vy = pir.vz = 0.0;   // рядом с патрулём
+        pir.maxHullHP = 45.0; pir.hullHP = pir.maxHullHP;
+        s.px = 7080.0; s.py = -140.0; s.pz = 250.0; s.pvx = s.pvy = s.pvz = 0.0;       // та же камера, что в паре
+        localSetForward(s, 8000.0 - s.px, 0.0 - s.py, 150.0 - s.pz);                   // нос на патруль
+        s.targetCraft = 0;                             // цель — патруль => панель STANDING ENEMY (тот же контекст)
+        s.fxClock = 0.30;
+        std::printf("  [hunted-none] enemy-faction patrol hunts a PIRATE (aiTarget!=player) -> NO HUNTING YOU cue (false-positive guard §5.13.43)\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_hunted_none.bmp");
+        game.setFactionRelation(game.playerFaction, stFac, 0);     // восстановить нейтраль (гигиена для будущих сцен)
+    }
+
+    // (30) КРАЕВОЙ ОХОТНИК (§5.13.43): покрытие OFF-SCREEN ветки cue — краевого маркера `nearHunt` (адверсарное
+    //      ревью §5.13.43, item #3: on-screen пара #28/#29 не задевала off-screen путь `localdraw.cpp` nearHunt-
+    //      селектор/draw). ТОТ ЖЕ Enemy-патруль-охотник (`aiTarget=LOCAL_TARGET_PLAYER`, `hostile=false`), но нос
+    //      камеры ОТВЁРНУТ от борта ⇒ патруль ЗА КАДРОМ ⇒ on-screen подпись `HUNTING YOU` не рисуется, зато
+    //      `drawEdgeMarker` клампит точку на ободок экрана и рисует стрелку цветом стояния (Enemy — багровый).
+    //      `nearHunt` DISJOINT со старым `nearHos` (тот требует `hostile`) ⇒ ноль двойного маркера. Ноль полей/RNG/шага sim.
+    //      NB для ревьюера: БАГРОВАЯ стрелка на ПРАВОМ ободке = искомый `nearHunt`; зелёная слева = штатный указатель на
+    //      ближайший off-screen рынок (`nearMkt`, `localdraw.cpp`) — ортогонален срезу, ложится из `buildLocalScene`.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 1) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(1);
+        const int stFac = 0;
+        game.setFactionRelation(game.playerFaction, stFac, -100);  // ENEMY — тот же тир, что #28
+        LocalCraft& pat = s.craft[0];                  // тот же охотник по стоянию, что #28
+        pat.kind = CK_PATROL; pat.label = "PATROL"; pat.faction = stFac; pat.r = 110; pat.g = 215; pat.b = 170;
+        pat.hostile = false; pat.defending = false; pat.underAttack = false; pat.wanted = false;
+        pat.aiState = 1; pat.aiTarget = LOCAL_TARGET_PLAYER;
+        pat.errand = 0; pat.errandBody = -1;
+        pat.x = 8000.0; pat.y = 0.0; pat.z = 150.0; pat.vx = pat.vy = pat.vz = 0.0;   // борт на +X от камеры
+        pat.maxHullHP = 70.0; pat.hullHP = pat.maxHullHP; pat.maxShield = 20.0; pat.shield = 20.0;
+        s.px = 7080.0; s.py = -140.0; s.pz = 250.0; s.pvx = s.pvy = s.pvz = 0.0;
+        localSetForward(s, 0.4, 0.9, 0.0);             // нос ОТВёрнут от патруля (тот на +X) ⇒ борт уходит за правый край
+        s.targetCraft = -1;                            // цель не задана: фокус на КРАЕВОЙ стрелке, а не на панели
+        s.fxClock = 0.30;
+        std::printf("  [hunted-edge] off-screen standing-hunter -> nearHunt edge arrow in standing colour (§5.13.43 off-screen path)\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_hunted_edge.bmp");
+        game.setFactionRelation(game.playerFaction, stFac, 0);     // восстановить нейтраль (гигиена)
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);

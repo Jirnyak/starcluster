@@ -618,6 +618,19 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         else if (haveAtk) c.aiState = 1;
         else              c.aiState = 0;
 
+        // (§5.13.43) Пломбировка цели для РЕНДЕРА. Поле aiTarget до сих пор было мёртвым: только init=-1
+        //   в localgen.cpp (194/456/494/522), НИГДЕ в симуляции не читается (стр. 638/658 читают atkCraft
+        //   и aiState, НЕ aiTarget — проверено grep'ом). Заполняем его документированным значением
+        //   (local.h:246): при активной атаке (aiState==1) — LOCAL_TARGET_PLAYER, если цель — игрок, иначе
+        //   индекс боевой цели; вне атаки — -1. Это ЧИСТО read-only для симуляции ⇒ 0 влияния на поведение
+        //   ⇒ соак остаётся побитово идентичным. Единственный потребитель — кокпит-подсказка «HUNTING YOU»
+        //   (localdraw.cpp §5.13.43): для CK_PATROL справедливо aiState==1 && aiTarget==LOCAL_TARGET_PLAYER
+        //   && !hostile  ⟺  сработал override §5.13.42 по СТОЯНИЮ (единственный путь atkPlayer=true в ветке
+        //   CK_PATROL — стр. 574; стр. 402 — только CK_PIRATE, стр. 579 — только CK_TRADER/CIVILIAN).
+        c.aiTarget = (c.aiState == 1) ? (atkPlayer ? LOCAL_TARGET_PLAYER
+                                                   : (atkCraft >= 0 ? atkCraft : -1))
+                                      : -1;
+
         // (§5.13.11) Разметка бедствия: пират в состоянии атаки на КОНКРЕТНЫЙ не-пиратский борт
         //   (atkCraft>=0, не игрок). Флаги очищены в пре-проходе выше, ставим здесь — на решения ИИ
         //   не влияют, поэтому порядок обработки безопасен. Индекс жертвы стабилен (удаление отложено
