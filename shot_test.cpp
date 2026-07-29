@@ -1067,6 +1067,44 @@ int main(int argc, char** argv) {
         game.setFactionRelation(game.playerFaction, stFac, 0);     // гигиена
     }
 
+    // (33) СТАЯ ЗАКОНА (§5.13.47): render-спутник §5.13.46. ТРИ неспровоцированных патруля-охотника по стоянию
+    //      (hostile=false, aiState=1, aiTarget=LOCAL_TARGET_PLAYER — в игре так бывает ТОЛЬКО через §5.13.42/.46)
+    //      ⇒ (a) верх-центр загорается баннер «PACK HUNT X3» тоном самого ГОРЯЧЕГО охотника (worst-enemy задаёт
+    //      накал), (b) на радаре от блипа КАЖДОГО охотника тянется цветная НИТЬ к центру (=игрок) — «сеть стаи
+    //      затягивается», (c) над каждым бортом — штатная подпись «HUNTING YOU» (§5.13.43/.45). Два охотника
+    //      фракции 0 на ДНЕ репутации (−128 ⇒ heat 1 ⇒ бело-калёные), третий фракции 1 при −70 (heat ≈0.28 ⇒
+    //      теплее, но не белый) ⇒ видно, что нити красятся ПОФАКТОРНО, а баннер берёт максимум. Контраст к N=1
+    //      (баннер молчит, одна нить) уже даёт shot_hunted_standing (#28), к N=0 — shot_hunted_none (#29).
+    //      Ноль полей/RNG/шага sim (aiTarget зеркалит симуляцию; §0.2-G — только чтение репутации).
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 3) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(3);                             // три борта-охотника
+        const int facHot = 0, facWarm = 1;            // валидные NPC-фракции != playerFaction
+        game.setFactionRelation(game.playerFaction, facHot,  -128); // ДНО => heat 1.0 => бело-калёный + баннер-максимум
+        game.setFactionRelation(game.playerFaction, facWarm,  -70); // выше −48, но теплее белого (heat ≈0.28)
+        for (int k = 0; k < 3; ++k) {                  // общий каркас охотника (позиции/фракции ниже)
+            LocalCraft& p = s.craft[k];
+            p.kind = CK_PATROL; p.label = "PATROL"; p.r = 110; p.g = 215; p.b = 170;
+            p.hostile = false; p.defending = false; p.underAttack = false; p.wanted = false;
+            p.aiState = 1; p.aiTarget = LOCAL_TARGET_PLAYER;   // взяли ИГРОКА целью (в игре — §5.13.42/.46)
+            p.errand = 0; p.errandBody = -1; p.vx = p.vy = p.vz = 0.0;
+            p.maxHullHP = 70.0; p.hullHP = p.maxHullHP; p.maxShield = 20.0; p.shield = 20.0;
+        }
+        s.craft[0].faction = facHot;  s.craft[0].x = 8000.0; s.craft[0].y =    0.0; s.craft[0].z = 150.0; // в фокусе, крупно
+        s.craft[1].faction = facHot;  s.craft[1].x = 8150.0; s.craft[1].y =  250.0; s.craft[1].z = 260.0; // второй бело-калёный
+        s.craft[2].faction = facWarm; s.craft[2].x = 8050.0; s.craft[2].y = -220.0; s.craft[2].z = 120.0; // тёплый (фракция 1)
+        s.px = 7080.0; s.py = -140.0; s.pz = 250.0; s.pvx = s.pvy = s.pvz = 0.0;   // все ~0.9..1.1k LU => на радаре (<1400)
+        localSetForward(s, 8000.0 - s.px, 0.0 - s.py, 150.0 - s.pz);              // нос на ближний охотник
+        s.targetCraft = 0;                             // цель — ближний => панель STANDING ENEMY -128 для контекста
+        s.fxClock = 0.1415;                            // 11.1·t ≈ π/2 => пик резкого пульса => яркий баннер/нити
+        std::printf("  [pack-hunt] three standing-hunters -> PACK HUNT X3 banner + radar threads to player (§5.13.47)\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_pack_hunt.bmp");
+        game.setFactionRelation(game.playerFaction, facHot,  0);   // гигиена репутации для будущих сцен
+        game.setFactionRelation(game.playerFaction, facWarm, 0);
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);

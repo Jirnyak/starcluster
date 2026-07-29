@@ -2363,6 +2363,29 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         drawText(renderer, cx - textWidth(scene.toast, 2) / 2, 24, scene.toast, P.text, 2);
     }
 
+    // (§5.13.47) СТАЯ ЗАКОНА — заголовок-тревога сверху по центру: сколько патрулей СЕЙЧАС охотятся на игрока
+    //   по СТОЯНИЮ (§5.13.42/.46). Показываем ТОЛЬКО при N>=2 — это и есть «стая» §5.13.46; одиночку уже
+    //   озвучивает per-craft cue «HUNTING YOU» (§5.13.43), потому не дублируем. Тон — самый ГОРЯЧИЙ жар вендетты
+    //   (§5.13.45) среди стаи (worst-enemy задаёт накал), темп/яркость — как on-screen cue (7.4+heat·3.7). Общий
+    //   предикат huntsPlayerByStanding + vendettaHuntColor (анти-дрейф с cue/маркером), ноль полей/RNG; soak сцену
+    //   не рисует ⇒ бейзлайн побитово цел; §0.2-G тривиально (чистый рендер, лишь чтение репутации).
+    {
+        int packN = 0; double maxHeat = 0.0; SDL_Color packCol = P.red;
+        for (size_t i = 0; i < scene.craft.size(); ++i) {
+            if (!huntsPlayerByStanding(scene.craft[i])) continue;
+            ++packN;
+            double heat; SDL_Color hc = vendettaHuntColor(game, scene.craft[i], heat);
+            if (heat >= maxHeat) { maxHeat = heat; packCol = hc; }   // самый горячий охотник задаёт тон баннера
+        }
+        if (packN >= 2) {
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * (7.4 + maxHeat * 3.7));  // темп == on-screen cue §5.13.45
+            int a = 150 + int(maxHeat * 50.0) + int(pl * 55.0);                       // 150..255, ярче с жаром
+            if (a > 255) a = 255;
+            std::snprintf(buf, sizeof(buf), "PACK HUNT X%d", packN);
+            drawText(renderer, cx - textWidth(buf, 2) / 2, 46, buf, rgba(packCol.r, packCol.g, packCol.b, a), 2);
+        }
+    }
+
     // Низ-СПРАВА: РАДАР / ДЕТЕКТОР. Тактический вид от кабины: ось вперёд (pfwd) —
     // ВВЕРХ радара, ось right (pfwd×pup) — вправо. Контакт впереди по курсу -> вверх.
     {
@@ -2443,6 +2466,23 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 4.2);
             SDL_SetRenderDrawColor(renderer, 120, 180, 255, 45 + int(pl * 120.0));
             SDL_RenderDrawLine(renderer, ax, ay, qx, qy);
+        }
+
+        // (§5.13.47) НИТИ СТАИ ЗАКОНА: от блипа КАЖДОГО патруля-охотника по стоянию (§5.13.42/.46) к ЦЕНТРУ
+        //   радара (= игрок), тоном жара вендетты (§5.13.45) этого охотника. При N>=2 нити сходятся к центру —
+        //   «сеть стаи затягивается на тебе»; заодно чинит слепое пятно радара: неспровоцированный охотник —
+        //   !hostile ⇒ прежде тускло-серый блип (§5.13.27), не отличим от мирного трафика — теперь помечен
+        //   цветной нитью к тебе. Тот же общий предикат huntsPlayerByStanding и тот же radarXY/базис, что блипы.
+        //   После подмоги (синь) ⇒ на пересечении нить поверх; ДО цикла блипов ⇒ точки контактов остаются сверху.
+        //   Чистый рендер, ноль полей/RNG; §0.2-G тривиально.
+        for (size_t i = 0; i < scene.craft.size(); ++i) {
+            const LocalCraft& c = scene.craft[i];
+            if (!huntsPlayerByStanding(c)) continue;
+            int ax, ay; radarXY(c, ax, ay);
+            double heat; SDL_Color hc = vendettaHuntColor(game, c, heat);
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * (7.4 + heat * 3.7) + double(i) * 0.7); // == on-screen cue §5.13.45
+            SDL_SetRenderDrawColor(renderer, hc.r, hc.g, hc.b, 55 + int(pl * 130.0));
+            SDL_RenderDrawLine(renderer, ax, ay, rcx, rcy);
         }
 
         // Корабли: мелкие точки (враг красный, иначе серый).
