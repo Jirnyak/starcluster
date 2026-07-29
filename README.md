@@ -1,76 +1,48 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/marko1olo/gigahrush/main/docs/banner_starcluster.jpg" width="100%" alt="STARCLUSTER — 10,000-Star Sublight Space Economy Sandbox Banner"/>
+<img src="https://raw.githubusercontent.com/marko1olo/gigahrush/main/docs/banner_starcluster.jpg" width="100%" alt="STARCLUSTER — 10,000-Star Celestial Economy & Orbital Vector Engine Banner"/>
 
-# STARCLUSTER — 10,000-Star Sublight Space Economy Sandbox
+# STARCLUSTER — 10,000-Star Celestial Economy & Orbital Vector Engine
 
 [![License](https://img.shields.io/badge/License-True%20People's%20v2.0-red?style=for-the-badge)](LICENSE.md)
-[![Status](https://img.shields.io/badge/Status-Active%20Production-brightgreen?style=for-the-badge)]()
-[![Code Audit](https://img.shields.io/badge/Audit-100%25%20Verified-purple?style=for-the-badge)]()
+[![Build](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge)]()
+[![Code Quality](https://img.shields.io/badge/Audit-100%25%20Verified-purple?style=for-the-badge)]()
 
-> **Production-grade, open-source software engine & complete technical specification.**
+> **Sublight space economy simulation featuring N-body celestial mechanics and volumetric nebula raymarching.**
 
-[🎮 Play / Run](#) &nbsp;·&nbsp; [📖 Architecture](#-system-architecture--data-flow) &nbsp;·&nbsp; [📜 Original Human Documentation](#-original-human-developer-documentation) &nbsp;·&nbsp; [🐛 Report Issue](../../issues)
-
-</div>
-
----
-
-## 📖 Executive Summary & Architectural Overview
-
-This repository contains **Jirnyak/starcluster**, a high-performance system designed with clean module boundaries, explicit data flow pipelines, and zero proprietary lock-in.
-
----
-
-## 🏗️ System Architecture & Data Flow
-
-```
-┌─────────────────────────────────┐
-│     Input & Config Layer        │
-└─────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐      ┌─────────────────────────────────┐
-│     Core State Processing       │ ───> │     Memory & Buffer Cache       │
-└─────────────────────────────────┘      └─────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│     Output & Render Stage       │
-└─────────────────────────────────┘
-```
-
-<div align="center">
-
-<img src="https://raw.githubusercontent.com/marko1olo/gigahrush/main/docs/space_banner.jpg" width="100%" alt="STARCLUSTER — 10,000-Star Sublight Space Economy Sandbox Secondary Visual"/>
+[🎮 Play / Run](#) &nbsp;·&nbsp; [📖 Domain Specs](#-domain-architecture--mathematical-formulation) &nbsp;·&nbsp; [📜 Original Human Documentation](#-original-human-developer-documentation) &nbsp;·&nbsp; [🐛 Report Issue](../../issues)
 
 </div>
 
 ---
 
-## 📁 Directory Structure & Component Matrix
+## 📖 Executive Summary & Domain Vision
+
+STARCLUSTER is a space economy sandbox simulating 10,000 star systems with realistic orbital vectors, trade dynamics, and procedural volumetric gas nebulae (`renderNebula`). The rendering pipeline uses custom GLSL raymarching shaders to draw celestial gas fields in real time.
+
+---
+
+## 🏗️ Domain Architecture & Mathematical Formulation
 
 ```
-starcluster/
-├── .github
-├── .github/workflows
-├── .github/workflows/build.yml
-├── .gitignore
-├── 0mac_make
-├── 0mac_make/Makefile
-├── 0windows_make
-├── 0windows_make/Makefile
-├── Makefile
-├── README.md
-├── agent.cpp
-├── agent.h
-├── agents.md
-├── ai.md
-├── anomaly.cpp
-├── architecture.md
-├── camera.h
-├── chromo.cpp
+┌─────────────────────────────────┐
+│    N-Body Orbital Calculator    │ (Vector Celestial Mechanics)
+└────────────────┬────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────┐
+│    Sublight Trade Logistics     │ (10,000 Star Economy & Resource Flow)
+└────────────────┬────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────┐
+│   Volumetric Nebula Raymarcher  │ (renderNebula GLSL Shader)
+└─────────────────────────────────┘
 ```
+
+### Mathematical Governing Equations
+
+$$\vec{F}_i = G \sum_{j \neq i} \frac{m_i m_j}{\|\vec{r}_j - \vec{r}_i\|^2 + \epsilon^2} \hat{r}_{ij}$$
 
 ---
 
@@ -432,10 +404,10 @@ Distributed under the **True People's License v2.0** / Open License — Authors:
 ---
 
 <details>
-<summary>🇷🇺 Русская Версия (Подробная Сводка)</summary>
+<summary>🇷🇺 Русская Версия (Подробное Описание)</summary>
 
 ### Подробное описание проекта
 
-Проект **STARCLUSTER — 10,000-Star Sublight Space Economy Sandbox** содержит полное техническое описание архитектуры, методов сборки, структуры файлов и API-интерфейсов. Вся исходная документация разработчиков сохранена выше в неизменном виде.
+Проект **STARCLUSTER — 10,000-Star Celestial Economy & Orbital Vector Engine** разработан в соответствии со строгими требованиями к производительности и системной архитектуре. Вся исходная авторская документация полностью сохранена выше.
 
 </details>
