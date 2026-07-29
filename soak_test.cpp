@@ -956,7 +956,67 @@ int main() {
     }
     if (!copKillRaisesBountyOk) { std::printf("INVARIANT FAIL: §5.13.38 cop-kill bounty did not escalate or leaked when not quarry\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s rocks=%ld shiny=%ld trades=%ld\n",
+    // (§5.13.42) ЗАКОН, КОТОРЫЙ ТЫ ПЕРЕШЁЛ, ОХОТИТСЯ НА ТЕБЯ: патруль фракции F берёт ИГРОКА целью БЕЗ провокации,
+    //   если игрок стоит с F на тире Enemy/Hostile (реп ≤ −48, тот же классификатор, что §5.13.37/§5.13.40/§5.13.41).
+    //   Правило — расширение гейта предпочтения игрока в ветке CK_PATROL. В ОСНОВНОМ 120k-цикле ветка не бежит:
+    //   18 воен-агентов init() стоят гарнизонами на controlledStars (разбросаны по кластеру-1200: 78/792/1073/…),
+    //   disjoint фикс-маршруту soak {-1,0,1,2,3,5,7,11,23,99}; co-location гейт currentStar==звезда (localgen.cpp:438)
+    //   ⇒ patrols=0 на всех 10 (замерено врем. инструментом) ⇒ 120k-бейзлайн выше побитово цел; изолир. пробник —
+    //   единственное headless-покрытие. Сцена = РОВНО один борт: патруль фракции F (resize(1) ⇒ ни пиратов, ни иных
+    //   целей), НЕспровоцированный (hostile=false каждый кадр, игрок не стреляет), здоровый неподвижный, пиньнется в
+    //   300 LU (>WEAPON_RANGE 150 ⇒ огонь не достаёт, сцена чистая; <AW2 750 ⇒ игрок в осведомлённости). Пиратов
+    //   нет ⇒ P0/подмога/рейдер/фолбэк пусты ⇒ единственная возможная цель — игрок, единственный триггер — СТОЯНИЕ.
+    //   Наблюдаем aiState (прямой выход решения о цели: 1=есть цель). (A) реп −100 (Enemy) ⇒ патруль берёт игрока
+    //   (aiState==1). (B, контроль) реп 0 (Neutral) ⇒ цели нет ⇒ простаивает (aiState==0). Баг «всегда охотится»
+    //   валит B; баг «никогда» валит A ⇒ проба доказывает, что триггер — именно СТОЯНИЕ, а не провокация.
+    bool lawHuntsHostileOk = false;
+    {
+        Game glh; glh.init(1200);
+        int pf = glh.playerFaction;
+        int F = -1;
+        for (int f = 0; f < (int)glh.factions.size(); ++f) if (f != pf) { F = f; break; }
+        int star = -1;
+        for (int s : stars) { if (s >= 0) { star = s; break; } }
+        bool aOk = false, bReached = false, bViolated = false;
+        if (pf >= 0 && F >= 0 && star >= 0) {
+            const int SEEDS[2] = { -100, 0 };            // (A) Enemy (охота) ; (B) Neutral (контроль — простой)
+            for (int phase = 0; phase < 2; ++phase) {
+                LocalScene ss;
+                buildLocalScene(glh, star, ss);
+                ss.active = true;
+                while (ss.craft.size() < 1) { LocalCraft nc; ss.craft.push_back(nc); }
+                ss.craft.resize(1);
+                LocalCraft& P = ss.craft[0];                 // ПАТРУЛЬ фракции F, НЕ спровоцирован
+                P.kind = CK_PATROL; P.hostile = false; P.faction = F; P.agentIndex = -1;
+                P.heavy = 60.0; P.light = 0.0; P.wanted = false;
+                P.maxHullHP = 100000.0; P.hullHP = 100000.0;
+                P.maxShield = 0.0; P.shield = 0.0; P.fireCooldown = 0.0;
+                int cur = glh.factionRelation(pf, F);
+                glh.adjustFactionRelation(pf, F, SEEDS[phase] - cur);   // посев: rep(pf,F) = SEEDS[phase]
+                for (int f = 0; f < 60; ++f) {
+                    if (!ss.craft.empty() && ss.craft[0].kind == CK_PATROL) {
+                        LocalCraft& p = ss.craft[0];
+                        p.x = ss.px; p.y = ss.py + 300.0; p.z = ss.pz;   // 300 LU: >WEAPON_RANGE, <AW2 (в осведомлённости)
+                        p.vx = p.vy = p.vz = 0.0;
+                        p.hullHP = p.maxHullHP; p.shield = 0.0; p.hostile = false;   // держим НЕспровоцированным
+                    }
+                    LocalInput in; in.fire = false;                     // игрок НЕ стреляет ⇒ провокации нет
+                    updateLocalScene(glh, ss, in, dtReal);
+                    if (!ss.craft.empty()) {
+                        if (phase == 0 && ss.craft[0].aiState == 1) aOk = true;                 // (A) взял игрока целью
+                        if (phase == 1) { bReached = true; if (ss.craft[0].aiState == 1) bViolated = true; }
+                    }
+                }
+            }
+        }
+        bool bOk = bReached && !bViolated;
+        lawHuntsHostileOk = aOk && bOk;
+        std::printf("law-hunts-hostile probe: huntsAtEnemyStanding=%s idleAtNeutral=%s\n",
+                    aOk ? "YES (ok)" : "NO", bOk ? "YES (ok)" : "NO");
+    }
+    if (!lawHuntsHostileOk) { std::printf("INVARIANT FAIL: §5.13.42 hostile-standing patrol did not hunt player, or hunted at neutral\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s lawHuntsHostile=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
@@ -967,6 +1027,7 @@ int main() {
                 lawGratitudeOk ? "ok" : "FAILED",
                 copKillRaisesBountyOk ? "ok" : "FAILED",
                 factionReprisalOk ? "ok" : "FAILED",
+                lawHuntsHostileOk ? "ok" : "FAILED",
                 rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }
