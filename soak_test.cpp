@@ -581,13 +581,82 @@ int main() {
     }
     if (!patrolBacksUpSwarmedOk) { std::printf("INVARIANT FAIL: §5.13.32 patrol backup did not fire or was not gated\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s rocks=%ld shiny=%ld trades=%ld\n",
+    // --- Детерминированная проверка §5.13.34: ОБЛАВА — закон гонится за одиозной дичью быстрее ---
+    // manhuntSpeedMult поднимает потолок скорости патруля, ведущего P0-охоту на живого `wanted`-пирата,
+    //   пропорционально награде за голову (250→1500 CR ⇒ ×1.0→×(1+GAIN)). Гейт CK_PATROL — в замороженном
+    //   мире патрулей нет ⇒ 120k-бейзлайн выше побитово цел; этот пробник — единственное headless-покрытие.
+    //   Свежий Game. Две ФАЗЫ, идентичные во всём КРОМЕ награды: патруль в 0, розыскной пират на 1200 LU
+    //   (<1400 ⇒ P0-охота; >95 ⇒ прямая погоня, не страйф; >150 ⇒ никто не стреляет, индексы стабильны;
+    //   патруль полнокорпусный ⇒ не бежит, threatScan только для торговцев). Позицию патруля пиним в 0
+    //   каждый кадр (цель всегда на +X ⇒ скорость копится в одну сторону, насыщаясь на effMax), но
+    //   СКОРОСТЬ НЕ трогаем (в отличие от прочих пробников — тут нужен разгон). Меряем max|v|. (A) награда
+    //   1500 ⇒ терминальная скорость ≈ maxSpeed·(1+GAIN). (B) награда 250 ⇒ ровно maxSpeed (нулевой регресс
+    //   = «без облавы»). Ядро: A строго быстрее B. Эталоны берём из LocalCfg::MANHUNT_SPEED_GAIN (устойчиво
+    //   к тюнингу). Пират/не-патруль НЕ ускоряется — это доказывает побитовый 120k-бейзлайн (пираты в нём
+    //   движутся; изменись их скорость — числа поплыли бы).
+    bool manhuntScalesWithBountyOk = false;
+    {
+        Game g8; g8.init(1200);
+        int star = -1;
+        for (int s : stars) { if (s >= 0) { star = s; break; } }
+        double vmax[2] = {0.0, 0.0};
+        const double MAXS = 60.0;
+        if (star >= 0) {
+            for (int phase = 0; phase < 2; ++phase) {          // 0 = высокая награда (1500); 1 = минимальная (250)
+                LocalScene s;
+                buildLocalScene(g8, star, s);
+                s.active = true;
+                while (s.craft.size() < 2) { LocalCraft nc; s.craft.push_back(nc); }
+                s.craft.resize(2);
+                {
+                    LocalCraft& pat = s.craft[0];              // патруль-охотник (в соаке таких нет — тут вручную)
+                    pat.kind = CK_PATROL; pat.hostile = false; pat.faction = -1; pat.agentIndex = -1;
+                    pat.heavy = 60.0; pat.light = 0.0;
+                    pat.maxSpeed = MAXS; pat.accel = 300.0;    // быстрое насыщение до effMax за единицы кадров
+                    pat.maxHullHP = 100000.0; pat.hullHP = 100000.0;
+                    pat.maxShield = 0.0; pat.shield = 0.0; pat.fireCooldown = 0.0; pat.wanted = false; pat.boost = 0.0;
+                    LocalCraft& outlaw = s.craft[1];           // розыскной — задаёт «жар» облавы наградой
+                    outlaw.kind = CK_PIRATE; outlaw.hostile = true; outlaw.faction = -1; outlaw.agentIndex = -1;
+                    outlaw.wanted = true; outlaw.wantedBounty = (phase == 0) ? 1500.0 : 250.0;
+                    outlaw.maxHullHP = 100000.0; outlaw.hullHP = 100000.0;
+                    outlaw.maxShield = 0.0; outlaw.shield = 0.0; outlaw.shieldRegenTimer = 999.0;
+                }
+                s.px = 100000.0; s.py = 0.0; s.pz = 0.0; s.pvx = s.pvy = s.pvz = 0.0;
+                for (int f = 0; f < 120; ++f) {
+                    LocalCraft& p0 = s.craft[0]; LocalCraft& o1 = s.craft[1];
+                    p0.x = 0.0; p0.y = 0.0; p0.z = 0.0;        // пин ПОЗИЦИИ (но НЕ скорости — нужен разгон)
+                    p0.hullHP = p0.maxHullHP; p0.shield = 0.0; p0.boost = 0.0;
+                    o1.x = 1200.0; o1.y = 0.0; o1.z = 0.0; o1.vx = o1.vy = o1.vz = 0.0;  // <1400 ⇒ P0; >150 ⇒ без стрельбы
+                    o1.hullHP = o1.maxHullHP; o1.shield = 0.0; o1.shieldRegenTimer = 999.0;
+                    LocalInput in;
+                    updateLocalScene(g8, s, in, dtReal);
+                    if (!s.craft.empty()) {
+                        LocalCraft& q = s.craft[0];
+                        double cs = std::sqrt(q.vx*q.vx + q.vy*q.vy + q.vz*q.vz);
+                        if (cs > vmax[phase]) vmax[phase] = cs;
+                    }
+                }
+            }
+        }
+        double expHigh = MAXS * (1.0 + LocalCfg::MANHUNT_SPEED_GAIN);
+        double expLow  = MAXS;                                  // heat=0 при награде 250 ⇒ множитель 1.0
+        bool highOk  = std::fabs(vmax[0] - expHigh) < 1.5;      // ускорен пропорционально награде
+        bool lowOk   = std::fabs(vmax[1] - expLow)  < 1.0;      // нулевой регресс: ровно maxSpeed
+        bool orderOk = vmax[0] > vmax[1] + 1.0;                 // ядро: облава реально ускоряет закон
+        manhuntScalesWithBountyOk = highOk && lowOk && orderOk;
+        std::printf("manhunt-scales-with-bounty probe: highBounty=%.2f (exp %.2f) lowBounty=%.2f (exp %.2f) faster=%s\n",
+                    vmax[0], expHigh, vmax[1], expLow, orderOk ? "yes (ok)" : "no");
+    }
+    if (!manhuntScalesWithBountyOk) { std::printf("INVARIANT FAIL: §5.13.34 manhunt speed scaling did not fire or regressed baseline\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
                 patrolHuntsWantedOk ? "ok" : "FAILED",
                 packRalliesOutlawOk ? "ok" : "FAILED",
                 patrolBacksUpSwarmedOk ? "ok" : "FAILED",
+                manhuntScalesWithBountyOk ? "ok" : "FAILED",
                 rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }

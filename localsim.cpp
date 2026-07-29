@@ -21,6 +21,35 @@ static void rodriguesRotate(double& vx, double& vy, double& vz,
     vx = nx; vy = ny; vz = nz;
 }
 
+// (§5.13.34) «Облава» — множитель предельной скорости патруля, ведущего P0-охоту на розыскного.
+//   Ре-деривация паттерна D (как рендер-лямбды §5.13.29/31/33): повторяет P0-скан ИИ дословно —
+//   ближайший ЖИВОЙ `wanted` CK_PIRATE в радиусе PATROL_DISTRESS_R (строгое `<`, строки 427-436).
+//   Так цель совпадает с фактическим atkCraft патруля ПО ПОСТРОЕНИЮ: P0 вытесняет все младшие
+//   тиры (else-каскад), значит наличие розыскного в радиусе ⇒ патруль гонится именно за ним.
+//   Ворота на `defending`: P0 ставит defending=true (стр.438), а редкий player-override (стр.523)
+//   и бегство/низкий корпус (aiState≠1 ⇒ стр.580) его ГАСЯТ — поэтому гейт отсекает ровно те случаи,
+//   где патруль летит НЕ на розыскного. Множитель растёт с наградой за голову (250→1500 CR ⇒ 1.0→
+//   1+GAIN): громкая слава = неотвратимый закон. Не-патруль / нет розыскного в радиусе / малая
+//   награда ⇒ 1.0 (нулевой регресс). Ноль RNG, без новых полей, ПИРАТА не трогаем (combat-инвариант).
+static double manhuntSpeedMult(const LocalScene& scene, int ci) {
+    const LocalCraft& c = scene.craft[ci];
+    if (c.kind != CK_PATROL || !c.defending || c.hullHP <= 0.0) return 1.0;
+    double best = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
+    int pir = -1;
+    for (size_t j = 0; j < scene.craft.size(); ++j) {
+        if ((int)j == ci) continue;
+        const LocalCraft& o = scene.craft[j];
+        if (o.hullHP <= 0.0 || o.kind != CK_PIRATE || !o.wanted) continue;
+        double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+        double d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 < best) { best = d2; pir = (int)j; }
+    }
+    if (pir < 0) return 1.0;                       // патруль defending, но не на розыскного (рейдер §5.13.12) — без облавы
+    double heat = (scene.craft[pir].wantedBounty - 250.0) / (1500.0 - 250.0);
+    if (heat < 0.0) heat = 0.0; else if (heat > 1.0) heat = 1.0;
+    return 1.0 + LocalCfg::MANHUNT_SPEED_GAIN * heat;
+}
+
 // ============================================================================
 //  Один кадр локальной сцены: полёт игрока, орбиты, стрельба, умный ИИ NPC, бой
 //  (со щитами и убиваемым игроком), дрейф пояса, лут, частицы-juice, добыча руды
@@ -847,7 +876,8 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                 c.vy += dy * inv * c.accel * h;
                 c.vz += dz * inv * c.accel * h;
             }
-            double effMax = c.maxSpeed * ((c.boost > 0.0) ? LocalCfg::NPC_BOOST_MULT : 1.0);
+            double effMax = c.maxSpeed * ((c.boost > 0.0) ? LocalCfg::NPC_BOOST_MULT : 1.0)
+                          * manhuntSpeedMult(scene, (int)i);  // (§5.13.34) облава: закон резвее на крупной дичи
             double cs = std::sqrt(c.vx*c.vx + c.vy*c.vy + c.vz*c.vz);
             if (cs > effMax && cs > 1e-9) {
                 double f = effMax / cs;
