@@ -1577,12 +1577,22 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         double llen = std::sqrt(lx * lx + ly * ly);
         if (llen < 2.0) continue;
         double ux = lx / llen, uy = ly / llen;
+        // (§5.13.35) ЖАР ОБЛАВЫ: тот же heat, что калит скорость патруля в sim (§5.13.34,
+        //   manhuntSpeedMult), выведен ЗДЕСЬ из награды дичи (приём D — pursuitQuarry уже дал
+        //   её индекс q, так что qc — ровно тот пират, чья награда движет облавой). Чем крупнее
+        //   награда, тем горячее трасса: тон калится к бело-калёному, ярче базовая альфа, штрихи
+        //   бегут быстрее (×1.5 при потолке — зеркало прибавки скорости §5.13.34). heat=0 (награда
+        //   на полу 250) ⇒ РОВНО прежнее золото/марш 34 (нулевой визуальный регресс).
+        double heat = (qc.wantedBounty - 250.0) / (1500.0 - 250.0);
+        if (heat < 0.0) heat = 0.0; else if (heat > 1.0) heat = 1.0;
         double pulse = 0.55 + 0.45 * std::sin(scene.fxClock * 5.2);
-        SDL_Color gold = rgba(255, 205, 60, 70 + int(pulse * 150.0));
+        SDL_Color gold = rgba(255, 205 + int(heat * 50.0), 60 + int(heat * 195.0),
+                              70 + int(heat * 50.0) + int(pulse * 150.0));
         SDL_SetRenderDrawColor(renderer, gold.r, gold.g, gold.b, gold.a);
-        // маршевые штрихи patrol→quarry (период 18 px, штрих 9 px), фаза бежит от fxClock
+        // маршевые штрихи patrol→quarry (период 18 px, штрих 9 px), фаза бежит от fxClock;
+        // (§5.13.35) скорость марша растёт с жаром: 34→51 (×1.5) на потолке награды
         const double period = 18.0, dash = 9.0;
-        double phase = std::fmod(scene.fxClock * 34.0, period);
+        double phase = std::fmod(scene.fxClock * (34.0 + heat * 17.0), period);
         int guard = 0;
         for (double s = -phase; s < llen && guard < 240; s += period, ++guard) {
             double a0 = s < 0.0 ? 0.0 : s;
@@ -2103,7 +2113,7 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         int ph = hasShield ? 72 : 60;
         if (wnt) ph += 14;                // (§5.13.25) место под строку «BOUNTY N CR» под корпусом
         const int tPursuit = esc ? pursuitQuarry(scene.targetCraft) : -1;  // (§5.13.29) кого преследует патруль
-        if (tPursuit >= 0) ph += 14;      // место под строку «IN PURSUIT …» под корпусом
+        if (tPursuit >= 0) ph += 28;      // (§5.13.29/35) место под «IN PURSUIT …» + «MANHUNT N CR»
         int packN = 0;                    // (§5.13.31) сколько простаивающих пиратов сбегается таранить ЭТОТ патруль
         if (esc) for (size_t j = 0; j < scene.craft.size(); ++j) if (rallyTarget((int)j) == scene.targetCraft) ++packN;
         if (packN > 0) ph += 14;          // место под строку «UNDER PACK Xn» под корпусом
@@ -2168,12 +2178,20 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             std::snprintf(buf, sizeof(buf), "BOUNTY %.0F CR", t.wantedBounty);
             drawText(renderer, tx + 8, by, buf, rgba(255, 205, 60, 255), 1);
         }
-        if (tPursuit >= 0) {   // (§5.13.29) закон ведёт охоту — под корпусом, кого именно преследует патруль
-            by += 12;
+        if (tPursuit >= 0) {   // (§5.13.29) закон ведёт охоту — кого преследует патруль; (§5.13.35) + жар облавы
             const LocalCraft& qy = scene.craft[tPursuit];
+            // (§5.13.35) heat дичи — тот же, что sim-скорость §5.13.34 и золотой вектор погони:
+            //   строки калятся к бело-калёному тем сильнее, чем крупнее награда преследуемого.
+            double heat = (qy.wantedBounty - 250.0) / (1500.0 - 250.0);
+            if (heat < 0.0) heat = 0.0; else if (heat > 1.0) heat = 1.0;
+            SDL_Color hot = rgba(255, 205 + int(heat * 50.0), 60 + int(heat * 195.0), 255);
+            by += 12;
             std::snprintf(buf, sizeof(buf), "IN PURSUIT %s",
                           qy.label.empty() ? "WANTED" : qy.label.c_str());
-            drawText(renderer, tx + 8, by, buf, rgba(255, 205, 60, 255), 1);
+            drawText(renderer, tx + 8, by, buf, hot, 1);
+            by += 12;   // (§5.13.35) награда дичи глазами ЗАКОНА — не нужно перенаводиться на пирата
+            std::snprintf(buf, sizeof(buf), "MANHUNT %.0F CR", qy.wantedBounty);
+            drawText(renderer, tx + 8, by, buf, hot, 1);
         }
         if (packN > 0) {   // (§5.13.31) стая пиратов таранит этот патруль в защиту изгоя — сколько бортов
             by += 12;

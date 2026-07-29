@@ -760,6 +760,36 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_law_backup.bmp");
     }
 
+    // (23) ОБЛАВА (§5.13.35): draw-only спутник §5.13.34. defending-патруль (§5.13.28) преследует
+    //      РОЗЫСКНОГО пирата с МАКСИМАЛЬНОЙ наградой (1500 CR => heat=1). Золотой вектор погони
+    //      §5.13.29 КАЛИТСЯ ДОБЕЛА и штрихи бегут в ×1.5 быстрее (зеркало прибавки скорости патруля
+    //      §5.13.34), панель патруля показывает бело-золотые «IN PURSUIT PIRATE» + «MANHUNT 1500 CR».
+    //      Пара к shot_law_pursuit (там 650 CR => heat≈0.32, спокойное золото): рядом читается жар
+    //      облавы. Геометрия та же, что law-pursuit — меняется ТОЛЬКО награда. Ноль полей/RNG/шага sim.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 2) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(2);                             // ровно два борта: патруль + его розыскная жертва
+        LocalCraft& pat = s.craft[0];                  // ПАТРУЛЬ, ведущий охоту (defending)
+        pat.kind = CK_PATROL; pat.label = "PATROL"; pat.faction = 1; pat.r = 110; pat.g = 215; pat.b = 170;
+        pat.hostile = false; pat.defending = true; pat.aiState = 1; pat.errand = 0; pat.errandBody = -1;
+        pat.x = 560.0; pat.y = -20.0; pat.z = 200.0; pat.vx = pat.vy = pat.vz = 0.0;
+        pat.maxHullHP = 70.0; pat.hullHP = pat.maxHullHP; pat.maxShield = 20.0; pat.shield = 20.0;
+        LocalCraft& pir = s.craft[1];                  // РОЗЫСКНАЯ ЖЕРТВА — МАКС. награда => heat=1 (бело-калёный)
+        pir.kind = CK_PIRATE; pir.label = "PIRATE"; pir.faction = -1; pir.r = 230; pir.g = 90; pir.b = 80;
+        pir.hostile = true; pir.wanted = true; pir.wantedBounty = 1500.0;   // потолок §5.13.26 => heat=1
+        pir.aiState = 1; pir.errand = 0; pir.errandBody = -1;
+        pir.x = 650.0; pir.y = 60.0; pir.z = 165.0; pir.vx = pir.vy = pir.vz = 0.0;   // ~125 LU от патруля (<1400)
+        pir.maxHullHP = 45.0; pir.hullHP = pir.maxHullHP * 0.7;
+        s.px = 470.0; s.py = -150.0; s.pz = 250.0; s.pvx = s.pvy = s.pvz = 0.0;       // камера видит обоих
+        localSetForward(s, 605.0 - s.px, 20.0 - s.py, 182.0 - s.pz);                  // нос на середину пары
+        s.targetCraft = 0;                             // цель — патруль -> панель: ESCORT + IN PURSUIT + MANHUNT
+        s.fxClock = 0.30;                              // фаза золотого пульса/марша штрихов
+        std::printf("  [manhunt] defending patrol hunts MAX-bounty (1500 CR) pirate -> white-hot pursuit vector + MANHUNT panel\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_manhunt.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);
