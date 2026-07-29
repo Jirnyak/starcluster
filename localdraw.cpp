@@ -1009,6 +1009,24 @@ static bool huntsPlayerByStanding(const LocalCraft& c) {
            !c.hostile && c.hullHP > 0.0;
 }
 
+// (§5.13.45) ЖАР ВЕНДЕТТЫ → тон cue «HUNTING YOU»: базовый цвет стояния (standingCue, fallback P.red),
+//   калёный к бело-горячему тем сильнее, чем глубже минус фракции охотника к игроку. heat выведен draw-side
+//   из ЖИВОЙ репутации (приём D, как §5.13.35 калил вектор облавы по heat §5.13.34) и ПОБИТОВО совпадает с
+//   sim-формулой §5.13.44 (vendettaSpeedMult): −48 (порог Hostile / включения §5.13.42) ⇒ 0, −128 (дно) ⇒ 1.
+//   Тёплый анил (r почти цел, g/b тянутся к 255) ⇒ багрянец → бело-калёный, НЕ cyan. heat=0 ⇒ int(0·k)==0 ⇒
+//   РОВНО базовый цвет стояния (нулевой визуальный регресс к §5.13.43). Общий для on-screen cue (~1545) и
+//   off-screen маркера nearHunt (~2040), чтобы тон НЕ разъехался (та же анти-дрейф-дисциплина, что общий
+//   предикат huntsPlayerByStanding §5.13.43). rgba() клампит [0,255], потому переполнение r безопасно.
+static SDL_Color vendettaHuntColor(const Game& game, const LocalCraft& c, double& heatOut) {
+    SDL_Color hc = P.red; { SDL_Color sc; if (standingCue(game, c.faction, sc)) hc = sc; }
+    double rep = (double)game.factionRelation(game.playerFaction, c.faction);
+    double heat = (-48.0 - rep) / 80.0;          // −48 ⇒ 0, −128 ⇒ 1.0 (== §5.13.44 vendettaSpeedMult)
+    if (heat < 0.0) heat = 0.0; else if (heat > 1.0) heat = 1.0;
+    heatOut = heat;
+    return rgba((int)hc.r + int(heat * 40.0), (int)hc.g + int(heat * 150.0),
+                (int)hc.b + int(heat * 150.0), 255);
+}
+
 } // namespace
 
 void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene& scene,
@@ -1543,9 +1561,13 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         //   / вектор §5.13.41): Enemy — багровый, Hostile — оранжево-красный; fallback P.red. Самый быстрый/агрессивный
         //   пульс (7.4 ≠ 3.0/4.5/5.2/6.0), круги — как прочие «статусные» пульсы (розыск/эскорт/SOS), плюс подпись над бортом.
         if (huntsPlayerByStanding(c)) {
-            SDL_Color hc = P.red; { SDL_Color sc; if (standingCue(game, c.faction, sc)) hc = sc; }
-            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 7.4 + double(i) * 0.7);
-            int da = 110 + int(pl * 145.0);                // 110..255 — ярче всех статусных пульсов
+            // (§5.13.45) тон/темп/яркость cue калятся ЖАРОМ ВЕНДЕТТЫ (heat == sim-скорость §5.13.44): чем
+            //   глубже минус фракции охотника к игроку, тем горячее тон (vendettaHuntColor → бело-калёный),
+            //   резче пульс (7.4 → 11.1, ×1.5 как марш облавы §5.13.35) и ярче база (110 → 160). heat=0 (реп
+            //   −48, порог включения §5.13.42) ⇒ int(0·k)==0, темп 7.4 ⇒ РОВНО прежний §5.13.43 cue (нулевой регресс).
+            double heat; SDL_Color hc = vendettaHuntColor(game, c, heat);
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * (7.4 + heat * 3.7) + double(i) * 0.7);
+            int da = 110 + int(heat * 50.0) + int(pl * 145.0);  // 110..255 (heat=0) → база ярче с жаром (rgba клампит пик)
             strokeCircle(renderer, p.x, p.y, int(sz) + 10, rgba(hc.r, hc.g, hc.b, da));       // вне розыска (sz+9) и эскорта (sz+8)
             strokeCircle(renderer, p.x, p.y, int(sz) + 15, rgba(hc.r, hc.g, hc.b, da / 3));
             const char* hs = "HUNTING YOU";
@@ -2037,7 +2059,8 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         }
         if (nearHunt >= 0) { // (§5.13.43) краевой маркер: неспровоцированный охотник-патруль за кадром (цвет стояния)
             const LocalCraft& c = scene.craft[nearHunt];
-            SDL_Color hc = P.red; { SDL_Color sc; if (standingCue(game, c.faction, sc)) hc = sc; }
+            double heat; SDL_Color hc = vendettaHuntColor(game, c, heat); // (§5.13.45) тон калён жаром вендетты (== on-screen cue, анти-дрейф)
+            (void)heat;                                                   // маркер статичен — нужен лишь тон, не темп/яркость
             drawEdgeMarker(renderer, cx, cy, winW, winH, c.x, c.y, c.z, view, basis, hc);
         }
         if (nearLoot >= 0) {

@@ -1012,6 +1012,61 @@ int main(int argc, char** argv) {
         game.setFactionRelation(game.playerFaction, stFac, 0);     // восстановить нейтраль (гигиена)
     }
 
+    // (31) ЖАР ВЕНДЕТТЫ — ПОТОЛОК (§5.13.45): тот же охотник-по-стоянию, что #28, но реп на ДНЕ (−128) ⇒
+    //      heat=1.0 (ПОБИТОВО == sim-скорость §5.13.44 vendettaSpeedMult) ⇒ подсказка «HUNTING YOU» калится к
+    //      БЕЛО-ГОРЯЧЕМУ (vendettaHuntColor), пульс РЕЗЧЕ (7.4→11.1, ×1.5 как марш облавы §5.13.35) и база ярче
+    //      (110→160). Пара — #32 (реп −48, heat=0): там cue РОВНО прежний §5.13.43. Ноль полей/RNG/шага sim
+    //      (heat выведен из ЖИВОЙ репутации draw-side, приём D). Фаза fxClock — пик быстрого пульса (яркий кадр).
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 1) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(1);
+        const int stFac = 0;
+        game.setFactionRelation(game.playerFaction, stFac, -128);  // ДНО => heat=1.0 => бело-горячий/резкий cue
+        LocalCraft& pat = s.craft[0];
+        pat.kind = CK_PATROL; pat.label = "PATROL"; pat.faction = stFac; pat.r = 110; pat.g = 215; pat.b = 170;
+        pat.hostile = false; pat.defending = false; pat.underAttack = false; pat.wanted = false;
+        pat.aiState = 1; pat.aiTarget = LOCAL_TARGET_PLAYER;
+        pat.errand = 0; pat.errandBody = -1;
+        pat.x = 8000.0; pat.y = 0.0; pat.z = 150.0; pat.vx = pat.vy = pat.vz = 0.0;
+        pat.maxHullHP = 70.0; pat.hullHP = pat.maxHullHP; pat.maxShield = 20.0; pat.shield = 20.0;
+        s.px = 7080.0; s.py = -140.0; s.pz = 250.0; s.pvx = s.pvy = s.pvz = 0.0;
+        localSetForward(s, 8000.0 - s.px, 0.0 - s.py, 150.0 - s.pz);
+        s.targetCraft = 0;
+        s.fxClock = 0.1415;                            // 11.1·t ≈ π/2 ⇒ пик быстрого пульса ⇒ яркий кадр
+        std::printf("  [hunted-vendetta-hot] floor standing (rep -128, heat 1.0) -> white-hot HUNTING YOU, fastest pulse (§5.13.45)\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_hunted_vendetta_hot.bmp");
+        game.setFactionRelation(game.playerFaction, stFac, 0);     // гигиена
+    }
+
+    // (32) ЖАР ВЕНДЕТТЫ — ПОРОГ / НУЛЕВОЙ РЕГРЕСС (§5.13.45): тот же охотник, реп на пороге Hostile (−48) ⇒
+    //      heat=0.0 ⇒ int(0·k)==0, темп 7.4 ⇒ подсказка РОВНО как в §5.13.43: базовый оранж-красный тир Hostile,
+    //      база 110. Пара к #31 — глазами видно, что при мелкой вражде cue прежний, а калится лишь с ГЛУБИНОЙ
+    //      стояния (доказательство «нулевого визуального регресса» §5.13.45). В игре реп −48 уже включает §5.13.42.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 1) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(1);
+        const int stFac = 0;
+        game.setFactionRelation(game.playerFaction, stFac, -48);   // ПОРОГ Hostile => heat=0 => cue §5.13.43 побитово
+        LocalCraft& pat = s.craft[0];
+        pat.kind = CK_PATROL; pat.label = "PATROL"; pat.faction = stFac; pat.r = 110; pat.g = 215; pat.b = 170;
+        pat.hostile = false; pat.defending = false; pat.underAttack = false; pat.wanted = false;
+        pat.aiState = 1; pat.aiTarget = LOCAL_TARGET_PLAYER;
+        pat.errand = 0; pat.errandBody = -1;
+        pat.x = 8000.0; pat.y = 0.0; pat.z = 150.0; pat.vx = pat.vy = pat.vz = 0.0;
+        pat.maxHullHP = 70.0; pat.hullHP = pat.maxHullHP; pat.maxShield = 20.0; pat.shield = 20.0;
+        s.px = 7080.0; s.py = -140.0; s.pz = 250.0; s.pvx = s.pvy = s.pvz = 0.0;
+        localSetForward(s, 8000.0 - s.px, 0.0 - s.py, 150.0 - s.pz);
+        s.targetCraft = 0;
+        s.fxClock = 0.2123;                            // 7.4·t ≈ π/2 ⇒ пик прежнего пульса (та же фаза-пик, что #31)
+        std::printf("  [hunted-vendetta-cold] threshold standing (rep -48, heat 0.0) -> unchanged §5.13.43 cue (zero-regression pin)\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_hunted_vendetta_cold.bmp");
+        game.setFactionRelation(game.playerFaction, stFac, 0);     // гигиена
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);
