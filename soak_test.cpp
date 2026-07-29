@@ -756,6 +756,82 @@ int main() {
     }
     if (!lawGratitudeOk) { std::printf("INVARIANT FAIL: §5.13.36 law gratitude did not fire or leaked out of range\n"); ++invariantFails; }
 
+    // --- Детерминированная проверка §5.13.40: МЕСТЬ ФРАКЦИИ (faction reprisal) ---
+    // §5.13.36 всегда давал +6 за co-op-добивание розыскного, которого гнал патруль. §5.13.40 берёт ЗНАК из
+    //   того, где игрок УЖЕ стоит с фракцией патруля (тот же классификатор порогов, что панель §5.13.37 и
+    //   прицел §5.13.39): дружеств./нейтр. — благодарность (+6), ВРАЖДЕБНАЯ (тир Enemy/Hostile) — вооружённое
+    //   вмешательство в их операцию ⇒ −6. Как и §5.13.36, в замороженном soak-мире патрулей нет ⇒ правило
+    //   no-op ПО ПОСТРОЕНИЮ в 120k-цикле (числовой бейзлайн цел); этот изолированный пробник — единственное
+    //   headless-покрытие ЗНАКА. Свежий Game, ТРИ сцены, идентичные Scene A из §5.13.36 (сидячий розыскной по
+    //   носу, здоровый неподвижный патруль в 300 LU), но с ПРЕДварительно посеянной репутацией: (C) реп −60
+    //   (тир Hostile) ⇒ −6 (итог −66); (D) реп +40 (тир Friendly) ⇒ +6 (итог +46); (E) реп −30 (тир Tense —
+    //   ОТРИЦАТЕЛЬНЫЙ, но выше порога Hostile −48) ⇒ ВСЁ РАВНО +6 (итог −24). Пробник трёхсторонний: застрявший
+    //   «всегда +6» валит C; «всегда −6» валит D; наивный «rep<0 ⇒ −6» (флип по нулю, а не по классификатору
+    //   §5.13.37/§5.13.39) валит E ⇒ пробник пиньнит именно ТИР-семантику, а не знак числа. Посев и все три
+    //   итога — в clamp [−128,128]. Посев симметричным adjustFactionRelation (pf≠F); ноль RNG/дрейфа.
+    bool factionReprisalOk = false;
+    {
+        bool res[3] = { false, false, false };       // (C) Hostile −60 ; (D) Friendly +40 ; (E) Tense −30
+        Game glg; glg.init(1200);
+        int pf = glg.playerFaction;
+        int F = -1;
+        for (int f = 0; f < (int)glg.factions.size(); ++f) if (f != pf) { F = f; break; }
+        int star = -1;
+        for (int s : stars) { if (s >= 0) { star = s; break; } }
+        if (pf >= 0 && F >= 0 && star >= 0) {
+            glg.agents[glg.playerAgent].ship.heavyWeapons = 60.0;   // гарантированный урон игрока
+            const int SEEDS[3] = { -60, 40, -30 };     // (C) Hostile ; (D) Friendly ; (E) Tense (neg, но > −48)
+            const int WANTS[3] = {  -6,  6,   6 };     // §5.13.40 по тир-классификатору: Hostile⇒−6, Friendly/Tense⇒+6
+            for (int scn = 0; scn < 3; ++scn) {
+                int seed = SEEDS[scn];
+                int want = WANTS[scn];
+                LocalScene ss;
+                buildLocalScene(glg, star, ss);
+                ss.active = true;
+                while (ss.craft.size() < 2) { LocalCraft nc; ss.craft.push_back(nc); }
+                ss.craft.resize(2);
+                LocalCraft& W = ss.craft[0];                 // РОЗЫСКНОЙ пират — мишень игрока
+                W.kind = CK_PIRATE; W.hostile = true; W.wanted = true; W.wantedBounty = 650.0;
+                W.faction = -1; W.agentIndex = -1; W.threatConvoy = false;
+                W.maxHullHP = 100.0; W.armor = 800.0;
+                W.maxShield = 0.0; W.shield = 0.0; W.shieldRegenTimer = 999.0;
+                LocalCraft& P = ss.craft[1];                 // ПАТРУЛЬ-охотник (фракция F), 300 LU от цели
+                P.kind = CK_PATROL; P.hostile = false; P.faction = F; P.agentIndex = -1;
+                P.heavy = 60.0; P.light = 0.0; P.wanted = false;
+                P.maxHullHP = 100000.0; P.hullHP = 100000.0;
+                P.maxShield = 0.0; P.shield = 0.0; P.fireCooldown = 0.0;
+                int cur = glg.factionRelation(pf, F);
+                glg.adjustFactionRelation(pf, F, seed - cur);        // посев: rep(pf,F) = seed
+                int rel0 = glg.factionRelation(pf, F);
+                bool moved = false;
+                for (int f = 0; f < 3000; ++f) {
+                    if (!ss.craft.empty() && ss.craft[0].kind == CK_PIRATE && ss.craft[0].hullHP > 0.0) {
+                        LocalCraft& w = ss.craft[0];
+                        w.x = ss.px + 26.0; w.y = ss.py; w.z = ss.pz;      // сидячая мишень по носу
+                        w.vx = w.vy = w.vz = 0.0;
+                        if (w.hullHP > 1.0) w.hullHP = 1.0;
+                        w.shield = 0.0; w.armor = 800.0;
+                        localSetForward(ss, w.x - ss.px, w.y - ss.py, w.z - ss.pz);
+                    }
+                    if (ss.craft.size() >= 2 && ss.craft[1].kind == CK_PATROL) {   // патруль: неподвижен, здоров, 300 LU
+                        LocalCraft& p = ss.craft[1];
+                        p.x = ss.px + 26.0; p.y = ss.py + 300.0; p.z = ss.pz;
+                        p.vx = p.vy = p.vz = 0.0;
+                        p.hullHP = p.maxHullHP; p.shield = 0.0;
+                    }
+                    LocalInput in; in.fire = true;
+                    updateLocalScene(glg, ss, in, dtReal);
+                    if (glg.factionRelation(pf, F) != rel0) { moved = (glg.factionRelation(pf, F) == rel0 + want); break; }
+                }
+                res[scn] = moved;
+            }
+        }
+        factionReprisalOk = res[0] && res[1] && res[2];
+        std::printf("faction-reprisal probe: hostile[-60]->-6=%s friendly[+40]->+6=%s tense[-30]->+6=%s\n",
+                    res[0] ? "YES (ok)" : "NO", res[1] ? "YES (ok)" : "NO", res[2] ? "YES (ok)" : "NO");
+    }
+    if (!factionReprisalOk) { std::printf("INVARIANT FAIL: §5.13.40 faction reprisal sign did not flip by standing tier\n"); ++invariantFails; }
+
     // (§5.13.38) КОП-КИЛЛ: убийство патруля-ОХОТНИКА его же дичью поднимает награду СИЛЬНЕЕ базового +200.
     //   Как и §5.13.28/30/32/34/36 — в замороженном soak-мире патрулей нет (их родит лишь со-локальный
     //   «military»/«patrol» макро-агент, localgen.cpp) ⇒ правило no-op ПО ПОСТРОЕНИЮ в 120k-цикле выше (числовой
@@ -880,7 +956,7 @@ int main() {
     }
     if (!copKillRaisesBountyOk) { std::printf("INVARIANT FAIL: §5.13.38 cop-kill bounty did not escalate or leaked when not quarry\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s rocks=%ld shiny=%ld trades=%ld\n",
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
@@ -890,6 +966,7 @@ int main() {
                 manhuntScalesWithBountyOk ? "ok" : "FAILED",
                 lawGratitudeOk ? "ok" : "FAILED",
                 copKillRaisesBountyOk ? "ok" : "FAILED",
+                factionReprisalOk ? "ok" : "FAILED",
                 rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }

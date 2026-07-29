@@ -1016,9 +1016,25 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                                     if (cWasQuarry) { gratBest = dc2; gratPatrol = (int)k; }
                                 }
                                 if (gratPatrol >= 0) {
-                                    game.adjustFactionRelation(game.playerFaction, scene.craft[gratPatrol].faction, 6);
-                                    game.pushNews("Bounty served: the law honors your kill", 2);
-                                    scene.toast = "LAW GRATEFUL +REP";
+                                    // (§5.13.40) МЕСТЬ ФРАКЦИИ: та же co-op-добивка читается ПРОТИВОПОЛОЖНО в
+                                    //   зависимости от того, где игрок УЖЕ стоит с фракцией патруля. Дружественная/
+                                    //   нейтральная благодарит (+REP, §5.13.36); ВРАЖДЕБНАЯ (тир Enemy/Hostile по
+                                    //   тому же классификатору, что панель §5.13.37 и прицел §5.13.39) читает
+                                    //   отстрел «их» дичи в их операции как вооружённое вмешательство ⇒ −REP. Знак —
+                                    //   из УЖЕ живого factionRelation(игрок, фракция патруля); |Δ| = LAW_GRATITUDE_REP.
+                                    //   Строго ADDITIVE (двигаем лишь реп; пират мёртв, его бой не трогаем), ноль RNG,
+                                    //   без новых полей. Тот же gratPatrol (инверт-P0-скан §5.13.36) ⇒ no-op в соаке.
+                                    int patFac = scene.craft[gratPatrol].faction;
+                                    FactionRelationTension tier =
+                                        classifyFactionRelationTension(game.factionRelation(game.playerFaction, patFac));
+                                    bool hostileFac = (tier == FactionRelationTension::Enemy ||
+                                                       tier == FactionRelationTension::Hostile);
+                                    int dRep = hostileFac ? -LocalCfg::LAW_GRATITUDE_REP : LocalCfg::LAW_GRATITUDE_REP;
+                                    game.adjustFactionRelation(game.playerFaction, patFac, dRep);
+                                    game.pushNews(hostileFac ? "Reprisal: you gunned down a hostile faction's quarry"
+                                                             : "Bounty served: the law honors your kill",
+                                                  hostileFac ? 3 : 2);
+                                    scene.toast = hostileFac ? "FACTION REPRISAL -REP" : "LAW GRATEFUL +REP";
                                     scene.toastTimer = 3.0;
                                     scene.shake = std::min(40.0, std::max(scene.shake, 20.0));
                                 }
