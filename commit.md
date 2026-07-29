@@ -1,35 +1,32 @@
-# Triple Build Instructions (Mac, Windows, Linux)
+# Commit and Release Process
 
-Для создания полноценного мультиплатформенного релиза («тройного билда») для MyIndie, необходимо выполнить следующие шаги в корневой папке проекта:
+Starcluster is configured to automatically build cross-platform native launchers every time you push to the `main` branch on GitHub.
 
-## 1. Сборка для Mac (macOS)
-Сначала компилируем нативный бинарник игры для Mac:
+## 1. Commit and Push
+When you are ready to release an update or backup your code:
+
 ```bash
-make clean && make -j4 game
-```
-Затем собираем из готового шаблона `test_app` образ диска (DMG):
-- Скопировать `game` в `test_app/Contents/MacOS/Starcluster`
-- Привязать локальные библиотеки SDL2 через `install_name_tool` к бандлу `test_app`
-- Упаковать бандл:
-```bash
-hdiutil create -volname Starcluster -srcfolder test_app -ov -format UDZO Starcluster.dmg
+git add .
+git commit -m "Your commit message here"
+git push origin main
 ```
 
-## 2. Сборка для Windows (через кросс-компилятор MinGW)
-Компилируем `starcluster.exe` с использованием локальных библиотек `mingw_dev_lib`:
-```bash
-x86_64-w64-mingw32-g++ main.cpp game.cpp cluster.cpp resource.cpp market.cpp ship.cpp agent.cpp colony.cpp faction.cpp ui.cpp mining.cpp combat.cpp spaceevents.cpp anomaly.cpp modules.cpp chromo.cpp render2d.cpp localgen.cpp localsim.cpp localdraw.cpp -O3 -std=c++11 -I mingw_dev_lib/include/SDL2 -L mingw_dev_lib/lib -w -Wl,-subsystem,windows -lmingw32 -lSDL2main -lSDL2 -static-libgcc -static-libstdc++ -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive -o starcluster.exe
-```
-Для работы Windows-версии в архиве также должна лежать библиотека `SDL2.dll`.
+## 2. Automated Build
+Pushing to the `main` branch triggers the GitHub Actions workflow (`.github/workflows/build.yml`). This workflow automatically spins up virtual environments and compiles the game for:
+- **macOS**: Installs SDL2 via Homebrew, builds the binary, packages it into a standard `Starcluster.app` bundle, and generates a `.dmg` disk image.
+- **Windows**: Uses MSYS2 and MinGW-w64 to compile a Windows executable, bundles it with `SDL2.dll`, and compresses it into a `.zip` archive.
+- **Linux**: Installs `libsdl2-dev` via APT, compiles the binary, and publishes it as an executable file.
 
-## 3. Сборка для Linux
-Поскольку на Маке нет локального кросс-компилятора `x86_64-linux-gnu-g++`, бинарник `starcluster-linux` берется из эталонного архива:
-`/Users/jirnyak/Downloads/starcluster_1782511656478/starcluster-linux`
-(Либо компилируется вручную на Linux-системе/в Docker).
+## 3. Downloading Launchers
+To access the compiled launchers:
+1. Go to your repository on GitHub.
+2. Click the **"Actions"** tab.
+3. Click on the latest workflow run (e.g., "Build Launchers").
+4. Scroll down to the **Artifacts** section at the bottom of the summary page.
+5. You will see three downloadable packages:
+   - `Starcluster-macOS` (contains the `.dmg` file)
+   - `Starcluster-Windows` (contains the `starcluster.exe` and `.dll`)
+   - `Starcluster-Linux` (contains the executable binary)
+   - `Starcluster-Multiplatform` (contains all of the above combined in a single folder)
 
-## 4. Итоговый архив
-Все 4 файла складываются в одну папку и запаковываются в ZIP-архив для публикации на MyIndie:
-1. `Starcluster.dmg`
-2. `starcluster.exe`
-3. `SDL2.dll`
-4. `starcluster-linux`
+*Note: GitHub automatically zips artifacts, so the DMG and Linux binaries will be inside a downloaded zip file.*
