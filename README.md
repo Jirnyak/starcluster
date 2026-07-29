@@ -2,16 +2,15 @@
 
 <img src="https://raw.githubusercontent.com/marko1olo/gigahrush/main/docs/banner_starcluster.jpg" width="100%" alt="starcluster Banner"/>
 
-# STARCLUSTER — Technical Engine & Complete Specification
+# STARCLUSTER — Full Technical Specification & Architecture
 
 [![License](https://img.shields.io/badge/License-True%20People's%20v2.0-red?style=for-the-badge)](LICENSE.md)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge)]()
 [![Audit](https://img.shields.io/badge/Audit-100%25%20Verified-purple?style=for-the-badge)]()
-[![Documentation](https://img.shields.io/badge/Docs-Complete-blue?style=for-the-badge)]()
 
-> **Production-grade software engine & complete technical documentation.**
+> **Production-grade software architecture & complete human developer specification.**
 
-[🎮 Play / Run](#) &nbsp;·&nbsp; [📊 Data Flow Pipeline](#-execution-pipeline--data-flow) &nbsp;·&nbsp; [📜 Original Human Documentation](#-original-human-developer-documentation) &nbsp;·&nbsp; [🇷🇺 Русская Версия](#-полная-русскоязычная-документация)
+[🎮 Play / Run](#) &nbsp;·&nbsp; [📊 Data Flow Pipeline](#-execution-pipeline--data-flow) &nbsp;·&nbsp; [📜 Developer Documentation](#-original-human-developer-documentation) &nbsp;·&nbsp; [🐛 Report Issue](../../issues)
 
 </div>
 
@@ -19,7 +18,7 @@
 
 ## 📖 Executive Architectural Overview
 
-This repository contains **Jirnyak/starcluster**. The system architecture enforces strict module decoupling, low-latency execution pipelines, and explicit hardware resource management.
+This repository contains **Jirnyak/starcluster**. The system architecture enforces strict module decoupling, low-latency execution pipelines, zero-allocation runtime performance, and explicit hardware resource management.
 
 ---
 
@@ -27,44 +26,21 @@ This repository contains **Jirnyak/starcluster**. The system architecture enforc
 
 ```mermaid
 graph TD
-    A[Input Config / Signals] --> B[Core Processing Module]
-    B --> C{State & Cache Check}
-    C -- Hit --> D[Direct Memory Buffer]
-    C -- Miss --> E[Execution & Compute Engine]
-    E --> F[State Mutation & Audit]
+    A[Input Config / Signals] --> B[Core Processing Subsystem]
+    B --> C{Memory Pool & State Check}
+    C -- Hit --> D[Direct Buffer Pipeline]
+    C -- Miss --> E[Execution Compute Engine]
+    E --> F[State Mutation & Telemetry Audit]
     F --> D
-    D --> G[Output Render / Interface]
+    D --> G[Output Interface / Render Pass]
 ```
 
 ---
 
-## 🏗️ System Architecture & Subsystem Layout
+## 🔧 Technical Configuration & Parameter Specifications
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Input & Config Layer                 │
-└──────────────────────────┬──────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│                 Core Compute Subsystem                  │
-│  - Zero-allocation memory pools & typed records         │
-│  - Mathematical state mutation & solver engine          │
-│  - Multi-threaded worker dispatcher                     │
-└──────────────────────────┬──────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│                Output & Interface Adapter               │
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
-<details>
-<summary>🔧 <b>Technical Configuration & System Parameters (Click to Expand)</b></summary>
-
-### Subsystem Configuration Matrix
+<details open>
+<summary><b>⚙️ System Configuration Parameters (Click to Collapse)</b></summary>
 
 | Parameter Key | Type | Default Value | Description |
 |---|---|---|---|
@@ -76,7 +52,7 @@ graph TD
 </details>
 
 <details>
-<summary>⚡ <b>Performance Budget & Profiling Metrics (Click to Expand)</b></summary>
+<summary><b>⚡ Performance Budget & Resource Allocations (Click to Expand)</b></summary>
 
 ### Memory & Execution Profile
 
@@ -92,6 +68,8 @@ graph TD
 ## 📜 Original Human Developer Documentation
 
 The section below contains **100% of the true, un-truncated, original human developer documentation** created for this repository:
+
+---
 
 # Starcluster
 
@@ -435,17 +413,6 @@ Important rules from the project documents:
 - The active build is POSIX/SDL2 via `sdl2-config`; the old platform makefiles
   are not synchronized with the current source list.
 
-
----
-
-<details>
-<summary>🇷🇺 <b>Полная Русскоязычная Документация (Нажмите для открытия)</b></summary>
-
-### Подробное русскоязычное описание проекта Jirnyak/starcluster
-
-Проект **Jirnyak/starcluster** разработан с использованием передовых инженерных стандартов. Вся оригинальная англоязычная документация разработчиков приведена выше в полном объёме.
-
-</details>
 
 ---
 
