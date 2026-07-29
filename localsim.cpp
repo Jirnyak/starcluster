@@ -788,6 +788,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                     scene.fx.push_back(f);
                 }
                 if (before > 0.0 && o.hullHP <= 0.0) {
+                    const bool cWasWantedBefore = c.wanted;   // (§5.13.38) фикс. ДО §5.13.26G ниже — тот ставит c.wanted=true
                     spawnWreck(o.x, o.y, o.z, o.vx, o.vy, o.vz, o.r, o.g, o.b);
                     // (§5.13.26) СВИДЕТЕЛЬСТВО ПИРАТСТВА: смерть NPC-vs-NPC больше не «инертна» для макро.
                     //   (A) Жертва-зеркало гибнет и в постоянном мире — корабль её макро-агента деградирует в
@@ -807,6 +808,39 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                     if (c.kind == CK_PIRATE && o.kind != CK_PIRATE) {
                         if (!c.wanted) { c.wanted = true; c.wantedBounty = 300.0; }
                         else           { c.wantedBounty = std::min(1500.0, c.wantedBounty + 200.0); }
+                    }
+                    // (§5.13.38) КОП-КИЛЛ: розыскной пират ДОБИЛ ПАТРУЛЬ, что вёл по нему P0-охоту (§5.13.28)
+                    //   ⇒ его награда подскакивает на COP_KILL_BOUNTY СВЕРХ обычного +200 выше (итого +700 за
+                    //   этот убой против +200 за смерть торговца) ⇒ облава мгновенно калится (быстрее §5.13.34 /
+                    //   белее §5.13.35). Убийца c (=scene.craft[i]) и жертва o (=scene.craft[atkCraft]) уже в руках
+                    //   (прямой DPS), потому «этот патруль гнал ИМЕННО c» ВЫВОДИМ заново из живых полей — ПРЯМОЙ
+                    //   P0-скан (зеркало manhuntSpeedMult; НЕ инверсия §5.13.36 — там мёртв пират, тут мёртв ПАТРУЛЬ,
+                    //   а дичь c жива): c обязан быть ближайшим ЖИВЫМ wanted-пиратом к o в PATROL_DISTRESS_R (нет
+                    //   иного wanted строго ближе к o) — ровно та цель, что P0-скан §5.13.28 (стр.456-467) выбрал бы.
+                    //   Гейт cWasWantedBefore отсекает ЧИСТОГО пирата, ставшего wanted этим же убоем (патруль не мог
+                    //   гнать не-розыскного). Рядового пирата таран-стаи §5.13.30 отсекает УЖЕ геометрия cWasQuarry ниже
+                    //   (он не ближайший wanted к патрулю ⇒ не его P0-дичь), НЕ этот гейт. Намеренно БЕЗ гейта o.defending
+                    //   (в отличие от §5.13.36): c — P0-дичь ПО ГЕОМЕТРИИ, а o.defending ложно потерял бы законный случай
+                    //   «загнал патруль до бегства/оверрайда на игрока, затем добил». Награда ТОЛЬКО растёт (потолок 1500)
+                    //   ⇒ combat-инвариант §0.2-G усилен при ЛЮБОМ состоянии патруля; ноль RNG, без новых полей. В
+                    //   headless-soak патрулей нет ⇒ no-op по построению; покрытие — пробник copKillRaisesBounty.
+                    if (c.kind == CK_PIRATE && o.kind == CK_PATROL && cWasWantedBefore) {
+                        const double MH2 = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
+                        double dpx = c.x - o.x, dpy = c.y - o.y, dpz = c.z - o.z;
+                        double dc2 = dpx*dpx + dpy*dpy + dpz*dpz;
+                        if (dc2 < MH2) {                               // c был в радиусе охоты павшего патруля
+                            bool cWasQuarry = true;                    // c — ближайший ЖИВОЙ wanted к патрулю o?
+                            for (size_t w = 0; w < scene.craft.size() && cWasQuarry; ++w) {
+                                if (w == i || (int)w == atkCraft) continue;   // пропускаем убийцу c и павший патруль o
+                                const LocalCraft& q = scene.craft[w];
+                                if (q.hullHP <= 0.0 || q.kind != CK_PIRATE || !q.wanted) continue;
+                                double qx = q.x - o.x, qy = q.y - o.y, qz = q.z - o.z;
+                                if (qx*qx + qy*qy + qz*qz < dc2) cWasQuarry = false;  // иной wanted строго ближе
+                            }
+                            if (cWasQuarry) {
+                                c.wantedBounty = std::min(1500.0, c.wantedBounty + LocalCfg::COP_KILL_BOUNTY);
+                            }
+                        }
                     }
                 }
             }

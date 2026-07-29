@@ -756,7 +756,131 @@ int main() {
     }
     if (!lawGratitudeOk) { std::printf("INVARIANT FAIL: §5.13.36 law gratitude did not fire or leaked out of range\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s rocks=%ld shiny=%ld trades=%ld\n",
+    // (§5.13.38) КОП-КИЛЛ: убийство патруля-ОХОТНИКА его же дичью поднимает награду СИЛЬНЕЕ базового +200.
+    //   Как и §5.13.28/30/32/34/36 — в замороженном soak-мире патрулей нет (их родит лишь со-локальный
+    //   «military»/«patrol» макро-агент, localgen.cpp) ⇒ правило no-op ПО ПОСТРОЕНИЮ в 120k-цикле выше (числовой
+    //   бейзлайн цел), а единственное headless-покрытие — этот изолированный пробник. Свежий Game, две сцены,
+    //   обе с розыскным пиратом-УБИЙЦЕЙ (heavy=60, wantedBounty0=650), что расстреливает пиньнутый патруль
+    //   (корпус→1) с 30 LU (< WEAPON_RANGE=150): (A) убийца — ЕДИНСТВЕННЫЙ wanted у патруля ⇒ он «дичь» ⇒
+    //   награда +200 (§5.13.26G) +COP_KILL_BOUNTY = ровно 650+700=1350; (B) есть ДРУГОЙ wanted-пират (безоружная
+    //   приманка) ВПЛОТНУЮ к патрулю (10 LU < 30) ⇒ убийца НЕ ближайший wanted ⇒ cWasQuarry ложь ⇒ эскалация
+    //   НЕ срабатывает, награда растёт лишь на обычные +200 = 850. Пробник двусторонний: застрявшее «вкл»
+    //   (всегда +700) валит B, застрявшее «выкл» валит A. Игрок в 5000 LU и НЕ стреляет; позиции/корпуса
+    //   пиньним каждый кадр (ноль RNG/дрейфа); wantedBounty НЕ пиньним — это измеряемое.
+    bool copKillRaisesBountyOk = false;
+    {
+        bool aOk = false, bOk = false;
+        Game gck; gck.init(1200);
+        int pf = gck.playerFaction;
+        int F = -1;
+        for (int f = 0; f < (int)gck.factions.size(); ++f) if (f != pf) { F = f; break; }
+        int star = -1;
+        for (int s : stars) { if (s >= 0) { star = s; break; } }
+        const double B0 = 650.0;
+        if (pf >= 0 && F >= 0 && star >= 0) {
+            // (A) убийца — единственный wanted ⇒ он дичь ⇒ награда 650 +200 +COP_KILL_BOUNTY
+            {
+                LocalScene sa;
+                buildLocalScene(gck, star, sa);
+                sa.active = true;
+                while (sa.craft.size() < 2) { LocalCraft nc; sa.craft.push_back(nc); }
+                sa.craft.resize(2);
+                double cx = sa.px + 5000.0, cy = sa.py, cz = sa.pz;   // бой ДАЛЕКО от игрока (не цель пирата)
+                LocalCraft& P = sa.craft[0];                          // ПАТРУЛЬ — жертва
+                P.kind = CK_PATROL; P.hostile = false; P.faction = F; P.agentIndex = -1;
+                P.heavy = 0.0; P.light = 0.0; P.wanted = false; P.threatConvoy = false;
+                P.maxHullHP = 100.0; P.hullHP = 1.0; P.maxShield = 0.0; P.shield = 0.0; P.shieldRegenTimer = 999.0;
+                LocalCraft& K = sa.craft[1];                          // ПИРАТ-убийца (розыскной)
+                K.kind = CK_PIRATE; K.hostile = true; K.faction = -1; K.agentIndex = -1;
+                K.wanted = true; K.wantedBounty = B0; K.threatConvoy = false;
+                K.heavy = 60.0; K.light = 0.0; K.fireCooldown = 0.0;
+                K.maxHullHP = 100000.0; K.hullHP = 100000.0; K.maxShield = 0.0; K.shield = 0.0;
+                bool killed = false;
+                for (int f = 0; f < 3000 && !killed; ++f) {
+                    int pi = -1, ki = -1;
+                    for (size_t si = 0; si < sa.craft.size(); ++si) {
+                        if (sa.craft[si].kind == CK_PATROL && sa.craft[si].hullHP > 0.0) pi = (int)si;
+                        else if (sa.craft[si].kind == CK_PIRATE) ki = (int)si;
+                    }
+                    if (pi < 0) { killed = true; break; }              // патруль пал — эскалация уже применена
+                    LocalCraft& pv = sa.craft[pi];
+                    pv.x = cx; pv.y = cy; pv.z = cz; pv.vx = pv.vy = pv.vz = 0.0;
+                    if (pv.hullHP > 1.0) pv.hullHP = 1.0;
+                    pv.shield = 0.0;
+                    if (ki >= 0) {
+                        LocalCraft& kp = sa.craft[ki];
+                        kp.x = cx + 30.0; kp.y = cy; kp.z = cz; kp.vx = kp.vy = kp.vz = 0.0;
+                        kp.hullHP = kp.maxHullHP; kp.shield = 0.0;
+                    }
+                    LocalInput in; in.fire = false;
+                    updateLocalScene(gck, sa, in, dtReal);
+                }
+                double finalB = -1.0;
+                for (size_t si = 0; si < sa.craft.size(); ++si)
+                    if (sa.craft[si].kind == CK_PIRATE && sa.craft[si].heavy > 50.0) finalB = sa.craft[si].wantedBounty;
+                aOk = killed && (finalB == B0 + 200.0 + LocalCfg::COP_KILL_BOUNTY);
+            }
+            // (B) есть ДРУГОЙ wanted ВПЛОТНУЮ к патрулю ⇒ убийца не дичь ⇒ лишь обычные +200
+            {
+                LocalScene sb;
+                buildLocalScene(gck, star, sb);
+                sb.active = true;
+                while (sb.craft.size() < 3) { LocalCraft nc; sb.craft.push_back(nc); }
+                sb.craft.resize(3);
+                double cx = sb.px + 5000.0, cy = sb.py, cz = sb.pz;
+                LocalCraft& P = sb.craft[0];                          // ПАТРУЛЬ — жертва
+                P.kind = CK_PATROL; P.hostile = false; P.faction = F; P.agentIndex = -1;
+                P.heavy = 0.0; P.light = 0.0; P.wanted = false; P.threatConvoy = false;
+                P.maxHullHP = 100.0; P.hullHP = 1.0; P.maxShield = 0.0; P.shield = 0.0; P.shieldRegenTimer = 999.0;
+                LocalCraft& K = sb.craft[1];                          // ПИРАТ-убийца (heavy=60)
+                K.kind = CK_PIRATE; K.hostile = true; K.faction = -1; K.agentIndex = -1;
+                K.wanted = true; K.wantedBounty = B0; K.threatConvoy = false;
+                K.heavy = 60.0; K.light = 0.0; K.fireCooldown = 0.0;
+                K.maxHullHP = 100000.0; K.hullHP = 100000.0; K.maxShield = 0.0; K.shield = 0.0;
+                LocalCraft& D = sb.craft[2];                          // ПРИМАНКА — безоружный wanted ВПЛОТНУЮ к патрулю
+                D.kind = CK_PIRATE; D.hostile = false; D.faction = -1; D.agentIndex = -1;
+                D.wanted = true; D.wantedBounty = 250.0; D.threatConvoy = false;
+                D.heavy = 0.0; D.light = 0.0; D.fireCooldown = 999.0;
+                D.maxHullHP = 100000.0; D.hullHP = 100000.0; D.maxShield = 0.0; D.shield = 0.0;
+                bool killed = false;
+                for (int f = 0; f < 3000 && !killed; ++f) {
+                    int pi = -1, ki = -1, di = -1;
+                    for (size_t si = 0; si < sb.craft.size(); ++si) {
+                        if (sb.craft[si].kind == CK_PATROL && sb.craft[si].hullHP > 0.0) pi = (int)si;
+                        else if (sb.craft[si].kind == CK_PIRATE && sb.craft[si].heavy > 50.0) ki = (int)si;
+                        else if (sb.craft[si].kind == CK_PIRATE) di = (int)si;
+                    }
+                    if (pi < 0) { killed = true; break; }
+                    LocalCraft& pv = sb.craft[pi];
+                    pv.x = cx; pv.y = cy; pv.z = cz; pv.vx = pv.vy = pv.vz = 0.0;
+                    if (pv.hullHP > 1.0) pv.hullHP = 1.0;
+                    pv.shield = 0.0;
+                    if (ki >= 0) {
+                        LocalCraft& kp = sb.craft[ki];
+                        kp.x = cx + 30.0; kp.y = cy; kp.z = cz; kp.vx = kp.vy = kp.vz = 0.0;
+                        kp.hullHP = kp.maxHullHP; kp.shield = 0.0;
+                    }
+                    if (di >= 0) {
+                        LocalCraft& dp = sb.craft[di];
+                        dp.x = cx; dp.y = cy + 10.0; dp.z = cz; dp.vx = dp.vy = dp.vz = 0.0;   // 10 LU < 30 ⇒ ближе к патрулю
+                        dp.hullHP = dp.maxHullHP; dp.shield = 0.0;
+                    }
+                    LocalInput in; in.fire = false;
+                    updateLocalScene(gck, sb, in, dtReal);
+                }
+                double finalB = -1.0;
+                for (size_t si = 0; si < sb.craft.size(); ++si)
+                    if (sb.craft[si].kind == CK_PIRATE && sb.craft[si].heavy > 50.0) finalB = sb.craft[si].wantedBounty;
+                bOk = killed && (finalB == B0 + 200.0);
+            }
+        }
+        copKillRaisesBountyOk = aOk && bOk;
+        std::printf("cop-kill probe: escalatesOnQuarryKill=%s noEscalationWhenNotQuarry=%s\n",
+                    aOk ? "YES (ok)" : "NO", bOk ? "YES (ok)" : "NO");
+    }
+    if (!copKillRaisesBountyOk) { std::printf("INVARIANT FAIL: §5.13.38 cop-kill bounty did not escalate or leaked when not quarry\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
@@ -765,6 +889,7 @@ int main() {
                 patrolBacksUpSwarmedOk ? "ok" : "FAILED",
                 manhuntScalesWithBountyOk ? "ok" : "FAILED",
                 lawGratitudeOk ? "ok" : "FAILED",
+                copKillRaisesBountyOk ? "ok" : "FAILED",
                 rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }
