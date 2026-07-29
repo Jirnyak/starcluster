@@ -976,6 +976,27 @@ static void renderNebula(SDL_Renderer* renderer, const LocalScene& scene,
     SDL_RenderCopy(renderer, tex, &src, &dst);
 }
 
+// (§5.13.39) Цвет РАМКИ/ПИПА цели по СТОЯНИЮ игрока с её ФРАКЦИЕЙ — прицельный аналог строки
+//   STANDING (§5.13.37): красит сам прицел, чтобы «свой или чужой передо мной» читалось В МИРЕ,
+//   а не только текстом в панели. Возвращает true и пишет col ТОЛЬКО при ВЫРАЖЕННОМ стоянии
+//   (не Neutral) с ЧУЖОЙ фракцией; иначе false ⇒ вызывающий держит свой дефолт (cyan-рамка /
+//   янтарный пип). Палитра тиров зеркалит строку STANDING (тот же классификатор порогов
+//   faction.cpp — единый источник). Пираты бесфракционны (faction<0) ⇒ всегда false ⇒ боевой
+//   прицел ПО НИМ неизменен ⇒ combat-фильтр §0.2-G пройден тривиально (только чтение репутации).
+static bool standingCue(const Game& game, int targetFaction, SDL_Color& col) {
+    if (targetFaction < 0 || game.playerFaction < 0 || targetFaction == game.playerFaction)
+        return false;
+    switch (classifyFactionRelationTension(game.factionRelation(game.playerFaction, targetFaction))) {
+        case FactionRelationTension::Enemy:    col = rgba(238,  88,  82, 255); return true;
+        case FactionRelationTension::Hostile:  col = rgba(238, 120,  82, 255); return true;
+        case FactionRelationTension::Tense:    col = rgba(245, 191,  78, 255); return true;
+        case FactionRelationTension::Friendly: col = rgba( 90, 220, 132, 255); return true;
+        case FactionRelationTension::Ally:     col = rgba(120, 240, 150, 255); return true;
+        case FactionRelationTension::Neutral:  return false;   // нет выраженного стояния ⇒ дефолт вызывающего
+    }
+    return false;   // недостижимо (enum исчерпан), но снимает предупреждение о конце non-void
+}
+
 } // namespace
 
 void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene& scene,
@@ -1515,15 +1536,19 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             drawText(renderer, p.x - textWidth(c.label, 1) / 2, p.y + int(sz) + 3, c.label, P.dim, 1);
         }
         if ((int)i == scene.targetCraft) {
+            // (§5.13.39) рамка цели красится по СТОЯНИЮ с её фракцией (тот же тир, что строка STANDING
+            //   §5.13.37): красная — чужой-враг, зелёная — свой, cyan — нейтрал/бесфракционный (пират).
+            SDL_Color bcol = P.cyan;
+            { SDL_Color sc; if (standingCue(game, c.faction, sc)) bcol = sc; }
             int bx = int(sz) + 6;
-            strokeRect(renderer, p.x - bx, p.y - bx, 2 * bx, 2 * bx, P.cyan);
+            strokeRect(renderer, p.x - bx, p.y - bx, 2 * bx, 2 * bx, bcol);
             // Жёсткий захват игрока (Tab): удвоенная рамка + угловые засечки.
             if (scene.lockTarget >= 0 && (int)i == scene.lockTarget) {
                 int bx2 = bx + 5;
                 strokeRect(renderer, p.x - bx2, p.y - bx2, 2 * bx2, 2 * bx2,
-                           rgba(P.cyan.r, P.cyan.g, P.cyan.b, 170));
+                           rgba(bcol.r, bcol.g, bcol.b, 170));
                 int tick = 4;
-                SDL_SetRenderDrawColor(renderer, P.cyan.r, P.cyan.g, P.cyan.b, 255);
+                SDL_SetRenderDrawColor(renderer, bcol.r, bcol.g, bcol.b, 255);
                 SDL_RenderDrawLine(renderer, p.x - bx2, p.y - bx2, p.x - bx2 + tick, p.y - bx2);
                 SDL_RenderDrawLine(renderer, p.x - bx2, p.y - bx2, p.x - bx2, p.y - bx2 + tick);
                 SDL_RenderDrawLine(renderer, p.x + bx2, p.y - bx2, p.x + bx2 - tick, p.y - bx2);
@@ -1880,6 +1905,11 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                         if (!lp.behind) {
                             SDL_Color lc = tc.hostile ? rgba(255, 150, 90, 205)   // амбер-красный (враг)
                                                       : rgba(240, 205, 130, 185); // янтарный (нейтрал)
+                            // (§5.13.39) СТОЯНИЕ важнее сырого hostile: у цели с выраженным стоянием пип
+                            //   берёт цвет тира (красный чужой-враг / зелёный свой), сохраняя прежнюю
+                            //   альфу; бесфракционный пират ⇒ дефолт выше неизменен (фильтр §0.2-G).
+                            { SDL_Color sc; if (standingCue(game, tc.faction, sc))
+                                  lc = rgba(sc.r, sc.g, sc.b, tc.hostile ? 205 : 185); }
                             strokeCircle(renderer, lp.x, lp.y, 5, lc);
                             SDL_SetRenderDrawColor(renderer, lc.r, lc.g, lc.b, lc.a);
                             SDL_RenderDrawLine(renderer, lp.x - 9, lp.y, lp.x - 5, lp.y);

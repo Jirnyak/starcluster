@@ -797,6 +797,8 @@ int main(int argc, char** argv) {
     //      тем же классификатором порогов, что и макрослой (faction.cpp) — накопленный итог закон-цикла
     //      читается прямо из кокпита. Ноль полей/RNG/шага sim; пираты бесфракционны (faction=-1) => им
     //      строка не показывается, combat-фильтр §0.2-G пройден тривиально (только чтение репутации).
+    //      (§5.13.39: тем же стоянием теперь красится и РАМКА цели в мире, и лид-пип упреждения —
+    //      здесь оба ярко-зелёные, тир ALLY; пара — красный прицел в shot_standing_reticle ниже.)
     {
         LocalScene s; buildLocalScene(game, 0, s); s.active = true;
         while (s.craft.size() < 1) { LocalCraft c; s.craft.push_back(c); }
@@ -815,6 +817,35 @@ int main(int argc, char** argv) {
         std::printf("  [law-standing] friendly patrol targeted -> panel carries STANDING ALLY +96 (faction rep readout §5.13.37)\n");
         total += 1;
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_law_standing.bmp");
+    }
+
+    // (25) СТОЯНИЕ НА ПРИЦЕЛЕ (§5.13.39): draw-only углубление §5.13.37 — теперь стояние красит САМ
+    //      ПРИЦЕЛ (рамку цели в мире + лид-пип упреждения), а не только строку в панели. Цель —
+    //      торговец ВРАЖДЕБНОЙ фракции (rep <= -96 => тир Enemy), НО hostile=false: единственная
+    //      причина красного прицела здесь — СТОЯНИЕ, не боевой флаг (наглядно, что цвет ведёт
+    //      репутация). Рамка и пип красные (Enemy); пара к shot_law_standing (там ALLY => зелёные).
+    //      Тот же классификатор порогов faction.cpp. Ноль полей/RNG/шага sim; пиратам (faction<0)
+    //      прицел неизменен => combat-фильтр §0.2-G пройден тривиально (только чтение репутации).
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 1) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(1);                             // один борт: враждебный торговец в фокусе прицела
+        const int stFac = 0;                           // валидная NPC-фракция != playerFaction
+        game.setFactionRelation(game.playerFaction, stFac, -100);  // ENEMY (<=-96) => красные рамка/пип
+        LocalCraft& en = s.craft[0];                   // ТОРГОВЕЦ вражеской фракции — цель прицела
+        en.kind = CK_TRADER; en.label = "TRADER"; en.faction = stFac; en.r = 120; en.g = 170; en.b = 220;
+        en.hostile = false;                            // НЕ боевой флаг: красный ведёт СТОЯНИЕ, не hostile
+        en.defending = false; en.underAttack = false; en.wanted = false;
+        en.aiState = 1; en.errand = 0; en.errandBody = -1;
+        en.x = 8000.0; en.y = 0.0; en.z = 150.0; en.vx = en.vy = en.vz = 0.0;   // далеко от звезды => без ореола
+        en.maxHullHP = 60.0; en.hullHP = en.maxHullHP; en.maxShield = 25.0; en.shield = 25.0;
+        s.px = 7080.0; s.py = -140.0; s.pz = 250.0; s.pvx = s.pvy = s.pvz = 0.0; // ~935 LU: цель крупно, прицел читаем
+        localSetForward(s, 8000.0 - s.px, 0.0 - s.py, 150.0 - s.pz);            // нос на цель => лид-пип у цели
+        s.targetCraft = 0; s.lockTarget = 0;           // цель + жёсткий захват => красная рамка (двойная) + красный пип
+        s.fxClock = 0.30;
+        std::printf("  [standing-reticle] hostile-faction (ENEMY) target -> target box + lead pip tint RED by standing, not the hostile flag (§5.13.39)\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_standing_reticle.bmp");
     }
 
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
