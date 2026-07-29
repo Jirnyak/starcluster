@@ -1,5 +1,8 @@
 <div align="center">
 
+![STARCLUSTER Banner](https://raw.githubusercontent.com/marko1olo/gigahrush/main/docs/banner_starcluster.jpg)
+
+
 # Starcluster — 10,000-Star Sublight N-Body Gravitational Engine
 
 [![Physics Engine](https://img.shields.io/badge/Physics-N--Body%20Vector-purple?style=for-the-badge)][][![Live Site](https://img.shields.io/badge/Website-GitHub%20Pages-00f2fe?style=for-the-badge)](https://jirnyak.github.io/starcluster/)
