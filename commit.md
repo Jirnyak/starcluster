@@ -30,3 +30,9 @@ To access the compiled launchers:
    - `Starcluster-Multiplatform` (contains all of the above combined in a single folder)
 
 *Note: GitHub automatically zips artifacts, so the DMG and Linux binaries will be inside a downloaded zip file.*
+
+## 4. Automated Download via CLI (Optional)
+If you prefer not to use the web interface, you can wait for the GitHub Actions build to turn green and automatically download the `Starcluster-Multiplatform` artifact using the GitHub CLI (`gh`):
+```bash
+gh run watch && gh run download -n Starcluster-Multiplatform
+```
