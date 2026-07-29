@@ -948,6 +948,47 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                                 scene.toastTimer = 3.0;
                                 scene.shake = std::min(40.0, std::max(scene.shake, 16.0));
                             }
+                            // (§5.13.36) БЛАГОДАРНОСТЬ ЗАКОНА: co-op добивание розыскного. Если игрок нанёс
+                            //   СМЕРТЕЛЬНЫЙ удар по `wanted`-пирату, которого ПРЯМО СЕЙЧАС гнал патруль (P0-охота
+                            //   §5.13.28), — фракция этого патруля благодарна: +rep ПОВЕРХ выплаты за голову
+                            //   (§5.13.24). Замыкает петлю закона со стороны ОТНОШЕНИЙ: помог облаве — закон это
+                            //   помнит (зеркало §5.13.11 CONVOY SAVED, но по оси РЕПУТАЦИИ, а не кредитов; тот же
+                            //   +6 и pushNews). Строго ADDITIVE — пирата не трогаем (он уже мёртв), лишь ДОБАВЛЯЕМ
+                            //   награду за помощь закону; комбат-инвариант цел. «Патруль гнал ИМЕННО его» ВЫВЕДЕНО
+                            //   заново из живых полей (паттерн D, как manhuntSpeedMult/pursuitQuarry): убитый c мёртв
+                            //   (hullHP<=0), потому ИНВЕРТИРУЕМ P0-скан — ищем ближайший defending-патруль в
+                            //   PATROL_DISTRESS_R от c, для которого c был БЛИЖАЙШИМ живым wanted-пиратом (нет иного
+                            //   живого wanted строго ближе). Так цель совпадает с фактическим atkCraft патруля ПО
+                            //   ПОСТРОЕНИЮ (P0-скан §5.13.28 стр.456-467 берёт ровно ближайшего wanted и ставит
+                            //   defending=true). Ноль RNG, без новых полей. В headless-soak патрулей нет ⇒ gratPatrol
+                            //   всегда -1 ⇒ no-op по построению (числовой бейзлайн цел), покрытие — пробником lawGratitude.
+                            if (c.kind == CK_PIRATE && c.wanted && game.playerFaction >= 0) {
+                                const double GR2 = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
+                                int gratPatrol = -1; double gratBest = GR2;
+                                for (size_t k = 0; k < scene.craft.size(); ++k) {
+                                    const LocalCraft& pat = scene.craft[k];
+                                    if (pat.hullHP <= 0.0 || pat.kind != CK_PATROL || !pat.defending || pat.faction < 0) continue;
+                                    double dcx = c.x - pat.x, dcy = c.y - pat.y, dcz = c.z - pat.z;
+                                    double dc2 = dcx*dcx + dcy*dcy + dcz*dcz;
+                                    if (dc2 >= gratBest) continue;              // ближе уже найден / вне радиуса охоты
+                                    bool cWasQuarry = true;                     // c — ближайший ЖИВОЙ wanted для pat?
+                                    for (size_t w = 0; w < scene.craft.size() && cWasQuarry; ++w) {
+                                        if (w == j) continue;                   // самого убитого не считаем
+                                        const LocalCraft& o = scene.craft[w];
+                                        if (o.hullHP <= 0.0 || o.kind != CK_PIRATE || !o.wanted) continue;
+                                        double ox = o.x - pat.x, oy = o.y - pat.y, oz = o.z - pat.z;
+                                        if (ox*ox + oy*oy + oz*oz < dc2) cWasQuarry = false;  // иной wanted строго ближе
+                                    }
+                                    if (cWasQuarry) { gratBest = dc2; gratPatrol = (int)k; }
+                                }
+                                if (gratPatrol >= 0) {
+                                    game.adjustFactionRelation(game.playerFaction, scene.craft[gratPatrol].faction, 6);
+                                    game.pushNews("Bounty served: the law honors your kill", 2);
+                                    scene.toast = "LAW GRATEFUL +REP";
+                                    scene.toastTimer = 3.0;
+                                    scene.shake = std::min(40.0, std::max(scene.shake, 20.0));
+                                }
+                            }
                             if (c.faction >= 0 && !c.hostile && game.playerFaction >= 0) {
                                 int fac = c.faction;
                                 game.adjustFactionRelation(game.playerFaction, fac, -8);

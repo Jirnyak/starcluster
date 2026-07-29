@@ -649,7 +649,114 @@ int main() {
     }
     if (!manhuntScalesWithBountyOk) { std::printf("INVARIANT FAIL: §5.13.34 manhunt speed scaling did not fire or regressed baseline\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s rocks=%ld shiny=%ld trades=%ld\n",
+    // --- Детерминированная проверка §5.13.36: БЛАГОДАРНОСТЬ ЗАКОНА (law gratitude) ---
+    // Блок добавлен в player-kill (E) — он В СОАКЕ ИСПОЛНЯЕТСЯ (игрок палит каждый кадр), НО награда требует
+    //   рядом патруля-охотника, а патрулей в замороженном мире НЕТ ⇒ в 120k-прогоне gratPatrol==-1,
+    //   adjustFactionRelation из блока не зовётся ⇒ factionRelations и все счётчики выше побитово целы
+    //   (no-op ПО ПОСТРОЕНИЮ, как §5.13.28/30/32/34). Этот изолированный пробник — единственное headless-
+    //   покрытие правила. Один свежий Game, две сцены (полная изоляция от soak-цикла; rel0 берём перед
+    //   каждой): (A) РОЗЫСКНОГО, которого гонит патруль в PATROL_DISTRESS_R (300 LU), ДОБИВАЕТ игрок ⇒ rep
+    //   с фракцией патруля вырос ровно на +6; (B) тот же убой, но патруль ВНЕ радиуса (2000 LU) ⇒ rep НЕ
+    //   меняется (гейт дистанции). Игроку поднимаем оружие; цель пиньним сидячей мишенью (hull→1, armor=800 —
+    //   большой радиус попадания, как write-back §5.13.14); патруль пиньним здоровым и неподвижным в 300/2000
+    //   LU от цели (никогда не добьёт её раньше игрока — вне WEAPON_RANGE — и сам не гибнет). Ноль RNG/дрейфа.
+    bool lawGratitudeOk = false;
+    {
+        bool aOk = false, bOk = false;
+        Game glg; glg.init(1200);
+        int pf = glg.playerFaction;
+        int F = -1;
+        for (int f = 0; f < (int)glg.factions.size(); ++f) if (f != pf) { F = f; break; }
+        int star = -1;
+        for (int s : stars) { if (s >= 0) { star = s; break; } }
+        if (pf >= 0 && F >= 0 && star >= 0) {
+            glg.agents[glg.playerAgent].ship.heavyWeapons = 60.0;   // гарантированный урон игрока
+            // (A) патруль В радиусе (300 LU от цели) ⇒ +6 rep фракции патруля
+            {
+                LocalScene sa;
+                buildLocalScene(glg, star, sa);
+                sa.active = true;
+                while (sa.craft.size() < 2) { LocalCraft nc; sa.craft.push_back(nc); }
+                sa.craft.resize(2);
+                LocalCraft& W = sa.craft[0];                 // РОЗЫСКНОЙ пират — мишень игрока
+                W.kind = CK_PIRATE; W.hostile = true; W.wanted = true; W.wantedBounty = 650.0;
+                W.faction = -1; W.agentIndex = -1; W.threatConvoy = false;
+                W.maxHullHP = 100.0; W.armor = 800.0;
+                W.maxShield = 0.0; W.shield = 0.0; W.shieldRegenTimer = 999.0;
+                LocalCraft& P = sa.craft[1];                 // ПАТРУЛЬ-охотник (фракция F)
+                P.kind = CK_PATROL; P.hostile = false; P.faction = F; P.agentIndex = -1;
+                P.heavy = 60.0; P.light = 0.0; P.wanted = false;
+                P.maxHullHP = 100000.0; P.hullHP = 100000.0;
+                P.maxShield = 0.0; P.shield = 0.0; P.fireCooldown = 0.0;
+                int rel0 = glg.factionRelation(pf, F);
+                for (int f = 0; f < 3000; ++f) {
+                    if (!sa.craft.empty() && sa.craft[0].kind == CK_PIRATE && sa.craft[0].hullHP > 0.0) {
+                        LocalCraft& w = sa.craft[0];
+                        w.x = sa.px + 26.0; w.y = sa.py; w.z = sa.pz;      // сидячая мишень по носу
+                        w.vx = w.vy = w.vz = 0.0;
+                        if (w.hullHP > 1.0) w.hullHP = 1.0;
+                        w.shield = 0.0; w.armor = 800.0;
+                        localSetForward(sa, w.x - sa.px, w.y - sa.py, w.z - sa.pz);
+                    }
+                    if (sa.craft.size() >= 2 && sa.craft[1].kind == CK_PATROL) {   // патруль: неподвижен, здоров, 300 LU от цели
+                        LocalCraft& p = sa.craft[1];
+                        p.x = sa.px + 26.0; p.y = sa.py + 300.0; p.z = sa.pz;
+                        p.vx = p.vy = p.vz = 0.0;
+                        p.hullHP = p.maxHullHP; p.shield = 0.0;
+                    }
+                    LocalInput in; in.fire = true;
+                    updateLocalScene(glg, sa, in, dtReal);
+                    if (glg.factionRelation(pf, F) != rel0) { aOk = (glg.factionRelation(pf, F) == rel0 + 6); break; }
+                }
+            }
+            // (B) патруль ВНЕ радиуса (2000 LU > PATROL_DISTRESS_R) ⇒ rep НЕ меняется, хотя убой был
+            {
+                LocalScene sb;
+                buildLocalScene(glg, star, sb);
+                sb.active = true;
+                while (sb.craft.size() < 2) { LocalCraft nc; sb.craft.push_back(nc); }
+                sb.craft.resize(2);
+                LocalCraft& W = sb.craft[0];
+                W.kind = CK_PIRATE; W.hostile = true; W.wanted = true; W.wantedBounty = 650.0;
+                W.faction = -1; W.agentIndex = -1; W.threatConvoy = false;
+                W.maxHullHP = 100.0; W.armor = 800.0;
+                W.maxShield = 0.0; W.shield = 0.0; W.shieldRegenTimer = 999.0;
+                LocalCraft& P = sb.craft[1];
+                P.kind = CK_PATROL; P.hostile = false; P.faction = F; P.agentIndex = -1;
+                P.heavy = 60.0; P.light = 0.0; P.wanted = false;
+                P.maxHullHP = 100000.0; P.hullHP = 100000.0;
+                P.maxShield = 0.0; P.shield = 0.0; P.fireCooldown = 0.0;
+                int rel0 = glg.factionRelation(pf, F);
+                bool killed = false;
+                for (int f = 0; f < 3000 && !killed; ++f) {
+                    if (!sb.craft.empty() && sb.craft[0].kind == CK_PIRATE && sb.craft[0].hullHP > 0.0) {
+                        LocalCraft& w = sb.craft[0];
+                        w.x = sb.px + 26.0; w.y = sb.py; w.z = sb.pz;
+                        w.vx = w.vy = w.vz = 0.0;
+                        if (w.hullHP > 1.0) w.hullHP = 1.0;
+                        w.shield = 0.0; w.armor = 800.0;
+                        localSetForward(sb, w.x - sb.px, w.y - sb.py, w.z - sb.pz);
+                    }
+                    if (sb.craft.size() >= 2 && sb.craft[1].kind == CK_PATROL) {   // патруль ДАЛЕКО (2000 LU) — не охотник для c
+                        LocalCraft& p = sb.craft[1];
+                        p.x = sb.px + 2000.0; p.y = sb.py; p.z = sb.pz;
+                        p.vx = p.vy = p.vz = 0.0;
+                        p.hullHP = p.maxHullHP; p.shield = 0.0;
+                    }
+                    LocalInput in; in.fire = true;
+                    updateLocalScene(glg, sb, in, dtReal);
+                    if (sb.craft.empty() || sb.craft[0].kind != CK_PIRATE || sb.craft[0].hullHP <= 0.0) killed = true;
+                }
+                bOk = killed && (glg.factionRelation(pf, F) == rel0);   // убой состоялся, но rep не изменился
+            }
+        }
+        lawGratitudeOk = aOk && bOk;
+        std::printf("law-gratitude probe: repBumpOnCoopKill=%s noBumpOutOfRange=%s\n",
+                    aOk ? "YES (ok)" : "NO", bOk ? "YES (ok)" : "NO");
+    }
+    if (!lawGratitudeOk) { std::printf("INVARIANT FAIL: §5.13.36 law gratitude did not fire or leaked out of range\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
@@ -657,6 +764,7 @@ int main() {
                 packRalliesOutlawOk ? "ok" : "FAILED",
                 patrolBacksUpSwarmedOk ? "ok" : "FAILED",
                 manhuntScalesWithBountyOk ? "ok" : "FAILED",
+                lawGratitudeOk ? "ok" : "FAILED",
                 rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }
