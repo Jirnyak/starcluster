@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/marko1olo/gigahrush/main/docs/space_banner.jpg" width="100%" alt="Starcluster Banner"/>
+<img src="https://raw.githubusercontent.com/marko1olo/gigahrush/main/docs/banner_starcluster.jpg" width="100%" alt="Starcluster Banner"/>
 
 # 🌌 STARCLUSTER — Real-Time Space Economy Sandbox
 
