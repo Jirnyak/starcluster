@@ -1,4 +1,3 @@
 User-agent: *
 Allow: /
-
-Sitemap: https://jirnyak.github.io/starcluster/sitemap.xml
+Sitemap: https://Jirnyak.github.io/starcluster/sitemap.xml
