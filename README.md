@@ -1,26 +1,16 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/marko1olo/gigahrush/main/docs/banner_starcluster.jpg" width="100%" alt="starcluster Banner"/>
+# Starcluster — 10,000-Star Sublight N-Body Gravitational Engine
 
-# STARCLUSTER — Technical Engine & Interactive Showcase
-
-[![Live Website](https://img.shields.io/badge/Live%20Website-GitHub%20Pages-00f2fe?style=for-the-badge&logo=github)](https://Jirnyak.github.io/starcluster/)
-[![License](https://img.shields.io/badge/License-True%20People's%20v2.0-red?style=for-the-badge)](LICENSE.md)
+[![Physics Engine](https://img.shields.io/badge/Physics-N--Body%20Vector-purple?style=for-the-badge)][][![Live Site](https://img.shields.io/badge/Website-GitHub%20Pages-00f2fe?style=for-the-badge)](https://jirnyak.github.io/starcluster/)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge)]()
 [![Audit](https://img.shields.io/badge/Audit-100%25%20Verified-purple?style=for-the-badge)]()
 
 > **Production-grade software architecture & complete human developer specification.**
 
-[🌐 Open Live Showcase Site](https://Jirnyak.github.io/starcluster/) &nbsp;·&nbsp; [🎮 Play / Run](#) &nbsp;·&nbsp; [📊 Data Flow](#-execution-pipeline--data-flow) &nbsp;·&nbsp; [📜 Developer Docs](#-original-human-developer-documentation)
+[🌐 Open Live Showcase](https://Jirnyak.github.io/starcluster/) &nbsp;·&nbsp; [📊 Architectural Diagram](#-system-architecture--pipeline) &nbsp;·&nbsp; [📜 Developer Specs](#-original-human-developer-documentation)
 
 </div>
-
----
-
-## 🌐 Live Interactive GitHub Pages Website
-
-The official interactive web showcase for **Jirnyak/starcluster** is live and hosted on GitHub Pages:
-👉 **[Click here to visit the live site](https://Jirnyak.github.io/starcluster/)**
 
 ---
 
@@ -30,25 +20,24 @@ This repository contains **Jirnyak/starcluster**. The system architecture enforc
 
 ---
 
-## 📊 Execution Pipeline & Data Flow
+## 📊 System Architecture & Pipeline
 
 ```mermaid
 graph TD
-    A[Input Config / Signals] --> B[Core Processing Subsystem]
-    B --> C{Memory Pool & State Check}
-    C -- Hit --> D[Direct Buffer Pipeline]
-    C -- Miss --> E[Execution Compute Engine]
-    E --> F[State Mutation & Telemetry Audit]
-    F --> D
-    D --> G[Output Interface / Render Pass]
+    A[Stellar Initializer 10,000 Bodies] --> B[Barnes-Hut Octree Gravity Quad]
+    B --> C[Sublight Vector Velocity Integrator]
+    C --> D[Orbital Trading Economy Engine]
 ```
 
 ---
 
-## 🔧 Technical Configuration & Parameter Specifications
+## 🔧 Technical Configuration & Deep Domain Specifications
+
+- **Barnes-Hut Octree**: $O(N \log N)$ gravitational force computation for 10,000 active stellar bodies.
+- **Sublight Relativistic Vectors**: Precise trajectory updates for inter-system freighter logistics.
 
 <details open>
-<summary><b>⚙️ System Configuration Parameters (Click to Collapse)</b></summary>
+<summary><b>⚙️ Core System Configuration Parameters (Click to Collapse)</b></summary>
 
 | Parameter Key | Type | Default Value | Description |
 |---|---|---|---|
@@ -56,18 +45,6 @@ graph TD
 | `FRAME_RATE_TARGET` | Int | `60` | Target loop frequency in Hz |
 | `ENABLE_TELEMETRY` | Bool | `true` | Emit real-time JSON metrics to stdout |
 | `THREAD_POOL_COUNT` | Int | `8` | Worker thread allocations for parallel processing |
-
-</details>
-
-<details>
-<summary><b>⚡ Performance Budget & Resource Allocations (Click to Expand)</b></summary>
-
-### Memory & Execution Profile
-
-- **GC Allocation Budget**: `0 B / frame` (Strict Zero Allocation).
-- **Target Frame Time**: `< 16.6 ms` (60 FPS minimum lock).
-- **VRAM Budget**: `< 512 MB` allocated statically at startup.
-- **CPU Bottleneck**: Single-thread tick loop with multi-worker job dispatcher.
 
 </details>
 
