@@ -1170,7 +1170,111 @@ int main() {
     }
     if (!vendettaScalesWithStandingOk) { std::printf("INVARIANT FAIL: §5.13.44 vendetta speed scaling did not fire, regressed baseline, or lost player-lock\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s lawHuntsHostile=%s patrolTargetSignal=%s vendettaScalesWithStanding=%s rocks=%ld shiny=%ld trades=%ld\n",
+    // (§5.13.46) СТАЯ ЗАКОНА: скоординированная охота патрулей на игрока. §5.13.42 переключает ОДИНОЧНЫЙ патруль
+    //   на игрока, только если игрок БЛИЖЕ его РОЗЫСКНОЙ пиратской дичи (pd2<atkBest); патруль с более близким
+    //   розыскным пиратом гонит пирата (это и есть контроль §5.13.43-фазы B). §5.13.46 добавляет ПАК-override:
+    //   Enemy/Hostile-патруль, видящий игрока (pd2<AW2), но у кого §5.13.42 не сработал (пират ближе ⇒ !atkPlayer),
+    //   ПРИСОЕДИНЯЕТСЯ к охоте на игрока, если рядом (в PATROL_DISTRESS_R) есть ДРУГОЙ Enemy/Hostile-патруль, тоже
+    //   видящий игрока. Пак-тир стоит ПОСЛЕДНИМ в ветке CK_PATROL ⇒ перебивает выбор P0/P0.5/P1/§5.13.42. Как
+    //   §5.13.42/43/44, в 120k-цикле ветка патруля не бежит (гарнизоны disjoint-маршруту soak) ⇒ изолированный пробник.
+    //   (A) ДВА Enemy-патруля фракции F в 300 LU от игрока и 600 LU друг от друга (<1400 ⇒ в стае), У КАЖДОГО
+    //       СВОЙ розыскной пират в 80 LU (ближе игрока ⇒ §5.13.42 сам игрока НЕ берёт). Приём D: каждый коммитится
+    //       по РАСПОЛОЖЕННОСТИ соседа (живой kind/faction/поз.), НЕ по его aiTarget ⇒ ОБА в ОДНОМ кадре берут
+    //       игрока ⇒ aiTarget==LOCAL_TARGET_PLAYER у ОБОИХ (стая перебила дистанц-гейт). Порядок [A,B,PA,PB] не важен.
+    //   (B, контроль) ОДИН такой патруль + его ближний розыскной пират, БЕЗ соседа: стаи нет ⇒ патруль гонит
+    //       ПИРАТА (aiTarget>=0), НИКОГДА игрока. Доказывает, что нужна ПАРА: одиночка гейт §5.13.42 не перебивает.
+    bool lawPackHuntsPlayerOk = false;
+    {
+        Game gp; gp.init(1200);
+        int pf = gp.playerFaction;
+        int F = -1;
+        for (int f = 0; f < (int)gp.factions.size(); ++f) if (f != pf) { F = f; break; }
+        int star = -1;
+        for (int s : stars) { if (s >= 0) { star = s; break; } }
+        bool aBothHuntPlayer = false;                   // (A) ОБА патруля берут игрока целью (сцена статична)
+        bool bHuntsPirate = false, bFalsePos = false;   // (B) одиночка гонит пирата ; НИКОГДА игрока
+        if (pf >= 0 && F >= 0 && star >= 0) {
+            // (A) стая: два Enemy-патруля рядом, у каждого свой ближний розыскной пират
+            {
+                LocalScene ss; buildLocalScene(gp, star, ss); ss.active = true;
+                while (ss.craft.size() < 4) { LocalCraft nc; ss.craft.push_back(nc); }
+                ss.craft.resize(4);
+                LocalCraft& A = ss.craft[0];   // патруль A фракции F
+                LocalCraft& B = ss.craft[1];   // патруль B фракции F (сосед по стае)
+                LocalCraft& PA = ss.craft[2];  // розыскной пират у A
+                LocalCraft& PB = ss.craft[3];  // розыскной пират у B
+                A.kind = B.kind = CK_PATROL; A.hostile = B.hostile = false;
+                A.faction = B.faction = F; A.agentIndex = B.agentIndex = -1;
+                A.heavy = B.heavy = 60.0; A.light = B.light = 0.0; A.wanted = B.wanted = false;
+                A.maxHullHP = B.maxHullHP = 100000.0; A.hullHP = B.hullHP = 100000.0;
+                A.maxShield = B.maxShield = 0.0; A.shield = B.shield = 0.0;
+                A.fireCooldown = B.fireCooldown = 0.0;
+                PA.kind = PB.kind = CK_PIRATE; PA.hostile = PB.hostile = true;
+                PA.faction = PB.faction = -1; PA.agentIndex = PB.agentIndex = -1;
+                PA.wanted = PB.wanted = true; PA.wantedBounty = PB.wantedBounty = 650.0;
+                PA.maxHullHP = PB.maxHullHP = 100000.0; PA.hullHP = PB.hullHP = 100000.0;
+                PA.maxShield = PB.maxShield = 0.0; PA.shield = PB.shield = 0.0;
+                PA.shieldRegenTimer = PB.shieldRegenTimer = 999.0;
+                int cur = gp.factionRelation(pf, F);
+                gp.adjustFactionRelation(pf, F, -100 - cur);   // Enemy-стояние обоих (одна фракция F)
+                for (int f = 0; f < 60; ++f) {
+                    LocalCraft& a = ss.craft[0]; LocalCraft& b = ss.craft[1];
+                    LocalCraft& pa = ss.craft[2]; LocalCraft& pb = ss.craft[3];
+                    a.x = ss.px; a.y = ss.py + 300.0; a.z = ss.pz;      // A в 300 LU (в осведомл. <750, >150 ⇒ без огня по игроку)
+                    b.x = ss.px; b.y = ss.py - 300.0; b.z = ss.pz;      // B в 300 LU (и 600 LU от A: <1400 ⇒ в стае)
+                    pa.x = ss.px; pa.y = ss.py + 380.0; pa.z = ss.pz;   // пират у A: 80 LU (ближе игрока ⇒ гейт §5.13.42 не берёт игрока)
+                    pb.x = ss.px; pb.y = ss.py - 380.0; pb.z = ss.pz;   // пират у B: 80 LU
+                    a.vx=a.vy=a.vz=0.0; b.vx=b.vy=b.vz=0.0; pa.vx=pa.vy=pa.vz=0.0; pb.vx=pb.vy=pb.vz=0.0;
+                    a.hullHP=a.maxHullHP; b.hullHP=b.maxHullHP; pa.hullHP=pa.maxHullHP; pb.hullHP=pb.maxHullHP;
+                    a.shield=b.shield=pa.shield=pb.shield=0.0; a.hostile=b.hostile=false;
+                    LocalInput in; in.fire = false;                    // игрок не стреляет ⇒ провокации нет
+                    updateLocalScene(gp, ss, in, dtReal);
+                    if (ss.craft.size() >= 2 &&
+                        ss.craft[0].aiState == 1 && ss.craft[0].aiTarget == LOCAL_TARGET_PLAYER &&
+                        ss.craft[1].aiState == 1 && ss.craft[1].aiTarget == LOCAL_TARGET_PLAYER)
+                        aBothHuntPlayer = true;                        // стая перебила дистанц-гейт у ОБОИХ
+                }
+            }
+            // (B, контроль) одиночка + его ближний розыскной пират, БЕЗ соседа
+            {
+                LocalScene ss; buildLocalScene(gp, star, ss); ss.active = true;
+                while (ss.craft.size() < 2) { LocalCraft nc; ss.craft.push_back(nc); }
+                ss.craft.resize(2);
+                LocalCraft& A = ss.craft[0];   // одинокий патруль
+                LocalCraft& PA = ss.craft[1];  // его ближний розыскной пират
+                A.kind = CK_PATROL; A.hostile = false; A.faction = F; A.agentIndex = -1;
+                A.heavy = 60.0; A.light = 0.0; A.wanted = false;
+                A.maxHullHP = 100000.0; A.hullHP = 100000.0;
+                A.maxShield = 0.0; A.shield = 0.0; A.fireCooldown = 0.0;
+                PA.kind = CK_PIRATE; PA.hostile = true; PA.faction = -1; PA.agentIndex = -1;
+                PA.wanted = true; PA.wantedBounty = 650.0;
+                PA.maxHullHP = 100000.0; PA.hullHP = 100000.0;
+                PA.maxShield = 0.0; PA.shield = 0.0; PA.shieldRegenTimer = 999.0;
+                int cur = gp.factionRelation(pf, F);
+                gp.adjustFactionRelation(pf, F, -100 - cur);   // тот же Enemy: чистый контраст ТОЛЬКО по наличию соседа
+                for (int f = 0; f < 60; ++f) {
+                    LocalCraft& a = ss.craft[0]; LocalCraft& pa = ss.craft[1];
+                    a.x = ss.px; a.y = ss.py + 300.0; a.z = ss.pz;      // патруль в 300 LU от игрока
+                    pa.x = ss.px; pa.y = ss.py + 380.0; pa.z = ss.pz;   // пират в 80 LU (ближе игрока)
+                    a.vx=a.vy=a.vz=0.0; pa.vx=pa.vy=pa.vz=0.0;
+                    a.hullHP=a.maxHullHP; pa.hullHP=pa.maxHullHP; a.shield=pa.shield=0.0; a.hostile=false;
+                    LocalInput in; in.fire = false;
+                    updateLocalScene(gp, ss, in, dtReal);
+                    if (!ss.craft.empty() && ss.craft[0].aiState == 1) {
+                        if (ss.craft[0].aiTarget == LOCAL_TARGET_PLAYER) bFalsePos = true;    // регресс: одиночка НЕ должен брать игрока
+                        else if (ss.craft[0].aiTarget >= 0)              bHuntsPirate = true; // ждём: гонит пирата
+                    }
+                }
+            }
+        }
+        bool bOk = bHuntsPirate && !bFalsePos;
+        lawPackHuntsPlayerOk = aBothHuntPlayer && bOk;
+        std::printf("law-pack-hunts-player probe: packOverridesGate=%s loneChasesPirate=%s\n",
+                    aBothHuntPlayer ? "YES (ok)" : "NO", bOk ? "YES (ok)" : "NO");
+    }
+    if (!lawPackHuntsPlayerOk) { std::printf("INVARIANT FAIL: §5.13.46 law-pack override did not fire for a pair, or a lone patrol wrongly took the player\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s lawHuntsHostile=%s patrolTargetSignal=%s vendettaScalesWithStanding=%s lawPackHuntsPlayer=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
@@ -1184,6 +1288,7 @@ int main() {
                 lawHuntsHostileOk ? "ok" : "FAILED",
                 patrolTargetSignalOk ? "ok" : "FAILED",
                 vendettaScalesWithStandingOk ? "ok" : "FAILED",
+                lawPackHuntsPlayerOk ? "ok" : "FAILED",
                 rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }

@@ -595,6 +595,40 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
             if ((c.hostile || factionHuntsPlayer) && playerTargetable && pd2 < atkBest) {
                 atkBest = pd2; atkPlayer = true; atkCraft = -1; c.defending = false;
             }
+            // (§5.13.46) СТАЯ ЗАКОНА — скоординированная охота на игрока. §5.13.42 переключает ОДИНОЧНЫЙ патруль
+            //   на игрока лишь если игрок БЛИЖЕ его пиратской дичи (pd2 < atkBest); патруль с более близким пиратом
+            //   гонит пирата. Здесь ПАК-override: если этот Enemy/Hostile-патруль ВИДИТ игрока (pd2 < AW2), но
+            //   §5.13.42 не сработал (пират ближе ⇒ !atkPlayer), И рядом (в PATROL_DISTRESS_R) есть ДРУГОЙ патруль,
+            //   чья фракция ТОЖЕ стоит Enemy/Hostile с игроком и у кого игрок в осведомлённости, — патруль БРОСАЕТ
+            //   пирата и присоединяется к охоте на игрока. Так глубокая вражда СЗЫВАЕТ стаю: симметрия §5.13.30
+            //   (набат пиратов к розыскному) / §5.13.32 (подмога патрулей) — но по ИГРОКУ, не по розыскному пирату.
+            //   Приём D: «сосед РАСПОЛОЖЕН охотиться» ре-выводится из ЖИВЫХ kind/faction/позиций (НЕ из
+            //   спломбированного aiTarget/defending соседа) ⇒ порядок-независимо и без рекурсии: два расположенных
+            //   патруля коммитятся КАЖДЫЙ по РАСПОЛОЖЕННОСТИ другого (не по его коммиту) ⇒ нет дедлока/зависимости
+            //   от порядка. Нужна ПАРА: одиночка без расположенного соседа гонит пирата по §5.13.42 (пробник фаза B).
+            //   Комбат-инвариант §0.2-G УСИЛЕН — патруль ушёл с пирата на игрока ⇒ у пирата аптайма БОЛЬШЕ, у игрока
+            //   боя БОЛЬШЕ. Строго аддитивно (нет пары / реп > −48 / игрок вне AW2 ⇒ прежнее поведение §5.13.42).
+            //   atkBest=pd2 как в §5.13.42 (иначе tdist=√atkBest ниже по ветке взял бы дистанцию до ПИРАТА). Ноль RNG,
+            //   без нового поля; в соаке патрулей нет в осн. цикле ⇒ no-op ⇒ 120k побитово; покрытие — lawPackHuntsPlayer.
+            if (factionHuntsPlayer && playerTargetable && !atkPlayer && pd2 < AW2) {
+                const double PACK2 = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
+                bool packHunt = false;
+                for (size_t j = 0; j < scene.craft.size() && !packHunt; ++j) {
+                    if (j == i) continue;
+                    const LocalCraft& o = scene.craft[j];
+                    if (o.hullHP <= 0.0 || o.kind != CK_PATROL) continue;      // сосед — только живой патруль
+                    if (o.faction < 0 || o.faction == game.playerFaction) continue;
+                    double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+                    if (dx*dx + dy*dy + dz*dz >= PACK2) continue;              // сосед-патруль в радиусе стаи от c?
+                    FactionRelationTension ost =
+                        classifyFactionRelationTension(game.factionRelation(game.playerFaction, o.faction));
+                    if (ost != FactionRelationTension::Enemy &&
+                        ost != FactionRelationTension::Hostile) continue;      // сосед сам Enemy/Hostile с игроком?
+                    double ox = scene.px - o.x, oy = scene.py - o.y, oz = scene.pz - o.z;
+                    if (ox*ox + oy*oy + oz*oz < AW2) packHunt = true;          // игрок в осведомлённости соседа?
+                }
+                if (packHunt) { atkBest = pd2; atkPlayer = true; atkCraft = -1; c.defending = false; }
+            }
         } else { // CK_TRADER / CK_CIVILIAN
             // Спровоцированный торговец/гражданский считает игрока целью.
             if (c.hostile && playerTargetable && pd2 < atkBest) { atkBest = pd2; atkPlayer = true; atkCraft = -1; }
