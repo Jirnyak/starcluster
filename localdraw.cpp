@@ -1185,6 +1185,52 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         return rallyPatrol;
     };
 
+    // (§5.13.33) КОГО ВЫРУЧАЕТ ПОДМОГА — draw-only зеркало §5.13.32 (localsim.cpp:437-479).
+    //   Приоритет 0.5 закона: СВОБОДНЫЙ патруль (его собственный wanted-скан пуст ⇒ сам не охотник)
+    //   идёт бить ближайшего пирата, увязшего в PATROL_DISTRESS_R ДРУГОГО патруля-ОХОТНИКА (у того
+    //   есть живой wanted в радиусе) ⇒ наряд сходится на затравленного своего. Возвращаем индекс
+    //   ПИРАТА (как sim: atkCraft = backupPir), НЕ охотника. НЕ гейтим на c.defending — патруль
+    //   бывает defending и ради рейд-обороны (§5.13.12); перевыводим из сырых полей. P0-непуст ⇒
+    //   ci сам ведёт охоту ⇒ подмогу не рисуем (-1). Строгий '<' ⇒ тай-брейк на меньший индекс.
+    //   Читаем только живые kind/wanted/hullHP/позиции — ни нового поля, ни RNG, ни шага sim.
+    auto backupTarget = [&](int ci) -> int {
+        const LocalCraft& c = scene.craft[ci];
+        if (c.kind != CK_PATROL || c.hullHP <= 0.0) return -1;
+        const double DISTR2 = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
+        for (size_t p = 0; p < scene.craft.size(); ++p) {       // P0 непусто ⇒ ci сам охотник ⇒ не подмога
+            if ((int)p == ci) continue;
+            const LocalCraft& o = scene.craft[p];
+            if (o.hullHP <= 0.0 || o.kind != CK_PIRATE || !o.wanted) continue;
+            double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+            if (dx*dx + dy*dy + dz*dz < DISTR2) return -1;
+        }
+        int best = -1; double bestD2 = DISTR2;
+        for (size_t j = 0; j < scene.craft.size(); ++j) {       // ближайший пират, увязший у ДРУГОГО охотника
+            if ((int)j == ci) continue;
+            const LocalCraft& o = scene.craft[j];
+            if (o.hullHP <= 0.0 || o.kind != CK_PIRATE) continue;
+            double dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z; double d2 = dx*dx + dy*dy + dz*dz;
+            if (d2 >= bestD2) continue;
+            bool inHunterMelee = false;                         // пират в PATROL_DISTRESS_R патруля q, реально охотящегося?
+            for (size_t q = 0; q < scene.craft.size() && !inHunterMelee; ++q) {
+                if ((int)q == ci || (int)q == (int)j) continue;
+                const LocalCraft& pat = scene.craft[q];
+                if (pat.hullHP <= 0.0 || pat.kind != CK_PATROL) continue;
+                double px = o.x - pat.x, py = o.y - pat.y, pz = o.z - pat.z;
+                if (px*px + py*py + pz*pz >= DISTR2) continue;
+                for (size_t k = 0; k < scene.craft.size(); ++k) {   // у q есть СВОЙ живой wanted в радиусе?
+                    if ((int)k == (int)q) continue;
+                    const LocalCraft& out = scene.craft[k];
+                    if (out.hullHP <= 0.0 || out.kind != CK_PIRATE || !out.wanted) continue;
+                    double wx = out.x - pat.x, wy = out.y - pat.y, wz = out.z - pat.z;
+                    if (wx*wx + wy*wy + wz*wz < DISTR2) { inHunterMelee = true; break; }
+                }
+            }
+            if (inHunterMelee) { bestD2 = d2; best = (int)j; }
+        }
+        return best;
+    };
+
     // (2) ОРБИТАЛЬНЫЕ КОЛЬЦА — плоские окружности, осмысленны только в орто-карте
     //     (в перспективе орбита проецируется в эллипс; пропускаем).
     if (scene.hasStar && !view.perspective) {
@@ -1590,6 +1636,48 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
                 int(pa.x + ux * a1), int(pa.y + uy * a1));
         }
         // остриё, вклинивающееся в патруль (направление тарана)
+        const double ah = 11.0, spread = 0.5;
+        double cs = std::cos(spread), sn = std::sin(spread);
+        SDL_RenderDrawLine(renderer, pb.x, pb.y,
+            int(pb.x - (ux * cs - uy * sn) * ah), int(pb.y - (ux * sn + uy * cs) * ah));
+        SDL_RenderDrawLine(renderer, pb.x, pb.y,
+            int(pb.x - (ux * cs + uy * sn) * ah), int(pb.y - (-ux * sn + uy * cs) * ah));
+    }
+
+    // (7г) ВЕКТОР ПОДМОГИ ЗАКОНА (§5.13.33): сине-белый пунктир СВОБОДНЫЙ_патруль→пират, к которому
+    //   он спешит на выручку затравленному охотнику (backupTarget — зеркало §5.13.32). Замыкает
+    //   закон-цикл симметрично набату (7в): оранж — «стая сходится на охотника», синь — «наряд
+    //   сходится в ответ». Холоднее и размереннее (пульс 4.2 vs оранж 7.0 / золото 5.2, марш 28 vs
+    //   46/34 — дисциплина, не ярость). Рисуем ПОСЛЕ оранжа. Чистый рендер: перевывод из живых полей.
+    for (size_t i = 0; i < scene.craft.size(); ++i) {
+        int bp = backupTarget((int)i);
+        if (bp < 0) continue;
+        const LocalCraft& pc = scene.craft[i];    // свободный патруль, идущий на выручку
+        const LocalCraft& tc = scene.craft[bp];   // пират, увязший у затравленного охотника — цель подмоги
+        if (occ(pc.x, pc.y, pc.z) || occ(tc.x, tc.y, tc.z)) continue;   // конец за звездой — не тянем сквозь неё
+        ProjectedPoint pa = projectPointWithBasis(pc.x, pc.y, pc.z, winW, winH, view, basis);
+        ProjectedPoint pb = projectPointWithBasis(tc.x, tc.y, tc.z, winW, winH, view, basis);
+        if (view.perspective && (pa.behind || pb.behind)) continue;    // конец за ближней плоскостью
+        double lx = double(pb.x - pa.x), ly = double(pb.y - pa.y);
+        double llen = std::sqrt(lx * lx + ly * ly);
+        if (llen < 2.0) continue;
+        double ux = lx / llen, uy = ly / llen;
+        double pulse = 0.5 + 0.5 * std::sin(scene.fxClock * 4.2);
+        SDL_Color blue = rgba(120, 180, 255, 60 + int(pulse * 160.0));
+        SDL_SetRenderDrawColor(renderer, blue.r, blue.g, blue.b, blue.a);
+        // маршевые штрихи patrol→pirate (период 20 px, штрих 10 px), фаза размереннее оранжа/золота
+        const double period = 20.0, dash = 10.0;
+        double phase = std::fmod(scene.fxClock * 28.0, period);
+        int guard = 0;
+        for (double s = -phase; s < llen && guard < 240; s += period, ++guard) {
+            double a0 = s < 0.0 ? 0.0 : s;
+            double a1 = std::min(s + dash, llen);
+            if (a1 <= 0.0) continue;
+            SDL_RenderDrawLine(renderer,
+                int(pa.x + ux * a0), int(pa.y + uy * a0),
+                int(pa.x + ux * a1), int(pa.y + uy * a1));
+        }
+        // остриё, вклинивающееся в пирата (направление выручки)
         const double ah = 11.0, spread = 0.5;
         double cs = std::cos(spread), sn = std::sin(spread);
         SDL_RenderDrawLine(renderer, pb.x, pb.y,
@@ -2019,6 +2107,18 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         int packN = 0;                    // (§5.13.31) сколько простаивающих пиратов сбегается таранить ЭТОТ патруль
         if (esc) for (size_t j = 0; j < scene.craft.size(); ++j) if (rallyTarget((int)j) == scene.targetCraft) ++packN;
         if (packN > 0) ph += 14;          // место под строку «UNDER PACK Xn» под корпусом
+        int backupN = 0;                  // (§5.13.33) сколько СВОБОДНЫХ патрулей спешит на выручку ЭТОМУ охотнику
+        if (esc && tPursuit >= 0) {       // строка только для патруля-ОХОТНИКА (ESCORT + ведёт погоню §5.13.29)
+            const double BK2 = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
+            for (size_t j = 0; j < scene.craft.size(); ++j) {
+                int bp = backupTarget((int)j);            // подмога j спешит к пирату bp…
+                if (bp < 0) continue;
+                const LocalCraft& pp = scene.craft[bp];
+                double dxb = pp.x - t.x, dyb = pp.y - t.y, dzb = pp.z - t.z;
+                if (dxb*dxb + dyb*dyb + dzb*dzb < BK2) ++backupN;   // …а тот пират в бедствии ИМЕННО у нашей цели
+            }
+        }
+        if (backupN > 0) ph += 14;        // место под строку «BACKUP INBOUND Xn» под корпусом
         panel(renderer, tx, ty, 224, ph);
         if (sos) {   // пульсирующая SOS-красная рамка вокруг панели — «эта цель под атакой»
             double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 6.0);
@@ -2079,6 +2179,11 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             by += 12;
             std::snprintf(buf, sizeof(buf), "UNDER PACK X%d", packN);
             drawText(renderer, tx + 8, by, buf, rgba(255, 120, 32, 255), 1);
+        }
+        if (backupN > 0) {   // (§5.13.33) закон шлёт подмогу этому загнанному охотнику — сколько бортов идёт
+            by += 12;
+            std::snprintf(buf, sizeof(buf), "BACKUP INBOUND X%d", backupN);
+            drawText(renderer, tx + 8, by, buf, rgba(120, 180, 255, 255), 1);
         }
     }
 
@@ -2179,6 +2284,19 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
             radarXY(scene.craft[rp], qx, qy);
             double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 7.0);
             SDL_SetRenderDrawColor(renderer, 255, 120, 32, 45 + int(pl * 120.0));
+            SDL_RenderDrawLine(renderer, ax, ay, qx, qy);
+        }
+
+        // (§5.13.33) ЛИНИЯ ПОДМОГИ НА РАДАРЕ: сине-белая связка блип-патруль → блип-пират, та же
+        //   перевыведенная цель (backupTarget), тот же базис. После оранжа ⇒ на пересечении синь поверх.
+        for (size_t i = 0; i < scene.craft.size(); ++i) {
+            int bp = backupTarget((int)i);
+            if (bp < 0) continue;
+            int ax, ay, qx, qy;
+            radarXY(scene.craft[i], ax, ay);
+            radarXY(scene.craft[bp], qx, qy);
+            double pl = 0.5 + 0.5 * std::sin(scene.fxClock * 4.2);
+            SDL_SetRenderDrawColor(renderer, 120, 180, 255, 45 + int(pl * 120.0));
             SDL_RenderDrawLine(renderer, ax, ay, qx, qy);
         }
 

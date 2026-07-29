@@ -717,6 +717,49 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_pack_rally.bmp");
     }
 
+    // (22) ПОДМОГА ЗАКОНА (§5.13.33): draw-only спутник §5.13.32. Патруль-ОХОТНИК H (defending §5.13.28)
+    //      прижал РОЗЫСКНОГО изгоя (золотой IN PURSUIT §5.13.29); рядом ПРОСТАИВАЮЩИЙ пират сорвался
+    //      таранить H (оранжевый набат §5.13.31), а СВОБОДНЫЙ патруль R (его wanted-скан пуст ⇒ сам не
+    //      охотник) идёт на выручку, целясь в увязшего пирата (§5.13.32). Рендер перевыводит подмогу из
+    //      живых полей (backupTarget) ⇒ сине-белый вектор выручки R→pack в 3D, синяя связка на радаре и
+    //      строка «BACKUP INBOUND X1» ПОД «UNDER PACK X1»/«IN PURSUIT» в панели H — весь закон-цикл
+    //      (гон → набат → подмога) в одном кадре. Ноль полей/RNG/шага.
+    {
+        LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+        while (s.craft.size() < 4) { LocalCraft c; s.craft.push_back(c); }
+        s.craft.resize(4);                             // охотник + изгой + пират-набат + свободная подмога
+        LocalCraft& hun = s.craft[0];                  // H: ПАТРУЛЬ-ОХОТНИК (defending) — цель панели, жертва набата
+        hun.kind = CK_PATROL; hun.label = "PATROL"; hun.faction = 1; hun.r = 110; hun.g = 215; hun.b = 170;
+        hun.hostile = false; hun.defending = true; hun.underAttack = false; hun.wanted = false;
+        hun.aiState = 1; hun.errand = 0; hun.errandBody = -1;
+        hun.x = 8000.0; hun.y = 0.0; hun.z = 150.0; hun.vx = hun.vy = hun.vz = 0.0;      // далеко от звезды => без ореола
+        hun.maxHullHP = 70.0; hun.hullHP = hun.maxHullHP; hun.maxShield = 20.0; hun.shield = 20.0;
+        LocalCraft& out = s.craft[1];                  // ИЗГОЙ в розыске — вплотную к H (делает H охотником, §5.13.28/29)
+        out.kind = CK_PIRATE; out.label = "OUTLAW"; out.faction = -1; out.r = 230; out.g = 90; out.b = 80;
+        out.hostile = true; out.wanted = true; out.wantedBounty = 800.0;
+        out.aiState = 1; out.errand = 0; out.errandBody = -1;
+        out.x = 8000.0; out.y = 260.0; out.z = 150.0; out.vx = out.vy = out.vz = 0.0;    // 260 LU от H (<750 => idle-гейт изгоя ЗАКРЫТ => без оранжа; <1400 => H охотник)
+        out.maxHullHP = 45.0; out.hullHP = out.maxHullHP * 0.65;
+        LocalCraft& pak = s.craft[2];                  // ПРОСТАИВАЮЩИЙ пират — набат: таранит H (§5.13.31)
+        pak.kind = CK_PIRATE; pak.label = "RAIDER"; pak.faction = -1; pak.r = 230; pak.g = 110; pak.b = 70;
+        pak.hostile = true; pak.wanted = false; pak.aiState = 1; pak.errand = 0; pak.errandBody = -1;
+        pak.x = 8000.0; pak.y = -820.0; pak.z = 150.0; pak.vx = pak.vy = pak.vz = 0.0;   // 820 LU от H: >750 (idle) & <1400 (набат)
+        pak.maxHullHP = 45.0; pak.hullHP = pak.maxHullHP;                                // полный корпус => не бегство (aiState 1)
+        LocalCraft& bak = s.craft[3];                  // R: СВОБОДНЫЙ патруль — подмога, идёт на увязшего пирата (§5.13.32)
+        bak.kind = CK_PATROL; bak.label = "PATROL"; bak.faction = 1; bak.r = 110; bak.g = 215; bak.b = 170;
+        bak.hostile = false; bak.defending = true; bak.underAttack = false; bak.wanted = false;
+        bak.aiState = 1; bak.errand = 0; bak.errandBody = -1;
+        bak.x = 6700.0; bak.y = -820.0; bak.z = 150.0; bak.vx = bak.vy = bak.vz = 0.0;   // pack в 1300<1400 (цель подмоги); изгой в 1690>1400 => R сам НЕ охотник
+        bak.maxHullHP = 70.0; bak.hullHP = bak.maxHullHP; bak.maxShield = 20.0; bak.shield = 20.0;
+        s.px = 5200.0; s.py = -345.0; s.pz = 320.0; s.pvx = s.pvy = s.pvz = 0.0;         // сверху-сбоку, звезда позади камеры (нет окклюзии/ореола)
+        localSetForward(s, 7675.0 - s.px, -345.0 - s.py, 150.0 - s.pz);                  // нос в центр тяжести четвёрки
+        s.targetCraft = 0;                             // цель — H => панель: ESCORT + IN PURSUIT + UNDER PACK + BACKUP INBOUND
+        s.fxClock = 0.30;                              // фаза: золотой/оранжевый/синий пульсы все яркие
+        std::printf("  [law-backup] free patrol rushes to reinforce the swarmed hunter -> blue reinforcement vector + radar link + BACKUP INBOUND\n");
+        total += 1;
+        ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_law_backup.bmp");
+    }
+
     std::printf("SHOTS DONE: %d/%d saved ok\n", ok, total);
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);
