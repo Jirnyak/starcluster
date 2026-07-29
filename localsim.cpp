@@ -34,6 +34,7 @@ static void rodriguesRotate(double& vx, double& vy, double& vz,
 static double manhuntSpeedMult(const LocalScene& scene, int ci) {
     const LocalCraft& c = scene.craft[ci];
     if (c.kind != CK_PATROL || !c.defending || c.hullHP <= 0.0) return 1.0;
+    if (c.aiTarget == LOCAL_TARGET_PLAYER) return 1.0; // (§5.13.44) вендетта владеет этим бортом — не облава
     double best = LocalCfg::PATROL_DISTRESS_R * LocalCfg::PATROL_DISTRESS_R;
     int pir = -1;
     for (size_t j = 0; j < scene.craft.size(); ++j) {
@@ -48,6 +49,26 @@ static double manhuntSpeedMult(const LocalScene& scene, int ci) {
     double heat = (scene.craft[pir].wantedBounty - 250.0) / (1500.0 - 250.0);
     if (heat < 0.0) heat = 0.0; else if (heat > 1.0) heat = 1.0;
     return 1.0 + LocalCfg::MANHUNT_SPEED_GAIN * heat;
+}
+
+// (§5.13.44) «Вендетта» — множитель предельной скорости патруля, что гонится ЗА ИГРОКОМ по репутации.
+//   Зеркало облавы §5.13.34, но ключ — ЖИВОЙ aiTarget (его §5.13.43 наконец начал заполнять) вместо
+//   P0-скана по пиратам: патруль летит на игрока ⇔ aiTarget==LOCAL_TARGET_PLAYER. В live-игре это ставит
+//   ровно player-override §5.13.42 (реп ≤ −48, тир Hostile/Enemy), и он ГАСИТ defending (стр.575) — потому
+//   облава §5.13.34 на этом борту уже возвращает 1.0 (гейт !defending + явный guard aiTarget). Так два
+//   множителя дизъюнктны ПО ПОСТРОЕНИЮ: не бывает борта, где активны оба. Накал берём из ТОЙ ЖЕ репы, что
+//   решила охоту: rep=−48 ⇒ heat 0 (порог), rep=−128 (дно) ⇒ heat 1 ⇒ +GAIN. Не-патруль / не на игрока /
+//   реп выше −48 ⇒ 1.0 (нулевой регресс). Ноль RNG, без новых полей; ПИРАТА не трогаем — патруль лишь
+//   резвее гонит ИГРОКА (combat-инвариант §0.2-G усилен: больше боя). game даёт живую репу фракции борта.
+static double vendettaSpeedMult(const Game& game, const LocalScene& scene, int ci) {
+    const LocalCraft& c = scene.craft[ci];
+    if (c.kind != CK_PATROL || c.hullHP <= 0.0) return 1.0;
+    if (c.aiTarget != LOCAL_TARGET_PLAYER) return 1.0;         // гонится не за игроком — не вендетта
+    if (c.faction < 0 || c.faction == game.playerFaction) return 1.0;
+    double rep = (double)game.factionRelation(game.playerFaction, c.faction);
+    double heat = (-48.0 - rep) / 80.0;                        // −48 ⇒ 0, −128 ⇒ 1.0
+    if (heat < 0.0) heat = 0.0; else if (heat > 1.0) heat = 1.0;
+    return 1.0 + LocalCfg::VENDETTA_SPEED_GAIN * heat;
 }
 
 // ============================================================================
@@ -947,7 +968,8 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                 c.vz += dz * inv * c.accel * h;
             }
             double effMax = c.maxSpeed * ((c.boost > 0.0) ? LocalCfg::NPC_BOOST_MULT : 1.0)
-                          * manhuntSpeedMult(scene, (int)i);  // (§5.13.34) облава: закон резвее на крупной дичи
+                          * manhuntSpeedMult(scene, (int)i)          // (§5.13.34) облава: закон резвее на крупной дичи
+                          * vendettaSpeedMult(game, scene, (int)i);  // (§5.13.44) вендетта: закон резвее на своём враге
             double cs = std::sqrt(c.vx*c.vx + c.vy*c.vy + c.vz*c.vz);
             if (cs > effMax && cs > 1e-9) {
                 double f = effMax / cs;

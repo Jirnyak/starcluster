@@ -1100,7 +1100,77 @@ int main() {
     }
     if (!patrolTargetSignalOk) { std::printf("INVARIANT FAIL: §5.13.43 aiTarget signal wrong (player sentinel missing, or false-positive on pirate hunt)\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s lawHuntsHostile=%s patrolTargetSignal=%s rocks=%ld shiny=%ld trades=%ld\n",
+    // (§5.13.44) ВЕНДЕТТА: патруль, что берёт ИГРОКА целью по стоянию (§5.13.42), летит тем резвее, чем ГЛУБЖЕ
+    //   минус его фракции к игроку. Зеркало облавы §5.13.34, но ключ — ЖИВОЙ aiTarget==LOCAL_TARGET_PLAYER (его
+    //   §5.13.43 начал заполнять) вместо P0-скана по пиратам ⇒ поле дорастает из рендерного до входа СИМ. Как
+    //   §5.13.42/43, в 120k-цикле ветка патруля не бежит (гарнизоны disjoint фикс-маршруту soak) ⇒ изолированный
+    //   пробник; сцена = РОВНО патруль фракции F + игрок (resize(1) ⇒ ни пиратов, ни иных целей), НЕспровоцирован,
+    //   пиньнется в 600 LU (>WEAPON_RANGE 150 ⇒ огонь не тормозит и не гасит скорость; <AW2 750 ⇒ игрок в
+    //   осведомлённости ⇒ override §5.13.42 берёт игрока целью, atkBest=AW2 нетронут ⇒ pd2=360k<562k). Пин
+    //   ПОЗИЦИИ, но НЕ скорости — velocity растёт до effMax (как manhunt-проба). (A) реп −128 (дно вражды):
+    //   heat=1 ⇒ множитель 1+GAIN ⇒ vmax≈maxSpeed*(1+GAIN). (B, контроль) реп −48 (порог Hostile, где override
+    //   ВСЁ ЕЩЁ берёт игрока целью — aiTarget==PLAYER — но heat=(−48−(−48))/80=0): множитель 1.0 ⇒ vmax≈maxSpeed.
+    //   Так проба доказывает, что бонус растёт с ГЛУБИНОЙ вражды, а не просто с фактом охоты (ОБА борта реально
+    //   гонятся за игроком — фиксируем tgtOk — разница лишь в скорости). manhunt на этом борту молчит (guard
+    //   aiTarget==PLAYER + гейт !defending, ведь override гасит defending) ⇒ два множителя дизъюнктны по построению.
+    bool vendettaScalesWithStandingOk = false;
+    {
+        Game gv; gv.init(1200);
+        int pf = gv.playerFaction;
+        int F = -1;
+        for (int f = 0; f < (int)gv.factions.size(); ++f) if (f != pf) { F = f; break; }
+        int star = -1;
+        for (int s : stars) { if (s >= 0) { star = s; break; } }
+        double vmax[2] = {0.0, 0.0};
+        const double MAXS = 60.0;
+        const int REP[2] = { -128, -48 };            // (A) дно вражды (heat 1) ; (B) порог Hostile (heat 0, контроль)
+        bool aTgt = false, bTgt = false;             // обе фазы РЕАЛЬНО берут игрока целью?
+        if (pf >= 0 && F >= 0 && star >= 0) {
+            for (int phase = 0; phase < 2; ++phase) {
+                LocalScene s;
+                buildLocalScene(gv, star, s);
+                s.active = true;
+                while (s.craft.size() < 1) { LocalCraft nc; s.craft.push_back(nc); }
+                s.craft.resize(1);
+                LocalCraft& pat = s.craft[0];             // патруль фракции F, НЕ спровоцирован
+                pat.kind = CK_PATROL; pat.hostile = false; pat.faction = F; pat.agentIndex = -1;
+                pat.heavy = 60.0; pat.light = 0.0; pat.wanted = false;
+                pat.maxSpeed = MAXS; pat.accel = 300.0;  // быстрое насыщение до effMax за единицы кадров
+                pat.maxHullHP = 100000.0; pat.hullHP = 100000.0;
+                pat.maxShield = 0.0; pat.shield = 0.0; pat.fireCooldown = 0.0; pat.boost = 0.0;
+                int cur = gv.factionRelation(pf, F);
+                gv.adjustFactionRelation(pf, F, REP[phase] - cur);   // посев: rep(pf,F) = REP[phase]
+                s.pvx = s.pvy = s.pvz = 0.0;
+                for (int f = 0; f < 120; ++f) {
+                    LocalCraft& p = s.craft[0];
+                    p.x = s.px; p.y = s.py + 600.0; p.z = s.pz;   // 600 LU: >150 (без стрельбы), <750 (в осведомлённости)
+                    p.hullHP = p.maxHullHP; p.shield = 0.0; p.boost = 0.0; p.hostile = false;  // держим НЕспровоцированным
+                    LocalInput in; in.fire = false;               // игрок не стреляет ⇒ провокации нет
+                    updateLocalScene(gv, s, in, dtReal);
+                    if (!s.craft.empty()) {
+                        LocalCraft& q = s.craft[0];
+                        if (q.aiState == 1 && q.aiTarget == LOCAL_TARGET_PLAYER) {
+                            if (phase == 0) aTgt = true; else bTgt = true;
+                        }
+                        double cs = std::sqrt(q.vx*q.vx + q.vy*q.vy + q.vz*q.vz);
+                        if (cs > vmax[phase]) vmax[phase] = cs;
+                    }
+                }
+            }
+        }
+        double expHigh = MAXS * (1.0 + LocalCfg::VENDETTA_SPEED_GAIN);   // heat=1 при реп −128
+        double expLow  = MAXS;                                          // heat=0 при реп −48 ⇒ множитель 1.0
+        bool highOk  = std::fabs(vmax[0] - expHigh) < 1.5;              // ускорен пропорц. глубине вражды
+        bool lowOk   = std::fabs(vmax[1] - expLow)  < 1.0;             // нулевой регресс: ровно maxSpeed
+        bool orderOk = vmax[0] > vmax[1] + 1.0;                        // ядро: глубже вражда ⇒ резвее закон
+        bool tgtOk   = aTgt && bTgt;                                   // оба борта реально гонятся за игроком
+        vendettaScalesWithStandingOk = highOk && lowOk && orderOk && tgtOk;
+        std::printf("vendetta-scales-with-standing probe: deepEnmity=%.2f (exp %.2f) threshold=%.2f (exp %.2f) faster=%s bothHuntPlayer=%s\n",
+                    vmax[0], expHigh, vmax[1], expLow, orderOk ? "yes (ok)" : "no", tgtOk ? "yes (ok)" : "no");
+    }
+    if (!vendettaScalesWithStandingOk) { std::printf("INVARIANT FAIL: §5.13.44 vendetta speed scaling did not fire, regressed baseline, or lost player-lock\n"); ++invariantFails; }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s lawHuntsHostile=%s patrolTargetSignal=%s vendettaScalesWithStanding=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
@@ -1113,6 +1183,7 @@ int main() {
                 factionReprisalOk ? "ok" : "FAILED",
                 lawHuntsHostileOk ? "ok" : "FAILED",
                 patrolTargetSignalOk ? "ok" : "FAILED",
+                vendettaScalesWithStandingOk ? "ok" : "FAILED",
                 rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }
