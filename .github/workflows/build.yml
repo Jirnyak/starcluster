@@ -82,6 +82,7 @@ jobs:
           mkdir -p dist
           cp starcluster.exe dist/
           cp /mingw64/bin/SDL2.dll dist/
+          cp /mingw64/bin/libwinpthread-1.dll dist/
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -119,6 +120,7 @@ jobs:
           mv all-builds/Starcluster-macOS/Starcluster.dmg Starcluster-Multiplatform/
           mv all-builds/Starcluster-Windows/starcluster.exe Starcluster-Multiplatform/
           mv all-builds/Starcluster-Windows/SDL2.dll Starcluster-Multiplatform/
+          mv all-builds/Starcluster-Windows/libwinpthread-1.dll Starcluster-Multiplatform/
           mv all-builds/Starcluster-Linux/starcluster-linux Starcluster-Multiplatform/
       - name: Upload Multiplatform Artifact
         uses: actions/upload-artifact@v4
