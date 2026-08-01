@@ -34,39 +34,6 @@ struct ActionButton {
     int action;
 };
 
-struct InfluenceSource {
-    int x = 0;
-    int y = 0;
-    double depth = 0.0;
-    int faction = -1;
-    double weight = 1.0;
-};
-
-struct InfluenceCell {
-    SDL_Rect rect;
-    int faction = -1;
-    Uint8 alpha = 0;
-};
-
-struct InfluenceOverlayCache {
-    bool valid = false;
-    bool forceRefresh = true;
-    int w = 0;
-    int h = 0;
-    int factionCount = 0;
-    size_t starCount = 0;
-    double centerX = 0.0;
-    double centerY = 0.0;
-    double centerZ = 0.0;
-    double scale = 0.0;
-    CameraBasis basis;
-    double gameTime = -1.0e30;
-    Uint64 refreshCounter = 0;
-    std::vector<InfluenceSource> sources;
-    std::vector<double> scores;
-    std::vector<InfluenceCell> cells;
-};
-
 const double TARGET_FPS = 100.0;
 const double TARGET_FRAME_SECONDS = 1.0 / TARGET_FPS;
 const double BASE_SIM_YEARS_PER_SECOND = 1.0;
@@ -75,17 +42,7 @@ const double MAX_CAMERA_DT_SECONDS = 0.05;
 const double MAX_SIM_STEP_YEARS = 0.01;
 const double CAMERA_YAW_RADIANS_PER_SECOND = 1.8;
 const double CAMERA_PITCH_RADIANS_PER_SECOND = 1.35;
-const double INFLUENCE_OVERLAY_MIN_REFRESH_SECONDS = 0.12;
-const double INFLUENCE_OVERLAY_MAX_STALE_SECONDS = 0.35;
-const double INFLUENCE_OVERLAY_GAME_REFRESH_YEARS = 0.35;
 const char* SAVE_FILE = "starcluster.save";
-
-InfluenceOverlayCache gInfluenceOverlayCache;
-
-void invalidateInfluenceOverlayCache() {
-    gInfluenceOverlayCache.valid = false;
-    gInfluenceOverlayCache.forceRefresh = true;
-}
 
 double clampDouble(double value, double lo, double hi) {
     return std::max(lo, std::min(hi, value));
@@ -176,153 +133,6 @@ void setAgentColor(SDL_Renderer* renderer, const Agent& agent, bool selected) {
     } else {
         SDL_SetRenderDrawColor(renderer, 70, 240, 255, 255);
     }
-}
-
-bool influenceOverlayCameraDirty(const InfluenceOverlayCache& cache, const View3D& view, const CameraBasis& basis) {
-    const double dx = view.centerX - cache.centerX;
-    const double dy = view.centerY - cache.centerY;
-    const double dz = view.centerZ - cache.centerZ;
-    const double centerDirty2 = 0.35 * 0.35;
-    if (dx * dx + dy * dy + dz * dz > centerDirty2) return true;
-    if (std::abs(view.scale - cache.scale) > std::max(0.02, cache.scale * 0.012)) return true;
-    if (std::abs(basis.cy - cache.basis.cy) > 0.006) return true;
-    if (std::abs(basis.sy - cache.basis.sy) > 0.006) return true;
-    if (std::abs(basis.cp - cache.basis.cp) > 0.006) return true;
-    if (std::abs(basis.sp - cache.basis.sp) > 0.006) return true;
-    return false;
-}
-
-void drawCachedInfluenceOverlay(SDL_Renderer* renderer, const Game& game, const InfluenceOverlayCache& cache) {
-    for (size_t i = 0; i < cache.cells.size(); ++i) {
-        const InfluenceCell& cell = cache.cells[i];
-        setFactionColor(renderer, game, cell.faction, cell.alpha);
-        SDL_RenderFillRect(renderer, &cell.rect);
-    }
-}
-
-void drawInfluenceOverlay(SDL_Renderer* renderer, const Game& game, int w, int h, const View3D& view, const CameraBasis& basis) {
-    if (w <= 0 || h <= 0 || game.factions.empty()) return;
-
-    InfluenceOverlayCache& cache = gInfluenceOverlayCache;
-    const Uint64 now = SDL_GetPerformanceCounter();
-    const Uint64 frequency = SDL_GetPerformanceFrequency();
-    const double realSinceRefresh = cache.refreshCounter == 0
-        ? INFLUENCE_OVERLAY_MAX_STALE_SECONDS
-        : double(now - cache.refreshCounter) / double(frequency);
-    const bool shapeDirty =
-        !cache.valid ||
-        cache.forceRefresh ||
-        cache.w != w ||
-        cache.h != h ||
-        cache.factionCount != int(game.factions.size()) ||
-        cache.starCount != game.cluster.stars.size();
-    const bool cameraDirty = !shapeDirty && influenceOverlayCameraDirty(cache, view, basis);
-    const bool gameTimeDirty =
-        !shapeDirty &&
-        (game.time < cache.gameTime || game.time - cache.gameTime >= INFLUENCE_OVERLAY_GAME_REFRESH_YEARS);
-    const bool staleDirty = !shapeDirty && realSinceRefresh >= INFLUENCE_OVERLAY_MAX_STALE_SECONDS;
-    const bool cadenceReady = realSinceRefresh >= INFLUENCE_OVERLAY_MIN_REFRESH_SECONDS;
-    if (!shapeDirty && !(cadenceReady && (cameraDirty || gameTimeDirty || staleDirty))) {
-        drawCachedInfluenceOverlay(renderer, game, cache);
-        return;
-    }
-
-    cache.sources.clear();
-    if (cache.sources.capacity() < game.cluster.stars.size()) {
-        cache.sources.reserve(game.cluster.stars.size());
-    }
-    const int margin = std::max(160, std::max(w, h) / 4);
-    for (size_t i = 0; i < game.cluster.stars.size(); ++i) {
-        if (!game.playerKnowsOwner(int(i))) continue;
-        const int owner = game.playerKnownOwner(int(i));
-        if (owner < 0 || owner >= int(game.factions.size())) continue;
-
-        const ClusterStar& star = game.cluster.stars[i];
-        const ProjectedPoint p = projectPointWithBasis(star.x, star.y, star.z, w, h, view, basis);
-        if (p.x < -margin || p.x > w + margin || p.y < -margin || p.y > h + margin) continue;
-
-        const double age = game.playerKnownOwnerAge(int(i));
-        const double ageWeight = age < 0.0 ? 1.0 : clampDouble(1.0 - age / 80.0, 0.35, 1.0);
-
-        InfluenceSource source;
-        source.x = p.x;
-        source.y = p.y;
-        source.depth = p.depth;
-        source.faction = owner;
-        source.weight = ageWeight * depthFade(p.depth);
-        cache.sources.push_back(source);
-    }
-
-    const int cols = 32;
-    const int rows = 24;
-    const int cellW = std::max(1, (w + cols - 1) / cols);
-    const int cellH = std::max(1, (h + rows - 1) / rows);
-    const double core = std::max(64.0, std::min(w, h) / 9.0);
-    const double core2 = core * core;
-    cache.scores.resize(game.factions.size());
-    cache.cells.clear();
-    if (cache.cells.capacity() < size_t(cols * rows)) {
-        cache.cells.reserve(size_t(cols * rows));
-    }
-
-    if (!cache.sources.empty()) {
-        for (int row = 0; row < rows; ++row) {
-            const int sy = row * cellH + cellH / 2;
-            for (int col = 0; col < cols; ++col) {
-                const int sx = col * cellW + cellW / 2;
-                std::fill(cache.scores.begin(), cache.scores.end(), 0.0);
-
-                for (size_t i = 0; i < cache.sources.size(); ++i) {
-                    const InfluenceSource& source = cache.sources[i];
-                    const double dx = double(sx - source.x);
-                    const double dy = double(sy - source.y);
-                    const double dz = source.depth * view.scale * 0.35;
-                    const double influence = source.weight / (dx * dx + dy * dy + dz * dz + core2);
-                    cache.scores[source.faction] += influence;
-                }
-
-                int bestFaction = -1;
-                double best = 0.0;
-                double second = 0.0;
-                for (size_t i = 0; i < cache.scores.size(); ++i) {
-                    const double score = cache.scores[i];
-                    if (score > best) {
-                        second = best;
-                        best = score;
-                        bestFaction = int(i);
-                    } else if (score > second) {
-                        second = score;
-                    }
-                }
-                if (bestFaction < 0 || best < 0.000009) continue;
-
-                const double confidence = second > 0.0 ? clampDouble((best - second) / best, 0.0, 1.0) : 1.0;
-                InfluenceCell cell;
-                cell.rect.x = col * cellW;
-                cell.rect.y = row * cellH;
-                cell.rect.w = cellW + 1;
-                cell.rect.h = cellH + 1;
-                cell.faction = bestFaction;
-                cell.alpha = Uint8(clampDouble((11.0 + best * 260000.0) * (0.45 + confidence * 0.55), 7.0, 42.0));
-                cache.cells.push_back(cell);
-            }
-        }
-    }
-
-    cache.valid = true;
-    cache.forceRefresh = false;
-    cache.w = w;
-    cache.h = h;
-    cache.factionCount = int(game.factions.size());
-    cache.starCount = game.cluster.stars.size();
-    cache.centerX = view.centerX;
-    cache.centerY = view.centerY;
-    cache.centerZ = view.centerZ;
-    cache.scale = view.scale;
-    cache.basis = basis;
-    cache.gameTime = game.time;
-    cache.refreshCounter = now;
-    drawCachedInfluenceOverlay(renderer, game, cache);
 }
 
 int strongestShortage(const Market& market) {
@@ -557,7 +367,6 @@ int main(int argc, char** argv) {
     int selectedElement = elementIndex("Fe");
     if (selectedElement < 0) selectedElement = 0;
     bool followAgent = selectedAgent >= 0;
-    bool showInfluenceOverlay = false;
     double simSpeed = 1.0;
     UI::WindowState ui;
     if (selectedStar >= 0) UI::openSystemWindow(ui, selectedStar, winW, winH);
@@ -870,7 +679,6 @@ int main(int argc, char** argv) {
                     game.lastEvent = loaded ? "loaded starcluster.save" : "load failed";
                     if (loaded) {
                         resetSelectionAfterLoad(game, view, ui, winW, winH, selectedStar, selectedAgent, followAgent);
-                        invalidateInfluenceOverlayCache();
                     }
                     titleTick = 11;
                     continue;
@@ -932,11 +740,6 @@ int main(int argc, char** argv) {
                 if (e.key.keysym.sym == SDLK_f) followAgent = selectedAgent >= 0;
                 if (e.key.keysym.sym == SDLK_r && selectedAgent >= 0 && selectedAgent != game.playerAgent) {
                     if (game.robAgent(game.playerAgent, selectedAgent)) followAgent = true;
-                }
-                if (e.key.keysym.sym == SDLK_i) {
-                    showInfluenceOverlay = !showInfluenceOverlay;
-                    invalidateInfluenceOverlayCache();
-                    titleTick = 11;
                 }
                 if (e.key.keysym.sym == SDLK_RETURN && game.playerAgent >= 0) {
                     selectedStar = game.agents[game.playerAgent].currentStar;
@@ -1134,9 +937,6 @@ int main(int argc, char** argv) {
             continue;
         }
         const CameraBasis cameraBasis = makeCameraBasis(view);
-        if (showInfluenceOverlay) {
-            drawInfluenceOverlay(renderer, game, winW, winH, view, cameraBasis);
-        }
 
         for (size_t i = 0; i < game.agents.size(); ++i) {
             const Agent& agent = game.agents[i];
@@ -1242,7 +1042,6 @@ int main(int argc, char** argv) {
         if (++titleTick % 12 == 0) {
             char title[1024];
             const ElementDefinition& element = elementDefinitions()[selectedElement];
-            const char* influenceMode = showInfluenceOverlay ? "inf on" : "inf off";
             const char* cargo = "empty";
             double speed = 0.0;
             double money = 0.0;
@@ -1308,8 +1107,8 @@ int main(int argc, char** argv) {
                     const int shortage = strongestShortage(market);
                     const int surplus = strongestSurplus(market);
                     std::snprintf(title, sizeof(title),
-                        "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s %s | factions %zu colonies %zu captures %d | %s owner %s %s pop %.0f ind %.2f hab %.2f def %.1f | %s price %.1f supply %.1f demand %.1f | shortage %s x%.1f surplus %s x%.1f | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s cr %.0f tr %d last %.0f %s | F5 save F9 load H hire/build C colony/reinforce | %s%s",
-                        coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, influenceMode, game.factions.size(), game.colonies.size(), game.capturedSystems,
+                        "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s | factions %zu colonies %zu captures %d | %s owner %s %s pop %.0f ind %.2f hab %.2f def %.1f | %s price %.1f supply %.1f demand %.1f | shortage %s x%.1f surplus %s x%.1f | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s cr %.0f tr %d last %.0f %s | F5 save F9 load H hire/build C colony/reinforce | %s%s",
+                        coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, game.factions.size(), game.colonies.size(), game.capturedSystems,
                         star.name.c_str(), ownerName.c_str(), star.economyRole.c_str(), star.population, star.industry, star.habitability, star.defense,
                         element.symbol, market.prices[selectedElement], market.supply[selectedElement].amount, market.demand[selectedElement].amount,
                         elementDefinitions()[shortage].symbol, marketPressureForElement(market, shortage),
@@ -1329,15 +1128,15 @@ int main(int argc, char** argv) {
                         marketLine = market;
                     }
                     std::snprintf(title, sizeof(title),
-                        "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s %s | factions %zu colonies %zu captures %d | %s owner %s | %s | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s cr %.0f tr %d last %.0f %s | F5 save F9 load H hire/build C colony/reinforce | %s%s",
-                        coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, influenceMode, game.factions.size(), game.colonies.size(), game.capturedSystems,
+                        "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s | factions %zu colonies %zu captures %d | %s owner %s | %s | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s cr %.0f tr %d last %.0f %s | F5 save F9 load H hire/build C colony/reinforce | %s%s",
+                        coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, game.factions.size(), game.colonies.size(), game.capturedSystems,
                         star.name.c_str(), ownerName.c_str(), marketLine.c_str(),
                         shipName, agentType.c_str(), agentOwner.c_str(), targetName.c_str(), speed, fuel, mass, cargo, money, trades, profit, action.c_str(),
                         game.lastEvent.c_str(), followAgent ? " follow" : "");
                 }
             } else {
-                std::snprintf(title, sizeof(title), "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s %s | factions %zu colonies %zu founded %d captures %d | traders %d military %d colonists %d | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s money %.0f | F5 save F9 load RMB/G route B buy S sell T auto H hire/build C colony/reinforce | %s%s",
-                    coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, influenceMode, game.factions.size(), game.colonies.size(), game.foundedColonies, game.capturedSystems,
+                std::snprintf(title, sizeof(title), "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s | factions %zu colonies %zu founded %d captures %d | traders %d military %d colonists %d | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s money %.0f | F5 save F9 load RMB/G route B buy S sell T auto H hire/build C colony/reinforce | %s%s",
+                    coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, game.factions.size(), game.colonies.size(), game.foundedColonies, game.capturedSystems,
                     countAgentsOfType(game, "trader"), countAgentsOfType(game, "military"), countAgentsOfType(game, "colonist"),
                     shipName, agentType.c_str(), agentOwner.c_str(), targetName.c_str(), speed, fuel, mass, cargo, money, game.lastEvent.c_str(), followAgent ? " follow" : "");
             }

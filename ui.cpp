@@ -685,7 +685,6 @@ void drawControlHints(SDL_Renderer* renderer, int screenW, int screenH) {
         "MMB DRAG PAN",
         "ARROWS PAN",
         "WASD ROTATE",
-        "I INFLUENCE",
         "SPACE PAUSE",
         "TAB AGENT",
         "F FOLLOW",
