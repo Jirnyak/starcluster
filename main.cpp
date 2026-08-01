@@ -21,7 +21,7 @@
 enum ActionId {
     ACT_NONE = 0,
     // Макро-режим (звёздная карта):
-    ACT_ENTER, ACT_GO, ACT_STOP, ACT_TRADE, ACT_SHIPYARD, ACT_REPAIR, ACT_HIRE, ACT_CARGO, ACT_PAUSE, ACT_SPEED,
+    ACT_ENTER, ACT_GO, ACT_STOP, ACT_TRADE, ACT_SHIPFIT, ACT_SWITCH, ACT_REPAIR, ACT_HIRE, ACT_CARGO, ACT_PAUSE, ACT_SPEED,
     // Локальный режим (полёт):
     ACT_FIRE, ACT_MINE, ACT_DOCK, ACT_TARGET, ACT_ZOOM_IN, ACT_ZOOM_OUT, ACT_VIEW, ACT_EXIT
 };
@@ -459,7 +459,8 @@ int main(int argc, char** argv) {
                                  selectedStar >= 0 && game.playerAgent >= 0 && !enRoute, false});
             specs.push_back(Spec{ACT_STOP, "X STOP", UI::P.amber, enRoute, false});
             specs.push_back(Spec{ACT_TRADE, "T TRADE", UI::P.cyan, anchorStar() >= 0, false});
-            specs.push_back(Spec{ACT_SHIPYARD, "U YARD", UI::P.cyan, anchorStar() >= 0, false});
+            specs.push_back(Spec{ACT_SHIPFIT, "U FIT", UI::P.cyan, game.playerAgent >= 0, false});
+            specs.push_back(Spec{ACT_SWITCH, "W SWITCH", UI::P.amber, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_REPAIR, "J REPAIR", UI::P.green, docked && hullHurt, false});
             specs.push_back(Spec{ACT_HIRE, "H HIRE", UI::P.green, docked, false});
             specs.push_back(Spec{ACT_CARGO, "O CARGO", UI::P.cyan, game.playerAgent >= 0, false});
@@ -537,9 +538,27 @@ int main(int argc, char** argv) {
             case ACT_CARGO: {
                 UI::openCargoWindow(ui, anchorStar(), winW, winH);
             } break;
-            case ACT_SHIPYARD: {
+            case ACT_SHIPFIT: {
                 int a = anchorStar();
-                if (a >= 0) { selectedStar = a; UI::openShipyardWindow(ui, a, std::max(20, winW / 2 - 235), 40); }
+                if (a >= 0) { selectedStar = a; UI::openShipFitWindow(ui, a, winW, winH); }
+            } break;
+            case ACT_SWITCH: {
+                if (game.playerAgent >= 0) {
+                    int nextAgent = game.playerAgent;
+                    for (size_t i = 1; i <= game.agents.size(); ++i) {
+                        int index = (game.playerAgent + i) % game.agents.size();
+                        if (game.agents[index].playerControlled && game.agents[index].ship.ownerFaction == game.playerFaction) {
+                            nextAgent = index;
+                            break;
+                        }
+                    }
+                    if (nextAgent != game.playerAgent) {
+                        game.playerAgent = nextAgent;
+                        selectedAgent = nextAgent;
+                        selectedStar = game.agents[nextAgent].ship.enRoute ? game.agents[nextAgent].destStar : game.agents[nextAgent].currentStar;
+                        followAgent = true;
+                    }
+                }
             } break;
             case ACT_REPAIR:
                 if (game.playerRepairHull()) { selectedAgent = game.playerAgent; titleTick = 11; }

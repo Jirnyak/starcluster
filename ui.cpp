@@ -35,7 +35,7 @@ struct SystemLayout {
     SDL_Rect contracts = {0, 0, 0, 0};
     SDL_Rect colony = {0, 0, 0, 0};
     SDL_Rect cargo = {0, 0, 0, 0};
-    SDL_Rect shipFit = {0, 0, 0, 0};
+    SDL_Rect shipyard = {0, 0, 0, 0};
 };
 
 struct KnownFactionSummary {
@@ -110,9 +110,9 @@ SDL_Rect defaultWindowRect(WindowKind kind, int screenW, int screenH, int cascad
         rect.x = std::max(400, (screenW - rect.w) / 2 + cascade * 18);
         rect.y = std::max(120, screenH - rect.h - 50 - cascade * 10);
     } else {
-        rect.w = 448;
+        rect.w = 440;
         rect.h = 286;
-        rect.x = std::max(352, std::min(screenW - rect.w - 280, 372 + cascade * 22));
+        rect.x = std::max(252, std::min(screenW - rect.w - 280, 272 + cascade * 22));
         rect.y = 82 + cascade * 22;
     }
     return clampRectToScreen(rect, screenW, screenH);
@@ -140,7 +140,7 @@ SystemLayout systemLayout(const Window& window) {
     layout.contracts = {window.rect.x + WINDOW_PAD + 135, y, 55, 24};
     layout.colony = {window.rect.x + WINDOW_PAD + 195, y, 80, 24};
     layout.cargo = {window.rect.x + WINDOW_PAD + 280, y, 60, 24};
-    layout.shipFit = {window.rect.x + WINDOW_PAD + 345, y, 80, 24};
+    layout.shipyard = {window.rect.x + WINDOW_PAD + 345, y, 80, 24};
     return layout;
 }
 
@@ -889,8 +889,8 @@ bool handleSystemWindowMouseDown(WindowState& state, Game& game, const Window& w
         }
         return true;
     }
-    if (contains(layout.shipFit, mouseX, mouseY)) {
-        if (game.playerAgent >= 0) openShipFitWindow(state, window.star, screenW, screenH);
+    if (contains(layout.shipyard, mouseX, mouseY)) {
+        if (game.playerAgent >= 0) openShipyardWindow(state, window.star, screenW, screenH);
         return true;
     }
     return true;
@@ -1191,9 +1191,12 @@ void drawWindowFrame(SDL_Renderer* renderer, const Window& window, const std::st
     strokeRect(renderer, window.rect.x, window.rect.y, window.rect.w, window.rect.h, active ? P.cyan : P.border);
     drawText(renderer, window.rect.x + 8, window.rect.y + 7, title, active ? P.cyan : P.text, 1);
     const SDL_Rect close = closeRect(window);
-    fillRect(renderer, close.x, close.y, close.w, close.h, {36, 18, 24, 235});
+    int mx = 0, my = 0;
+    SDL_GetMouseState(&mx, &my);
+    bool hovered = contains(close, mx, my);
+    fillRect(renderer, close.x, close.y, close.w, close.h, hovered ? SDL_Color{160, 40, 40, 255} : SDL_Color{36, 18, 24, 235});
     strokeRect(renderer, close.x, close.y, close.w, close.h, P.red);
-    drawText(renderer, close.x + 5, close.y + 4, "X", P.red, 1);
+    drawText(renderer, close.x + 5, close.y + 4, "X", hovered ? P.text : P.red, 1);
 }
 
 void openShipFitWindow(WindowState& state, int starIndex, int screenW, int screenH) {
@@ -1214,7 +1217,7 @@ void openShipFitWindow(WindowState& state, int starIndex, int screenW, int scree
     state.activeId = w.id;
 }
 
-void openShipyardWindow(WindowState& state, int starIndex, int x, int y) {
+void openShipyardWindow(WindowState& state, int starIndex, int screenW, int screenH) {
     for (auto& w : state.windows) {
         if (w.kind == WindowKind::Shipyard && w.star == starIndex) {
             state.activeId = w.id;
@@ -1225,7 +1228,9 @@ void openShipyardWindow(WindowState& state, int starIndex, int x, int y) {
     w.id = state.nextId++;
     w.kind = WindowKind::Shipyard;
     w.star = starIndex;
-    w.rect = {x, std::max(20, std::min(y, 40)), 470, 700};
+    int ww = 600;
+    int wh = 700;
+    w.rect = {(screenW - ww) / 2, std::max(20, (screenH - wh) / 2), ww, wh};
     state.windows.push_back(w);
     state.activeId = w.id;
 }
@@ -1275,14 +1280,25 @@ bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window&
     const int listY = window.rect.y + TITLE_H + 30;
     for (int i = startIdx; i < endIdx; ++i) {
         const int row = i - startIdx;
-        SDL_Rect btn = {window.rect.x + window.rect.w - 96, listY + row * 36 - 6, 80, 24};
-        if (contains(btn, mouseX, mouseY)) {
-            if (i < nShips) {
+        const int rowY = listY + row * 42;
+        SDL_Rect upgradeBtn = {window.rect.x + window.rect.w - 200, rowY, 90, 24};
+        SDL_Rect buyNewBtn = {window.rect.x + window.rect.w - 105, rowY, 90, 24};
+        
+        if (i < nShips) {
+            if (contains(upgradeBtn, mouseX, mouseY)) {
                 state.confirmBuyShipIndex = i;
-            } else if (i > nShips) {
-                game.buyModule(game.playerAgent, i - nShips - 1);
+                return true;
             }
-            return true;
+            if (contains(buyNewBtn, mouseX, mouseY)) {
+                game.buyAdditionalShip(game.playerAgent, dockedStar, i);
+                return true;
+            }
+        } else if (i > nShips) {
+            SDL_Rect btn = {window.rect.x + window.rect.w - 105, rowY, 90, 24};
+            if (contains(btn, mouseX, mouseY)) {
+                game.buyModule(game.playerAgent, i - nShips - 1);
+                return true;
+            }
         }
     }
     return true;
@@ -1327,14 +1343,35 @@ void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& 
     char line[160];
     for (int i = startIdx; i < endIdx; ++i) {
         const int row = i - startIdx;
-        const int rowY = listY + row * 36;
-        SDL_Rect btn = {window.rect.x + window.rect.w - 96, rowY - 6, 80, 24};
+        const int rowY = listY + row * 42;
+        SDL_Rect btn = {window.rect.x + window.rect.w - 105, rowY, 90, 24};
         if (i < nShips) {
             const ShipClass& sc = classes[i];
             drawText(renderer, topX, rowY, sc.name.c_str(), P.cyan, 1);
-            std::snprintf(line, sizeof(line), "CR%.0F | CG:%.0F HW:%.0F LW:%.0F AR:%.0F U:%.0F", sc.price, sc.cargoCapacity, sc.heavyWeapons, sc.lightWeapons, sc.armor, sc.utility);
+            double currentHullPrice = 0.0;
+            if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
+                for (const auto& c : classes) {
+                    if (c.name == game.agents[game.playerAgent].ship.name) {
+                        currentHullPrice = c.price;
+                        break;
+                    }
+                }
+            }
+            double upgradePrice = std::max(0.0, sc.price - currentHullPrice);
+            double buyNewPrice = sc.price + 1000000.0;
+            
+            std::snprintf(line, sizeof(line), "CR:%.0F | CG:%.0F HW:%.0F LW:%.0F AR:%.0F U:%.0F", sc.price, sc.cargoCapacity, sc.heavyWeapons, sc.lightWeapons, sc.armor, sc.utility);
             drawText(renderer, topX, rowY + 14, line, P.text, 1);
-            drawButton(renderer, btn, "BUY", P.green, cash >= sc.price);
+            
+            SDL_Rect upgradeBtn = {window.rect.x + window.rect.w - 200, rowY, 90, 24};
+            SDL_Rect buyNewBtn = {window.rect.x + window.rect.w - 105, rowY, 90, 24};
+            
+            char upgStr[32], newStr[32];
+            std::snprintf(upgStr, sizeof(upgStr), "UPG %.0F", upgradePrice);
+            std::snprintf(newStr, sizeof(newStr), "NEW %.0F", buyNewPrice);
+            
+            drawButton(renderer, upgradeBtn, upgStr, P.green, cash >= upgradePrice);
+            drawButton(renderer, buyNewBtn, newStr, P.amber, cash >= buyNewPrice);
         } else if (i == nShips) {
             fillRect(renderer, topX, rowY + 7, window.rect.w - 2 * WINDOW_PAD, 1, P.border);
             drawText(renderer, topX, rowY + 13, "-- SHIP MODULES (FIT WHILE DOCKED) --", P.amber, 1);
@@ -1343,7 +1380,7 @@ void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& 
             const ModuleDef& def = mods[m];
             std::snprintf(line, sizeof(line), "%s [%s]", def.name.c_str(), moduleSlotLabel(def.slot));
             drawText(renderer, topX, rowY, line, P.cyan, 1);
-            std::snprintf(line, sizeof(line), "CR%.0F  SY%d  %s", def.price, def.minShipyard, def.blurb.c_str());
+            std::snprintf(line, sizeof(line), "CR:%.0F  SY:%d  %s", def.price, def.minShipyard, def.blurb.c_str());
             const bool locked = syLevel < def.minShipyard;
             drawText(renderer, topX, rowY + 14, line, locked ? P.dim : P.text, 1);
             const bool canFit = liveShipyard && !locked && cash >= def.price;
@@ -1474,7 +1511,7 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
     drawButton(renderer, layout.contracts, "JOBS", P.cyan, game.playerCanOpenContractsAt(window.star));
     drawButton(renderer, layout.colony, "COLONY", P.amber, game.playerAtStar(window.star));
     drawButton(renderer, layout.cargo, "CARGO", P.cyan, game.playerAgent >= 0);
-    drawButton(renderer, layout.shipFit, "UPGRADES", P.cyan, game.playerAgent >= 0);
+    drawButton(renderer, layout.shipyard, "YARD", P.cyan, true);
 }
 
 void drawContractRow(SDL_Renderer* renderer, const Game& game, const Window& window, const Contract& contract, int row, bool activeContractRow) {

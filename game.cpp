@@ -4316,9 +4316,18 @@ bool Game::buyShip(int agentIndex, int starIndex, int classId) {
     if (classId < 0 || classId >= int(classes.size())) return false;
     const ShipClass& sc = classes[classId];
     
-    if (agent.money < sc.price) return false;
+    double currentHullPrice = 0.0;
+    for (const auto& c : classes) {
+        if (c.name == agent.ship.name) {
+            currentHullPrice = c.price;
+            break;
+        }
+    }
+    double upgradePrice = std::max(0.0, sc.price - currentHullPrice);
     
-    agent.money -= sc.price;
+    if (agent.money < upgradePrice) return false;
+    
+    agent.money -= upgradePrice;
     agent.ship.name = sc.name;
     agent.ship.dryMass = sc.dryMass;
     agent.ship.driveThrust = sc.driveThrust;
@@ -4332,6 +4341,54 @@ bool Game::buyShip(int agentIndex, int starIndex, int classId) {
     agent.ship.maxModules = sc.maxModules;
     shipAutofit(agent.ship);
     agent.lastAction = "bought " + sc.name;
+    return true;
+}
+
+bool Game::buyAdditionalShip(int agentIndex, int starIndex, int classId) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size()) || !validStar(*this, starIndex)) return false;
+    if (agents[agentIndex].currentStar != starIndex || agents[agentIndex].ship.enRoute) return false;
+    const Colony& colony = colonies[starIndex];
+    if (colony.shipyardLevel <= 0 && colony.infrastructure < 1.0) return false;
+    
+    const auto& classes = shipClasses();
+    if (classId < 0 || classId >= int(classes.size())) return false;
+    const ShipClass& sc = classes[classId];
+    
+    double totalPrice = sc.price + 1000000.0;
+    if (agents[agentIndex].money < totalPrice) return false;
+    
+    agents[agentIndex].money -= totalPrice;
+    
+    Ship newShip(sc.name, 0, 0, 0, 0, agents[agentIndex].ship.ownerFaction);
+    newShip.dryMass = sc.dryMass;
+    newShip.driveThrust = sc.driveThrust;
+    newShip.driveEfficiency = sc.driveEfficiency;
+    newShip.cargoCapacity = sc.cargoCapacity;
+    newShip.fuelCapacity = sc.fuelCapacity;
+    newShip.heavyWeapons = sc.heavyWeapons;
+    newShip.lightWeapons = sc.lightWeapons;
+    newShip.armor = sc.armor;
+    newShip.utility = sc.utility;
+    newShip.maxModules = sc.maxModules;
+    shipAutofit(newShip);
+    newShip.fuel = newShip.fuelCapacity;
+
+    Agent newAgent(agents[agentIndex].type, newShip);
+    newAgent.playerControlled = agents[agentIndex].playerControlled;
+    newAgent.currentStar = starIndex;
+    newAgent.homeStar = starIndex;
+    newAgent.destStar = starIndex;
+    newAgent.money = 0.0;
+    newAgent.lastAction = "bought " + sc.name;
+
+    int newAgentIndex = int(agents.size());
+    agents.push_back(newAgent);
+    registerFactionAgent(*this, newAgentIndex);
+    
+    if (agentIndex == playerAgent) {
+        playerAgent = newAgentIndex;
+    }
+    
     return true;
 }
 

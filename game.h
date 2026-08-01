@@ -189,6 +189,7 @@ public:
     bool abortAgentRoute(int agentIndex);
     bool commandAgentToStar(int agentIndex, int starIndex);
     bool buyShip(int agentIndex, int starIndex, int classId);
+    bool buyAdditionalShip(int agentIndex, int starIndex, int classId);
     double routeDistance(int originStar, int targetStar) const;
     double agentRouteDistance(int agentIndex, int targetStar) const;
     double agentRouteTravelTime(int agentIndex, int targetStar) const;
