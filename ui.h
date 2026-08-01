@@ -3,6 +3,7 @@
 #include "game.h"
 #include <SDL.h>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace UI {
@@ -38,7 +39,13 @@ struct Window {
 
 struct VisualNovelState {
     bool active = false;
-    std::string currentText = "Are you interested in recent stockings, Master?";
+    bool tutorialCompleted = false;
+    int tutorialStep = 0;
+    float textProgress = 0.0f;
+    std::string targetText = "";
+    std::string currentText = "";
+    std::unordered_set<int> visitedSystems;
+    int arrowTarget = 0;
 };
 
 struct WindowState {
@@ -68,6 +75,8 @@ void drawStarPanel(SDL_Renderer* renderer, const Game& game, int starIndex, int 
 void drawAgentPanel(SDL_Renderer* renderer, const Game& game, int agentIndex, int x, int y, int w);
 void drawFactionPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w);
 void drawControlHints(SDL_Renderer* renderer, int screenW, int screenH);
+bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH);
+void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, int screenH);
 void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int screenW, int screenH, SDL_Texture* tex);
 
 }

@@ -369,6 +369,7 @@ int main(int argc, char** argv) {
     bool followAgent = selectedAgent >= 0;
     double simSpeed = 1.0;
     UI::WindowState ui;
+    ui.vnState.active = true; // Start introductory tutorial
     if (selectedStar >= 0) UI::openSystemWindow(ui, selectedStar, winW, winH);
 
     // --- Локальный режим полёта ("микромир") ---
@@ -741,11 +742,16 @@ int main(int argc, char** argv) {
                 if (e.key.keysym.sym == SDLK_r && selectedAgent >= 0 && selectedAgent != game.playerAgent) {
                     if (game.robAgent(game.playerAgent, selectedAgent)) followAgent = true;
                 }
-                if (e.key.keysym.sym == SDLK_RETURN && game.playerAgent >= 0) {
-                    selectedStar = game.agents[game.playerAgent].currentStar;
-                    if (selectedStar >= 0) {
-                        followAgent = false;
-                        UI::openSystemWindow(ui, selectedStar, winW, winH);
+                if (e.key.keysym.sym == SDLK_RETURN) {
+                    if (UI::advanceVisualNovel(ui, game, winW, winH)) {
+                        continue;
+                    }
+                    if (game.playerAgent >= 0) {
+                        selectedStar = game.agents[game.playerAgent].currentStar;
+                        if (selectedStar >= 0) {
+                            followAgent = false;
+                            UI::openSystemWindow(ui, selectedStar, winW, winH);
+                        }
                     }
                 }
                 if (e.key.keysym.sym == SDLK_p && game.playerAgent >= 0) {
@@ -1151,6 +1157,7 @@ int main(int argc, char** argv) {
         hud.followAgent = followAgent;
         hud.simSpeed = simSpeed;
         hud.simYearsPerSecond = simYearsPerSecond;
+        UI::updateVisualNovel(ui, game, realDt, winW, winH);
         UI::drawHud(renderer, game, winW, winH, hud);
         UI::drawWindows(renderer, game, winW, winH, hud, ui);
         { std::vector<ActionButton> bar; buildBar(bar); drawBar(bar); }
