@@ -9,6 +9,14 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <unordered_map>
+
+struct RouteEdge {
+    int star = 0;
+    double distance = 0.0;
+    RouteEdge() {}
+    RouteEdge(int star_, double distance_) : star(star_), distance(distance_) {}
+};
 
 const int STAR_COUNT = 10000;
 const int CIV_COUNT = 100;
@@ -137,7 +145,10 @@ public:
     std::vector<PlayerStarKnowledge> playerKnowledge;
     std::vector<SignalPacket> pendingSignals;
     std::vector<std::vector<SignalMemoryRecord> > signalMemory;
-    std::vector<unsigned short> routeNextHop;
+    mutable std::vector<std::vector<RouteEdge>> routeGraph;
+    mutable std::unordered_map<int, std::vector<int>> routeCache;
+    
+    void buildRouteTreeForTarget(int targetStar) const;
     std::vector<double> marketUpdatedAt;
     double routeCacheBuiltAt = -1.0;
     int marketUpdateCursor = 0;

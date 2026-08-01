@@ -708,10 +708,25 @@ void drawControlHints(SDL_Renderer* renderer, int screenW, int screenH) {
 }
 
 void drawButton(SDL_Renderer* renderer, const SDL_Rect& rect, const std::string& label, SDL_Color c, bool enabled = true) {
+    int mx = 0, my = 0;
+    Uint32 mstate = SDL_GetMouseState(&mx, &my);
+    bool hovered = enabled && (mx >= rect.x && mx < rect.x + rect.w && my >= rect.y && my < rect.y + rect.h);
+    bool pressed = hovered && (mstate & SDL_BUTTON(SDL_BUTTON_LEFT));
+
+    const SDL_Color stroke = enabled ? c : P.dim;
+    SDL_Color text = enabled ? P.text : P.dim;
     SDL_Color fill = enabled ? SDL_Color{12, 16, 26, 200} : SDL_Color{8, 12, 18, 150};
+
+    if (pressed) {
+        fill = stroke;
+        text = {12, 16, 26, 255};
+    } else if (hovered) {
+        fill = SDL_Color{ Uint8(c.r / 3 + 16), Uint8(c.g / 3 + 22), Uint8(c.b / 3 + 38), 235 };
+    }
+
     fillRect(renderer, rect.x, rect.y, rect.w, rect.h, fill);
-    strokeRect(renderer, rect.x, rect.y, rect.w, rect.h, enabled ? c : P.dim);
-    drawText(renderer, rect.x + (rect.w - int(label.size()) * 6) / 2, rect.y + (rect.h - 7) / 2, label, enabled ? P.text : P.dim, 1);
+    strokeRect(renderer, rect.x, rect.y, rect.w, rect.h, stroke);
+    drawText(renderer, rect.x + (rect.w - int(label.size()) * 6) / 2, rect.y + (rect.h - 7) / 2, label, text, 1);
 }
 
 void drawLiveColonySummary(SDL_Renderer* renderer, const Game& game, int starIndex, int x, int& y) {
@@ -1543,8 +1558,21 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         const SDL_Rect rect = elementRect(layout, idx);
         if (rect.w <= 0) continue;
 
+        int mx = 0, my = 0;
+        Uint32 mstate = SDL_GetMouseState(&mx, &my);
+        bool hovered = (mx >= rect.x && mx < rect.x + rect.w && my >= rect.y && my < rect.y + rect.h);
+        bool pressed = hovered && (mstate & SDL_BUTTON(SDL_BUTTON_LEFT));
+
         SDL_Color fill = {34, 44, 62, 190};
         if (market) fill = marketCellColor(*market, idx);
+
+        if (pressed) {
+            fill = {12, 16, 26, 255};
+        } else if (hovered) {
+            fill.r = Uint8(std::min(255, fill.r + 40));
+            fill.g = Uint8(std::min(255, fill.g + 40));
+            fill.b = Uint8(std::min(255, fill.b + 40));
+        }
 
         fillRect(renderer, rect.x, rect.y, rect.w, rect.h, fill);
 
@@ -1552,6 +1580,7 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         if (market && star && hasFocus(star->resourceFocus, idx)) border = P.cyan;
         if (market && star && hasFocus(star->demandFocus, idx)) border = P.red;
         if (idx == selection.element) border = P.amber;
+        if (pressed) border = P.amber;
         
         strokeRect(renderer, rect.x, rect.y, rect.w, rect.h, border);
 
