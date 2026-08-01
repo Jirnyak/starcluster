@@ -145,10 +145,7 @@ public:
     std::vector<PlayerStarKnowledge> playerKnowledge;
     std::vector<SignalPacket> pendingSignals;
     std::vector<std::vector<SignalMemoryRecord> > signalMemory;
-    mutable std::vector<std::vector<RouteEdge>> routeGraph;
-    mutable std::unordered_map<int, std::vector<int>> routeCache;
-    
-    void buildRouteTreeForTarget(int targetStar) const;
+    std::vector<unsigned short> routeNextHop;
     std::vector<double> marketUpdatedAt;
     double routeCacheBuiltAt = -1.0;
     int marketUpdateCursor = 0;

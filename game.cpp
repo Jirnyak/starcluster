@@ -8,7 +8,8 @@
 #include <limits>
 #include <sstream>
 #include <queue>
-
+#include <thread>
+#include <atomic>
 std::mt19937 rng(42);
 
 int randomer(std::mt19937& rng_, int max) {
@@ -3411,12 +3412,12 @@ bool Game::loadFromFile(const std::string& path) {
 
 void Game::rebuildRouteCache() {
     const int count = int(cluster.stars.size());
-    routeCache.clear();
+    routeNextHop.clear();
     routeCacheBuiltAt = time;
     if (count <= 0 || count >= int(ROUTE_NO_HOP)) return;
 
-    routeGraph.clear();
-    routeGraph.resize(size_t(count));
+    std::vector<std::vector<RouteEdge> > graph;
+    graph.resize(size_t(count));
     for (int i = 0; i < count; ++i) {
         std::vector<int> bestStar(ROUTE_NEIGHBORS, -1);
         std::vector<double> bestDistance2(ROUTE_NEIGHBORS, std::numeric_limits<double>::max());
@@ -3433,80 +3434,100 @@ void Game::rebuildRouteCache() {
             }
         }
         for (int k = 0; k < ROUTE_NEIGHBORS; ++k) {
-            if (bestStar[k] >= 0) routeAddEdge(routeGraph, i, bestStar[k], std::sqrt(bestDistance2[k]));
+            if (bestStar[k] >= 0) routeAddEdge(graph, i, bestStar[k], std::sqrt(bestDistance2[k]));
         }
     }
 
     // Ensure symmetry to guarantee bidirectional reachability
     for (int i = 0; i < count; ++i) {
-        for (size_t e = 0; e < routeGraph[i].size(); ++e) {
-            const RouteEdge& edge = routeGraph[i][e];
+        for (size_t e = 0; e < graph[i].size(); ++e) {
+            const RouteEdge& edge = graph[i][e];
             bool found = false;
-            for (size_t rev = 0; rev < routeGraph[edge.star].size(); ++rev) {
-                if (routeGraph[edge.star][rev].star == i) { found = true; break; }
+            for (size_t rev = 0; rev < graph[edge.star].size(); ++rev) {
+                if (graph[edge.star][rev].star == i) { found = true; break; }
             }
             if (!found) {
-                routeAddEdge(routeGraph, edge.star, i, edge.distance);
+                routeAddEdge(graph, edge.star, i, edge.distance);
             }
         }
     }
-}
 
-void Game::buildRouteTreeForTarget(int targetStar) const {
-    const int count = int(cluster.stars.size());
-    if (targetStar < 0 || targetStar >= count) return;
+    const size_t countSize = size_t(count);
+    routeNextHop.assign(countSize * countSize, ROUTE_NO_HOP);
     
-    std::vector<double> dist(count, std::numeric_limits<double>::max());
-    std::vector<int> nextHop(count, targetStar);
-    using PD = std::pair<double, int>;
-    std::vector<PD> pq;
-    pq.reserve(count * 8);
+    std::atomic<int> nextTarget(0);
+    int numThreads = std::thread::hardware_concurrency();
+    if (numThreads <= 0) numThreads = 4;
+    
+    std::vector<std::thread> threads;
+    for (int t = 0; t < numThreads; ++t) {
+        threads.emplace_back([this, count, countSize, &nextTarget, &graph]() {
+            std::vector<double> dist(count);
+            std::vector<int> nextHop(count);
+            using PD = std::pair<double, int>;
+            std::vector<PD> pq;
+            pq.reserve(count * 8);
 
-    dist[targetStar] = 0.0;
-    pq.push_back({0.0, targetStar});
-    
-    while (!pq.empty()) {
-        std::pop_heap(pq.begin(), pq.end(), std::greater<PD>());
-        PD top = pq.back();
-        pq.pop_back();
-        
-        double d = top.first;
-        int u = top.second;
-        if (d > dist[u]) continue;
-        
-        for (size_t e = 0; e < routeGraph[u].size(); ++e) {
-            const RouteEdge& edge = routeGraph[u][e];
-            int v = edge.star;
-            double newDist = d + edge.distance;
-            if (newDist < dist[v]) {
-                dist[v] = newDist;
-                nextHop[v] = u;
-                pq.push_back({newDist, v});
-                std::push_heap(pq.begin(), pq.end(), std::greater<PD>());
+            while (true) {
+                int target = nextTarget.fetch_add(1);
+                if (target >= count) break;
+                
+                std::fill(dist.begin(), dist.end(), std::numeric_limits<double>::max());
+                std::fill(nextHop.begin(), nextHop.end(), target);
+                
+                pq.clear();
+                dist[target] = 0.0;
+                pq.push_back({0.0, target});
+                
+                while (!pq.empty()) {
+                    std::pop_heap(pq.begin(), pq.end(), std::greater<PD>());
+                    PD top = pq.back();
+                    pq.pop_back();
+                    
+                    double d = top.first;
+                    int u = top.second;
+                    
+                    if (d > dist[u]) continue;
+                    
+                    for (size_t e = 0; e < graph[u].size(); ++e) {
+                        const RouteEdge& edge = graph[u][e];
+                        int v = edge.star;
+                        double newDist = d + edge.distance;
+                        if (newDist < dist[v]) {
+                            dist[v] = newDist;
+                            nextHop[v] = u;
+                            pq.push_back({newDist, v});
+                            std::push_heap(pq.begin(), pq.end(), std::greater<PD>());
+                        }
+                    }
+                }
+                
+                for (int source = 0; source < count; ++source) {
+                    const size_t index = size_t(source) * countSize + size_t(target);
+                    if (source == target) {
+                        routeNextHop[index] = static_cast<unsigned short>(source);
+                    } else {
+                        routeNextHop[index] = static_cast<unsigned short>(nextHop[source]);
+                    }
+                }
             }
-        }
+        });
     }
     
-    std::vector<int> tree(count);
-    for (int source = 0; source < count; ++source) {
-        if (source == targetStar || dist[source] == std::numeric_limits<double>::max()) {
-            tree[source] = targetStar;
-        } else {
-            tree[source] = nextHop[source];
-        }
+    for (auto& th : threads) {
+        th.join();
     }
-    routeCache[targetStar] = std::move(tree);
 }
 
 int Game::routeNextStar(int originStar, int targetStar) const {
     if (!validStar(*this, originStar) || !validStar(*this, targetStar)) return targetStar;
     if (originStar == targetStar) return targetStar;
-    if (routeCache.find(targetStar) == routeCache.end()) {
-        buildRouteTreeForTarget(targetStar);
-    }
-    const auto& tree = routeCache.at(targetStar);
-    if (originStar < 0 || originStar >= int(tree.size())) return targetStar;
-    return tree[originStar];
+    const size_t count = cluster.stars.size();
+    const size_t index = size_t(originStar) * count + size_t(targetStar);
+    if (count == 0 || routeNextHop.size() != count * count || index >= routeNextHop.size()) return targetStar;
+    const unsigned short next = routeNextHop[index];
+    if (next == ROUTE_NO_HOP || int(next) < 0 || int(next) >= int(count)) return targetStar;
+    return int(next);
 }
 
 void Game::init(size_t num_stars) {
@@ -3527,8 +3548,7 @@ void Game::init(size_t num_stars) {
     playerKnowledge.clear();
     pendingSignals.clear();
     signalMemory.clear();
-    routeCache.clear();
-    routeGraph.clear();
+    routeNextHop.clear();
     marketUpdatedAt.clear();
     routeCacheBuiltAt = -1.0;
     marketUpdateCursor = 0;
