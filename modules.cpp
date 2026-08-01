@@ -72,7 +72,22 @@ int Game::shipyardLevelAtStar(int starIndex) const {
     return level;
 }
 
-bool Game::installModule(int agentIndex, int defIndex) {
+void removeModuleFromShip(Ship& ship, const ModuleDef& def) {
+    ship.dryMass -= def.mass;
+    ship.cargoCapacity -= def.cargoBonus;
+    ship.fuelCapacity -= def.fuelBonus;
+    ship.fuel = std::min(ship.fuelCapacity, ship.fuel);
+    ship.speed = std::max(0.1, ship.speed - def.speedBonus);
+    ship.acceleration -= def.accelBonus;
+    ship.heavyWeapons -= def.heavyBonus;
+    ship.lightWeapons -= def.lightBonus;
+    ship.armor -= def.armorBonus;
+    ship.maxHullHP -= def.hullBonus;
+    ship.hullHP = std::min(ship.maxHullHP, ship.hullHP);
+    ship.utility -= def.utilityBonus;
+}
+
+bool Game::buyModule(int agentIndex, int defIndex) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
     const std::vector<ModuleDef>& defs = moduleDefs();
     if (defIndex < 0 || defIndex >= int(defs.size())) return false;
@@ -85,11 +100,114 @@ bool Game::installModule(int agentIndex, int defIndex) {
         return false;
     }
     if (agent.money < def.price) { lastEvent = "not enough credits for " + def.name; return false; }
+    if (shipCargoMass(agent.ship) + def.mass > agent.ship.cargoCapacity) {
+        lastEvent = "not enough cargo space for " + def.name;
+        pushNews(lastEvent, 0);
+        return false;
+    }
+    
     agent.money -= def.price;
+    std::string modName = "Module: " + def.name;
+    bool found = false;
+    for (auto& r : agent.ship.cargo) {
+        if (r.element == modName) {
+            r.amount += 1.0;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        agent.ship.cargo.push_back(Resource(modName, 1.0));
+    }
+    
+    agent.lastAction = "bought " + def.name;
+    lastEvent = "bought " + def.name;
+    pushNews("Bought " + def.name, 4);
+    return true;
+}
+
+bool Game::equipModule(int agentIndex, int defIndex) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
+    const std::vector<ModuleDef>& defs = moduleDefs();
+    if (defIndex < 0 || defIndex >= int(defs.size())) return false;
+    Agent& agent = agents[agentIndex];
+    if (agent.ship.enRoute) { lastEvent = "cannot refit in transit"; return false; }
+    
+    if (int(agent.ship.modules.size()) >= agent.ship.maxModules) {
+        lastEvent = "no upgrade slots available";
+        pushNews(lastEvent, 0);
+        return false;
+    }
+    
+    const ModuleDef& def = defs[defIndex];
+    if (shipyardLevelAtStar(agent.currentStar) < def.minShipyard) {
+        lastEvent = "need shipyard lvl " + std::to_string(def.minShipyard) + " for " + def.name;
+        pushNews(lastEvent, 0);
+        return false;
+    }
+    
+    std::string modName = "Module: " + def.name;
+    bool found = false;
+    for (size_t i = 0; i < agent.ship.cargo.size(); ++i) {
+        if (agent.ship.cargo[i].element == modName && agent.ship.cargo[i].amount > 0.0) {
+            agent.ship.cargo[i].amount -= 1.0;
+            if (agent.ship.cargo[i].amount <= 0.0) {
+                agent.ship.cargo.erase(agent.ship.cargo.begin() + i);
+            }
+            found = true;
+            break;
+        }
+    }
+    
+    if (!found) return false;
+    
     agent.ship.modules.push_back(defIndex);
     applyModuleToShip(agent.ship, def);
-    agent.lastAction = "installed " + def.name;
-    lastEvent = "installed " + def.name;
-    pushNews("Installed " + def.name, 4);
+    
+    agent.lastAction = "equipped " + def.name;
+    lastEvent = "equipped " + def.name;
+    return true;
+}
+
+bool Game::unequipModule(int agentIndex, int moduleListIndex) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
+    Agent& agent = agents[agentIndex];
+    if (agent.ship.enRoute) { lastEvent = "cannot refit in transit"; return false; }
+    if (moduleListIndex < 0 || moduleListIndex >= int(agent.ship.modules.size())) return false;
+    
+    const std::vector<ModuleDef>& defs = moduleDefs();
+    int defIndex = agent.ship.modules[moduleListIndex];
+    const ModuleDef& def = defs[defIndex];
+    
+    if (shipyardLevelAtStar(agent.currentStar) < def.minShipyard) {
+        lastEvent = "need shipyard lvl " + std::to_string(def.minShipyard) + " to remove " + def.name;
+        pushNews(lastEvent, 0);
+        return false;
+    }
+    
+    if (shipCargoMass(agent.ship) + def.mass > agent.ship.cargoCapacity) {
+        lastEvent = "not enough cargo space to unequip " + def.name;
+        pushNews(lastEvent, 0);
+        return false;
+    }
+    
+    removeModuleFromShip(agent.ship, def);
+    agent.ship.modules.erase(agent.ship.modules.begin() + moduleListIndex);
+    
+    std::string modName = "Module: " + def.name;
+    bool found = false;
+    for (auto& r : agent.ship.cargo) {
+        if (r.element == modName) {
+            r.amount += 1.0;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        agent.ship.cargo.push_back(Resource(modName, 1.0));
+    }
+    
+    agent.lastAction = "unequipped " + def.name;
+    lastEvent = "unequipped " + def.name;
     return true;
 }

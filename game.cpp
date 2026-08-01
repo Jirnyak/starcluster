@@ -4329,6 +4329,7 @@ bool Game::buyShip(int agentIndex, int starIndex, int classId) {
     agent.ship.lightWeapons = sc.lightWeapons;
     agent.ship.armor = sc.armor;
     agent.ship.utility = sc.utility;
+    agent.ship.maxModules = sc.maxModules;
     shipAutofit(agent.ship);
     agent.lastAction = "bought " + sc.name;
     return true;

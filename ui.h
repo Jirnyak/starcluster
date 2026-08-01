@@ -23,7 +23,8 @@ enum class WindowKind {
     Trade,
     Contracts,
     Shipyard,
-    Cargo
+    Cargo,
+    ShipFit
 };
 
 struct Window {
@@ -64,6 +65,7 @@ void openTradeWindow(WindowState& state, int starIndex, int screenW, int screenH
 void openContractsWindow(WindowState& state, int starIndex, int screenW, int screenH);
 void openShipyardWindow(WindowState& state, int starIndex, int screenW, int screenH);
 void openCargoWindow(WindowState& state, int starIndex, int screenW, int screenH);
+void openShipFitWindow(WindowState& state, int starIndex, int screenW, int screenH);
 bool handleMouseDown(WindowState& state, Game& game, HudSelection& selection, int screenW, int screenH, int mouseX, int mouseY, int button);
 void handleMouseMove(WindowState& state, int screenW, int screenH, int mouseX, int mouseY);
 void handleMouseUp(WindowState& state);

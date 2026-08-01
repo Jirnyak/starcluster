@@ -38,5 +38,6 @@ const std::vector<ModuleDef>& moduleDefs();
 
 // Применяет бонусы модуля к полям корабля (без вызова shipAutofit).
 void applyModuleToShip(Ship& ship, const ModuleDef& def);
+void removeModuleFromShip(Ship& ship, const ModuleDef& def);
 
 const char* moduleSlotLabel(ModuleSlot slot);

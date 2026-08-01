@@ -285,7 +285,9 @@ public:
     bool playerRepairHull();                                // combat.cpp
     void grantChromocore(int stat);                         // chromo.cpp
     void addResearch(double amount);                        // chromo.cpp
-    bool installModule(int agentIndex, int defIndex);       // modules.cpp
+    bool buyModule(int agentIndex, int defIndex);           // modules.cpp
+    bool equipModule(int agentIndex, int defIndex);         // modules.cpp
+    bool unequipModule(int agentIndex, int moduleListIndex);// modules.cpp
     int shipyardLevelAtStar(int starIndex) const;           // modules.cpp
 
     void render(); // TODO: добавить SDL2

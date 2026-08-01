@@ -27,6 +27,7 @@ struct TradeLayout {
     SDL_Rect autoTrade = {0, 0, 0, 0};
     SDL_Rect refuel = {0, 0, 0, 0};
     SDL_Rect upgrade = {0, 0, 0, 0};
+    SDL_Rect shipFit = {0, 0, 0, 0};
 };
 
 struct SystemLayout {
@@ -103,6 +104,11 @@ SDL_Rect defaultWindowRect(WindowKind kind, int screenW, int screenH, int cascad
         rect.h = 400;
         rect.x = std::max(380, (screenW - rect.w) / 2 + cascade * 18);
         rect.y = std::max(100, screenH - rect.h - 50 - cascade * 10);
+    } else if (kind == WindowKind::ShipFit) {
+        rect.w = 400;
+        rect.h = 420;
+        rect.x = std::max(400, (screenW - rect.w) / 2 + cascade * 18);
+        rect.y = std::max(120, screenH - rect.h - 50 - cascade * 10);
     } else {
         rect.w = 448;
         rect.h = 286;
@@ -156,6 +162,7 @@ TradeLayout tradeLayoutForWindow(const Window& window) {
     layout.autoTrade = {bx, layout.tableY + 72, buttonW, 28};
     layout.refuel = {bx, layout.tableY + 108, buttonW, 28};
     layout.upgrade = {bx, layout.tableY + 144, buttonW, 28};
+    layout.shipFit = {bx, layout.tableY + 180, buttonW, 28};
     return layout;
 }
 
@@ -831,7 +838,7 @@ void drawContractsWindow(SDL_Renderer* renderer, const Game& game, const Window&
 void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& window, const WindowState& state, bool active);
 
 bool handleSystemWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int screenW, int screenH, int mouseX, int mouseY);
-bool handleTradeWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int mouseX, int mouseY, int button);
+bool handleTradeWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int mouseX, int mouseY, int button, int screenW, int screenH);
 bool handleContractsWindowMouseDown(Game& game, const Window& window, const HudSelection& selection, int mouseX, int mouseY);
 bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window& window, int mouseX, int mouseY, int button);
 
@@ -946,6 +953,52 @@ bool handleContractsWindowMouseDown(Game& game, const Window& window, HudSelecti
     return true;
 }
 
+bool handleShipFitWindowMouseDown(WindowState& state, Game& game, const Window& window, int mouseX, int mouseY) {
+    if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) return true;
+    Agent& agent = game.agents[game.playerAgent];
+    
+    int listY = window.rect.y + TITLE_H + 24;
+    int y = listY;
+    
+    // Up / Down scroll buttons could go here, omitting for simplicity since window is large enough
+    
+    for (size_t i = 0; i < agent.ship.modules.size(); ++i) {
+        SDL_Rect btn = {window.rect.x + window.rect.w - 90, y - 4, 70, 20};
+        if (contains(btn, mouseX, mouseY)) {
+            game.unequipModule(game.playerAgent, i);
+            return true;
+        }
+        y += 24;
+    }
+    
+    y += 12;
+    
+    std::vector<int> cargoMods;
+    for (size_t i = 0; i < agent.ship.cargo.size(); ++i) {
+        if (agent.ship.cargo[i].element.rfind("Module: ", 0) == 0 && agent.ship.cargo[i].amount > 0.0) {
+            cargoMods.push_back(i);
+        }
+    }
+    
+    for (size_t i = 0; i < cargoMods.size(); ++i) {
+        SDL_Rect btn = {window.rect.x + window.rect.w - 90, y - 4, 70, 20};
+        if (contains(btn, mouseX, mouseY)) {
+            std::string modName = agent.ship.cargo[cargoMods[i]].element.substr(8);
+            int defIdx = -1;
+            const auto& defs = moduleDefs();
+            for (size_t j = 0; j < defs.size(); ++j) {
+                if (defs[j].name == modName) { defIdx = j; break; }
+            }
+            if (defIdx >= 0) {
+                game.equipModule(game.playerAgent, defIdx);
+            }
+            return true;
+        }
+        y += 24;
+    }
+    return true;
+}
+
 bool handleCargoWindowMouseDown(Game& game, const Window& window, int mouseX, int mouseY) {
     if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) return true;
     
@@ -973,7 +1026,7 @@ bool handleCargoWindowMouseDown(Game& game, const Window& window, int mouseX, in
     return true;
 }
 
-bool handleTradeWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int mouseX, int mouseY, int button) {
+bool handleTradeWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int mouseX, int mouseY, int button, int screenW, int screenH) {
     const TradeLayout layout = tradeLayoutForWindow(window);
     const int dockedStar = playerMarketStar(game);
     const bool liveMarket = dockedStar == window.star && dockedStar >= 0;
@@ -1018,6 +1071,10 @@ bool handleTradeWindowMouseDown(WindowState& state, Game& game, const Window& wi
         if (liveMarket && (game.colonies[dockedStar].shipyardLevel > 0 || game.colonies[dockedStar].infrastructure >= 1.0)) {
             openShipyardWindow(state, dockedStar, window.rect.x + 20, window.rect.y + 20);
         }
+        return true;
+    }
+    if (contains(layout.shipFit, mouseX, mouseY)) {
+        openShipFitWindow(state, window.star, screenW, screenH);
         return true;
     }
 
@@ -1081,10 +1138,11 @@ bool handleMouseDown(WindowState& state, Game& game, HudSelection& selection, in
     for (Window& w : state.windows) {
         if (contains(w.rect, mouseX, mouseY)) {
             if (w.kind == WindowKind::SystemInfo && handleSystemWindowMouseDown(state, game, w, selection, screenW, screenH, mouseX, mouseY)) return true;
-            if (w.kind == WindowKind::Trade && handleTradeWindowMouseDown(state, game, w, selection, mouseX, mouseY, button)) return true;
+            if (w.kind == WindowKind::Trade && handleTradeWindowMouseDown(state, game, w, selection, mouseX, mouseY, button, screenW, screenH)) return true;
             if (w.kind == WindowKind::Contracts && handleContractsWindowMouseDown(game, w, selection, mouseX, mouseY)) return true;
             if (w.kind == WindowKind::Shipyard && handleShipyardWindowMouseDown(state, game, w, mouseX, mouseY, button)) return true;
             if (w.kind == WindowKind::Cargo && handleCargoWindowMouseDown(game, w, mouseX, mouseY)) return true;
+            if (w.kind == WindowKind::ShipFit && handleShipFitWindowMouseDown(state, game, w, mouseX, mouseY)) return true;
         }
     }
     return true;
@@ -1144,6 +1202,24 @@ void drawWindowFrame(SDL_Renderer* renderer, const Window& window, const std::st
     fillRect(renderer, close.x, close.y, close.w, close.h, {36, 18, 24, 235});
     strokeRect(renderer, close.x, close.y, close.w, close.h, P.red);
     drawText(renderer, close.x + 5, close.y + 4, "X", P.red, 1);
+}
+
+void openShipFitWindow(WindowState& state, int starIndex, int screenW, int screenH) {
+    int cascade = 0;
+    for (auto& w : state.windows) {
+        if (w.kind == WindowKind::ShipFit) {
+            state.activeId = w.id;
+            return;
+        }
+        if (w.kind == WindowKind::Cargo || w.kind == WindowKind::ShipFit) cascade++;
+    }
+    Window w;
+    w.id = state.nextId++;
+    w.kind = WindowKind::ShipFit;
+    w.star = starIndex;
+    w.rect = defaultWindowRect(WindowKind::ShipFit, screenW, screenH, cascade);
+    state.windows.push_back(w);
+    state.activeId = w.id;
 }
 
 void openShipyardWindow(WindowState& state, int starIndex, int x, int y) {
@@ -1212,7 +1288,7 @@ bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window&
             if (i < nShips) {
                 state.confirmBuyShipIndex = i;
             } else if (i > nShips) {
-                game.installModule(game.playerAgent, i - nShips - 1);
+                game.buyModule(game.playerAgent, i - nShips - 1);
             }
             return true;
         }
@@ -1606,6 +1682,7 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         if (game.colonies[window.star].shipyardLevel > 0 || game.colonies[window.star].infrastructure >= 1.0) canUpgrade = true;
     }
     drawButton(renderer, layout.upgrade, "SHIPYARD", P.cyan, canUpgrade);
+    drawButton(renderer, layout.shipFit, "UPGRADES", P.cyan, game.playerAgent >= 0);
 
     const int infoX = layout.buy.x;
     const int infoY = layout.upgrade.y + 42;
@@ -1629,6 +1706,57 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     }
 
     drawText(renderer, layout.tableX, window.rect.y + window.rect.h - 15, "CLICK AMOUNT + TYPE NUMBER / EMPTY=MAX / RMB CELL QUICK BUY", P.dim, 1);
+}
+
+void drawShipFitWindow(SDL_Renderer* renderer, const Game& game, const Window& window, bool active) {
+    drawWindowFrame(renderer, window, "SHIP UPGRADES", active);
+    
+    if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) {
+        drawText(renderer, window.rect.x + 12, window.rect.y + TITLE_H + 12, "NO PLAYER", P.red, 1);
+        return;
+    }
+    
+    const Agent& agent = game.agents[game.playerAgent];
+    char line[128];
+    int y = window.rect.y + TITLE_H + 12;
+    int x = window.rect.x + 12;
+    
+    std::snprintf(line, sizeof(line), "INSTALLED (%d / %d):", int(agent.ship.modules.size()), agent.ship.maxModules);
+    drawText(renderer, x, y, line, P.amber, 1);
+    y += 12;
+    
+    const auto& defs = moduleDefs();
+    for (size_t i = 0; i < agent.ship.modules.size(); ++i) {
+        const ModuleDef& def = defs[agent.ship.modules[i]];
+        std::snprintf(line, sizeof(line), "- %s", def.name.c_str());
+        drawText(renderer, x, y, line, P.cyan, 1);
+        
+        SDL_Rect btn = {window.rect.x + window.rect.w - 90, y - 4, 70, 20};
+        drawButton(renderer, btn, "UNEQUIP", P.red, true);
+        y += 24;
+    }
+    
+    y += 12;
+    drawText(renderer, x, y, "AVAILABLE IN CARGO:", P.amber, 1);
+    y += 12;
+    
+    std::vector<int> cargoMods;
+    for (size_t i = 0; i < agent.ship.cargo.size(); ++i) {
+        if (agent.ship.cargo[i].element.rfind("Module: ", 0) == 0 && agent.ship.cargo[i].amount > 0.0) {
+            cargoMods.push_back(i);
+        }
+    }
+    
+    for (size_t i = 0; i < cargoMods.size(); ++i) {
+        std::string modName = agent.ship.cargo[cargoMods[i]].element.substr(8);
+        std::snprintf(line, sizeof(line), "- %s (x%d)", modName.c_str(), int(agent.ship.cargo[cargoMods[i]].amount));
+        drawText(renderer, x, y, line, P.text, 1);
+        
+        SDL_Rect btn = {window.rect.x + window.rect.w - 90, y - 4, 70, 20};
+        bool canEquip = int(agent.ship.modules.size()) < agent.ship.maxModules;
+        drawButton(renderer, btn, "EQUIP", canEquip ? P.green : P.dim, canEquip);
+        y += 24;
+    }
 }
 
 void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& window, bool active) {
@@ -1689,6 +1817,8 @@ void drawWindows(SDL_Renderer* renderer, const Game& game, int, int, const HudSe
             drawContractsWindow(renderer, game, window, selection, active);
         } else if (window.kind == WindowKind::Shipyard) {
             drawShipyardWindow(renderer, game, window, state, active);
+        } else if (window.kind == WindowKind::ShipFit) {
+            drawShipFitWindow(renderer, game, window, active);
         } else if (window.kind == WindowKind::Cargo) {
             drawCargoWindow(renderer, game, window, active);
         } else {

@@ -28,6 +28,7 @@ public:
     double hullHP = 60.0;       // текущая целостность корпуса
     double maxHullHP = 60.0;    // максимум целостности (корпус + модули)
     std::vector<int> modules;   // установленные модули (индексы в moduleDefs)
+    int maxModules = 3;         // слоты апгрейдов
     int ownerFaction; // -1 если свободный
     int targetStar = -1; // Индекс звезды назначения
     bool enRoute = false; // В пути ли корабль
@@ -58,6 +59,7 @@ struct ShipClass {
     double armor;
     double utility;
     double price;
+    int maxModules;
 };
 
 const std::vector<ShipClass>& shipClasses();
