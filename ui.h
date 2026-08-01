@@ -21,7 +21,8 @@ enum class WindowKind {
     SystemInfo,
     Trade,
     Contracts,
-    Shipyard
+    Shipyard,
+    Cargo
 };
 
 struct Window {
@@ -42,12 +43,14 @@ struct WindowState {
     int draggingId = -1;
     std::string tradeAmount;
     bool tradeAmountEditing = false;
+    int confirmBuyShipIndex = -1;
 };
 
 void openSystemWindow(WindowState& state, int starIndex, int screenW, int screenH);
 void openTradeWindow(WindowState& state, int starIndex, int screenW, int screenH);
 void openContractsWindow(WindowState& state, int starIndex, int screenW, int screenH);
 void openShipyardWindow(WindowState& state, int starIndex, int screenW, int screenH);
+void openCargoWindow(WindowState& state, int starIndex, int screenW, int screenH);
 bool handleMouseDown(WindowState& state, Game& game, HudSelection& selection, int screenW, int screenH, int mouseX, int mouseY, int button);
 void handleMouseMove(WindowState& state, int screenW, int screenH, int mouseX, int mouseY);
 void handleMouseUp(WindowState& state);

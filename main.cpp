@@ -20,7 +20,7 @@
 enum ActionId {
     ACT_NONE = 0,
     // Макро-режим (звёздная карта):
-    ACT_ENTER, ACT_GO, ACT_STOP, ACT_TRADE, ACT_SHIPYARD, ACT_REPAIR, ACT_HIRE, ACT_PAUSE, ACT_SPEED,
+    ACT_ENTER, ACT_GO, ACT_STOP, ACT_TRADE, ACT_SHIPYARD, ACT_REPAIR, ACT_HIRE, ACT_CARGO, ACT_PAUSE, ACT_SPEED,
     // Локальный режим (полёт):
     ACT_FIRE, ACT_MINE, ACT_DOCK, ACT_TARGET, ACT_ZOOM_IN, ACT_ZOOM_OUT, ACT_VIEW, ACT_EXIT
 };
@@ -621,6 +621,7 @@ int main(int argc, char** argv) {
             specs.push_back(Spec{ACT_SHIPYARD, "U YARD", UI::P.cyan, anchorStar() >= 0, false});
             specs.push_back(Spec{ACT_REPAIR, "J REPAIR", UI::P.green, docked && hullHurt, false});
             specs.push_back(Spec{ACT_HIRE, "H HIRE", UI::P.green, docked, false});
+            specs.push_back(Spec{ACT_CARGO, "O CARGO", UI::P.cyan, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_PAUSE, paused ? "|| PAUSE" : "> PLAY", UI::P.amber, true, paused});
             specs.push_back(Spec{ACT_SPEED, spd, UI::P.dim, true, false});
         }
@@ -678,6 +679,9 @@ int main(int argc, char** argv) {
             case ACT_TRADE: {
                 int a = anchorStar();
                 if (a >= 0) { selectedStar = a; UI::openTradeWindow(ui, a, winW, winH); }
+            } break;
+            case ACT_CARGO: {
+                UI::openCargoWindow(ui, anchorStar(), winW, winH);
             } break;
             case ACT_SHIPYARD: {
                 int a = anchorStar();
