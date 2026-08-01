@@ -414,6 +414,16 @@ int main(int argc, char** argv) {
         int d = playerDocked();
         return d >= 0 ? d : selectedStar; // может быть -1, если ничего не выбрано
     };
+    auto localAnchorStar = [&]() -> int {
+        if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
+            if (!game.agents[game.playerAgent].ship.enRoute) {
+                return game.agents[game.playerAgent].currentStar;
+            } else {
+                return -1; // В полёте переходим в пустоту
+            }
+        }
+        return selectedStar >= 0 ? selectedStar : -1;
+    };
 
     auto buildBar = [&](std::vector<ActionButton>& out) {
         out.clear();
@@ -444,7 +454,7 @@ int main(int argc, char** argv) {
                 hullHurt = ps.hullHP < ps.maxHullHP - 0.5;
             }
             char spd[16]; std::snprintf(spd, sizeof(spd), "SPD X%d", int(simSpeed));
-            specs.push_back(Spec{ACT_ENTER, "L ENTER", UI::P.cyan, anchorStar() >= 0, false});
+            specs.push_back(Spec{ACT_ENTER, "L ENTER", UI::P.cyan, true, false});
             specs.push_back(Spec{ACT_GO, "G GO", UI::P.green,
                                  selectedStar >= 0 && game.playerAgent >= 0 && !enRoute, false});
             specs.push_back(Spec{ACT_STOP, "X STOP", UI::P.amber, enRoute, false});
@@ -507,7 +517,7 @@ int main(int argc, char** argv) {
     auto dispatch = [&](int action) {
         switch (action) {
             case ACT_ENTER: {
-                buildLocalScene(game, anchorStar(), localScene);
+                buildLocalScene(game, localAnchorStar(), localScene);
                 localScene.active = true;
                 game.lastEvent = "entered local flight";
                 titleTick = 11;
@@ -697,14 +707,7 @@ int main(int argc, char** argv) {
                         localScene.active = false;
                         game.lastEvent = "exited local flight";
                     } else {
-                        int anchor = -1;
-                        if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()) &&
-                            !game.agents[game.playerAgent].ship.enRoute) {
-                            anchor = game.agents[game.playerAgent].currentStar;
-                        } else if (selectedStar >= 0) {
-                            anchor = selectedStar;
-                        }
-                        buildLocalScene(game, anchor, localScene);
+                        buildLocalScene(game, localAnchorStar(), localScene);
                         localScene.active = true;
                         game.lastEvent = "entered local flight";
                     }
