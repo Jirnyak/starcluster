@@ -27,7 +27,6 @@ struct TradeLayout {
     SDL_Rect autoTrade = {0, 0, 0, 0};
     SDL_Rect refuel = {0, 0, 0, 0};
     SDL_Rect upgrade = {0, 0, 0, 0};
-    SDL_Rect shipFit = {0, 0, 0, 0};
 };
 
 struct SystemLayout {
@@ -36,6 +35,7 @@ struct SystemLayout {
     SDL_Rect contracts = {0, 0, 0, 0};
     SDL_Rect colony = {0, 0, 0, 0};
     SDL_Rect cargo = {0, 0, 0, 0};
+    SDL_Rect shipFit = {0, 0, 0, 0};
 };
 
 struct KnownFactionSummary {
@@ -135,11 +135,12 @@ SDL_Rect closeRect(const Window& window) {
 SystemLayout systemLayout(const Window& window) {
     SystemLayout layout;
     const int y = window.rect.y + window.rect.h - 38;
-    layout.route = {window.rect.x + WINDOW_PAD, y, 70, 24};
-    layout.trade = {window.rect.x + WINDOW_PAD + 78, y, 70, 24};
-    layout.contracts = {window.rect.x + WINDOW_PAD + 156, y, 92, 24};
-    layout.colony = {window.rect.x + WINDOW_PAD + 256, y, 96, 24};
-    layout.cargo = {window.rect.x + WINDOW_PAD + 360, y, 64, 24};
+    layout.route = {window.rect.x + WINDOW_PAD, y, 65, 24};
+    layout.trade = {window.rect.x + WINDOW_PAD + 70, y, 60, 24};
+    layout.contracts = {window.rect.x + WINDOW_PAD + 135, y, 55, 24};
+    layout.colony = {window.rect.x + WINDOW_PAD + 195, y, 80, 24};
+    layout.cargo = {window.rect.x + WINDOW_PAD + 280, y, 60, 24};
+    layout.shipFit = {window.rect.x + WINDOW_PAD + 345, y, 80, 24};
     return layout;
 }
 
@@ -162,7 +163,6 @@ TradeLayout tradeLayoutForWindow(const Window& window) {
     layout.autoTrade = {bx, layout.tableY + 72, buttonW, 28};
     layout.refuel = {bx, layout.tableY + 108, buttonW, 28};
     layout.upgrade = {bx, layout.tableY + 144, buttonW, 28};
-    layout.shipFit = {bx, layout.tableY + 180, buttonW, 28};
     return layout;
 }
 
@@ -867,16 +867,15 @@ bool handleSystemWindowMouseDown(WindowState& state, Game& game, const Window& w
         return true;
     }
     if (contains(layout.trade, mouseX, mouseY)) {
-        if (playerMarketStar(game) == window.star) {
-            openTradeWindow(state, window.star, screenW, screenH);
-            selection.star = window.star;
-            selection.agent = game.playerAgent;
-        }
+        if (playerMarketStar(game) == window.star) openTradeWindow(state, window.star, screenW, screenH);
         return true;
     }
     if (contains(layout.contracts, mouseX, mouseY)) {
-        if (game.playerCanOpenContractsAt(window.star)) {
-            openContractsWindow(state, window.star, screenW, screenH);
+        if (game.playerCanOpenContractsAt(window.star)) openContractsWindow(state, window.star, screenW, screenH);
+        return true;
+    }
+    if (contains(layout.colony, mouseX, mouseY)) {
+        if (game.playerAtStar(window.star) && game.playerFoundColony()) {
             selection.star = window.star;
             selection.agent = game.playerAgent;
         }
@@ -890,11 +889,8 @@ bool handleSystemWindowMouseDown(WindowState& state, Game& game, const Window& w
         }
         return true;
     }
-    if (contains(layout.colony, mouseX, mouseY)) {
-        if (game.playerAtStar(window.star) && game.playerFoundColony()) {
-            selection.star = window.star;
-            selection.agent = game.playerAgent;
-        }
+    if (contains(layout.shipFit, mouseX, mouseY)) {
+        if (game.playerAgent >= 0) openShipFitWindow(state, window.star, screenW, screenH);
         return true;
     }
     return true;
@@ -1071,10 +1067,6 @@ bool handleTradeWindowMouseDown(WindowState& state, Game& game, const Window& wi
         if (liveMarket && (game.colonies[dockedStar].shipyardLevel > 0 || game.colonies[dockedStar].infrastructure >= 1.0)) {
             openShipyardWindow(state, dockedStar, window.rect.x + 20, window.rect.y + 20);
         }
-        return true;
-    }
-    if (contains(layout.shipFit, mouseX, mouseY)) {
-        openShipFitWindow(state, window.star, screenW, screenH);
         return true;
     }
 
@@ -1480,8 +1472,9 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
     drawButton(renderer, layout.route, label, color, game.playerAgent >= 0);
     drawButton(renderer, layout.trade, "TRADE", P.green, playerMarketStar(game) == window.star);
     drawButton(renderer, layout.contracts, "JOBS", P.cyan, game.playerCanOpenContractsAt(window.star));
-    drawButton(renderer, layout.colony, "C COL/RE", P.amber, game.playerAtStar(window.star));
+    drawButton(renderer, layout.colony, "COLONY", P.amber, game.playerAtStar(window.star));
     drawButton(renderer, layout.cargo, "CARGO", P.cyan, game.playerAgent >= 0);
+    drawButton(renderer, layout.shipFit, "UPGRADES", P.cyan, game.playerAgent >= 0);
 }
 
 void drawContractRow(SDL_Renderer* renderer, const Game& game, const Window& window, const Contract& contract, int row, bool activeContractRow) {
@@ -1682,7 +1675,6 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         if (game.colonies[window.star].shipyardLevel > 0 || game.colonies[window.star].infrastructure >= 1.0) canUpgrade = true;
     }
     drawButton(renderer, layout.upgrade, "SHIPYARD", P.cyan, canUpgrade);
-    drawButton(renderer, layout.shipFit, "UPGRADES", P.cyan, game.playerAgent >= 0);
 
     const int infoX = layout.buy.x;
     const int infoY = layout.upgrade.y + 42;
@@ -2102,50 +2094,63 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
         case 13: outArrowTarget = 0; return "They are still prototypes and very rare. Be sure to privatise all you finde.";
         case 14: return "I am at your service with more insignts at any time Master [V].";
         case 100: {
-
-            std::string element = "isotopes";
-            std::string starName = "an adjacent node";
+            std::string supplyStr = "none";
+            std::string demandStr = "none";
+            std::string supplyStarName = "nowhere";
+            std::string demandStarName = "nowhere";
+            
             if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
                 int starId = game.agents[game.playerAgent].currentStar;
-                if (starId >= 0 && starId < (int)game.markets.size()) {
-                    const Market& m = game.markets[starId];
-                    int bestEl = -1;
-                    double maxSupply = -1.0;
-                    for (int i=0; i<(int)elementCount(); ++i) {
-                        if (i < (int)m.supply.size() && m.supply[i].amount > maxSupply) {
-                            maxSupply = m.supply[i].amount;
-                            bestEl = i;
-                        }
-                    }
-                    if (bestEl >= 0) {
-                        const auto& defs = elementDefinitions();
-                        if (bestEl < (int)defs.size()) element = defs[bestEl].name;
-                        
-                        const ClusterStar& s = game.cluster.stars[starId];
-                        int bestStar = -1;
-                        double maxDemand = -1.0;
-                        for (int i=0; i<(int)game.cluster.stars.size(); ++i) {
-                            if (i == starId) continue;
-                            if (i >= (int)game.markets.size()) continue;
-                            double dx = game.cluster.stars[i].x - s.x;
-                            double dy = game.cluster.stars[i].y - s.y;
-                            double dz = game.cluster.stars[i].z - s.z;
-                            double dist = std::sqrt(dx*dx + dy*dy + dz*dz);
-                            if (dist < 15.0) {
-                                if (bestEl < (int)game.markets[i].demand.size() && game.markets[i].demand[bestEl].amount > maxDemand) {
-                                    maxDemand = game.markets[i].demand[bestEl].amount;
-                                    bestStar = i;
+                if (starId >= 0 && starId < (int)game.cluster.stars.size()) {
+                    const ClusterStar& s = game.cluster.stars[starId];
+                    double globalMaxSupply = -1.0;
+                    int globalBestSupplyEl = -1;
+                    int globalBestSupplyStar = -1;
+
+                    double globalMaxDemand = -1.0;
+                    int globalBestDemandEl = -1;
+                    int globalBestDemandStar = -1;
+                    
+                    for (int i = 0; i < (int)game.cluster.stars.size(); ++i) {
+                        if (i >= (int)game.markets.size()) continue;
+                        double dx = game.cluster.stars[i].x - s.x;
+                        double dy = game.cluster.stars[i].y - s.y;
+                        double dz = game.cluster.stars[i].z - s.z;
+                        double dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+                        if (dist < 15.0) {
+                            const Market& m = game.markets[i];
+                            for (int e = 0; e < (int)m.supply.size(); ++e) {
+                                if (m.supply[e].amount > globalMaxSupply) {
+                                    globalMaxSupply = m.supply[e].amount;
+                                    globalBestSupplyEl = e;
+                                    globalBestSupplyStar = i;
+                                }
+                            }
+                            for (int e = 0; e < (int)m.demand.size(); ++e) {
+                                if (m.demand[e].amount > globalMaxDemand) {
+                                    globalMaxDemand = m.demand[e].amount;
+                                    globalBestDemandEl = e;
+                                    globalBestDemandStar = i;
                                 }
                             }
                         }
-                        if (bestStar >= 0) {
-                            starName = game.cluster.stars[bestStar].name;
-                        }
+                    }
+                    
+                    const auto& defs = elementDefinitions();
+                    if (globalBestSupplyEl >= 0 && globalBestSupplyEl < (int)defs.size()) {
+                        supplyStr = defs[globalBestSupplyEl].name;
+                        supplyStarName = game.cluster.stars[globalBestSupplyStar].name;
+                    }
+                    if (globalBestDemandEl >= 0 && globalBestDemandEl < (int)defs.size()) {
+                        demandStr = defs[globalBestDemandEl].name;
+                        demandStarName = game.cluster.stars[globalBestDemandStar].name;
                     }
                 }
             }
+            
             char buf[512];
-            std::snprintf(buf, sizeof(buf), "Local model suggest you to buy %s. We also have insight that the best place to sell it right now is %s. I want to accentuate your attention to %s!", element.c_str(), starName.c_str(), starName.c_str());
+            std::snprintf(buf, sizeof(buf), "Are you interested in recent stockings, Master? Local scans show peak supply of %s at %s, and highest demand for %s at %s.", 
+                          supplyStr.c_str(), supplyStarName.c_str(), demandStr.c_str(), demandStarName.c_str());
             return buf;
         }
     }
