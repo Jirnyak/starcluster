@@ -177,7 +177,15 @@ double clamp01(double v) {
 
 void labelBar(SDL_Renderer* renderer, int x, int y, int w, const std::string& label, double value, SDL_Color c) {
     drawText(renderer, x, y, label, P.dim, 1);
-    bar(renderer, x + 55, y - 1, w - 55, 7, value, c);
+    bar(renderer, x + 85, y - 1, w - 85, 7, value, c);
+}
+
+int drawStat(SDL_Renderer* renderer, int x, int y, const std::string& label, const std::string& value, SDL_Color lc = P.dim, SDL_Color vc = P.text) {
+    drawText(renderer, x, y, label, lc, 1);
+    x += int(label.length()) * 6;
+    drawText(renderer, x, y, value, vc, 1);
+    x += int(value.length()) * 6 + 12;
+    return x;
 }
 
 double marketPressure(const Market& market, int elementIndex) {
@@ -511,13 +519,13 @@ void drawRoutePreview(SDL_Renderer* renderer, const Game& game, int starIndex, i
 
 const char* contractTypeLabel(ContractType type) {
     switch (type) {
-    case ContractType::Delivery: return "DEL";
-    case ContractType::Courier: return "CUR";
-    case ContractType::Scout: return "SCT";
-    case ContractType::Bounty: return "BNT";
-    case ContractType::Escort: return "ESC";
-    case ContractType::Raid: return "RAD";
-    case ContractType::ColonySupply: return "SUP";
+    case ContractType::Delivery: return "DELIVERY";
+    case ContractType::Courier: return "COURIER";
+    case ContractType::Scout: return "SCOUT";
+    case ContractType::Bounty: return "BOUNTY";
+    case ContractType::Escort: return "ESCORT";
+    case ContractType::Raid: return "RAID";
+    case ContractType::ColonySupply: return "SUPPLY";
     }
     return "JOB";
 }
@@ -578,10 +586,10 @@ void drawStarPanel(SDL_Renderer* renderer, const Game& game, int starIndex, int 
             factionName(game, star->occupyingFaction).c_str(), star->captureProgress * 100.0);
         drawText(renderer, x + w - 126, y + 43, cap, P.red, 1);
     }
-    labelBar(renderer, x + 10, y + 58, w - 20, "POP", star->population / 1400000.0, P.green);
-    labelBar(renderer, x + 10, y + 72, w - 20, "IND", star->industry / 3.0, P.amber);
-    labelBar(renderer, x + 10, y + 86, w - 20, "HAB", star->habitability, P.cyan);
-    labelBar(renderer, x + 10, y + 100, w - 20, "DEF", star->defense / 10.0, P.red);
+    labelBar(renderer, x + 10, y + 58, w - 20, "POPULATION", star->population / 1400000.0, P.green);
+    labelBar(renderer, x + 10, y + 72, w - 20, "INDUSTRY", star->industry / 3.0, P.amber);
+    labelBar(renderer, x + 10, y + 86, w - 20, "HABITABILITY", star->habitability, P.cyan);
+    labelBar(renderer, x + 10, y + 100, w - 20, "DEFENSE", star->defense / 10.0, P.red);
 
     if (marketKnown) {
         int marketY = y + 114;
@@ -613,11 +621,20 @@ void drawAgentPanel(SDL_Renderer* renderer, const Game& game, int agentIndex, in
 
     labelBar(renderer, x + 10, y + 75, w - 20, "CARGO", shipCargoMass(agent.ship) / std::max(1.0, agent.ship.cargoCapacity), P.amber);
 
-    char line[128];
-    std::snprintf(line, sizeof(line), "MASS %.0F FUEL %.0F%%", shipTotalMass(agent.ship), shipFuelFraction(agent.ship) * 100.0);
-    drawText(renderer, x + 10, y + 90, line, P.text, 1);
-    std::snprintf(line, sizeof(line), "CR %.0F SPD %.2FC TR %d", agent.money, speedOf(agent), agent.trades);
-    drawText(renderer, x + 10, y + 104, line, P.text, 1);
+    char buf1[32], buf2[32], buf3[32];
+    std::snprintf(buf1, sizeof(buf1), "%.0F", shipTotalMass(agent.ship));
+    std::snprintf(buf2, sizeof(buf2), "%.0F%%", shipFuelFraction(agent.ship) * 100.0);
+    int cx = x + 10;
+    cx = drawStat(renderer, cx, y + 90, "MASS ", buf1);
+    cx = drawStat(renderer, cx, y + 90, "FUEL ", buf2);
+
+    std::snprintf(buf1, sizeof(buf1), "%.0F", agent.money);
+    std::snprintf(buf2, sizeof(buf2), "%.2FC", speedOf(agent));
+    std::snprintf(buf3, sizeof(buf3), "%d", agent.trades);
+    cx = x + 10;
+    cx = drawStat(renderer, cx, y + 104, "CREDITS ", buf1, P.green);
+    cx = drawStat(renderer, cx, y + 104, "SPEED ", buf2);
+    cx = drawStat(renderer, cx, y + 104, "TRADES ", buf3);
 }
 
 void drawFactionPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w) {
@@ -691,9 +708,23 @@ void drawControlHints(SDL_Renderer* renderer, int screenW, int screenH) {
 }
 
 void drawButton(SDL_Renderer* renderer, const SDL_Rect& rect, const std::string& label, SDL_Color c, bool enabled = true) {
+    int mx = 0, my = 0;
+    Uint32 mstate = SDL_GetMouseState(&mx, &my);
+    bool hovered = enabled && (mx >= rect.x && mx < rect.x + rect.w && my >= rect.y && my < rect.y + rect.h);
+    bool pressed = hovered && (mstate & SDL_BUTTON(SDL_BUTTON_LEFT));
+
     const SDL_Color stroke = enabled ? c : P.dim;
-    const SDL_Color text = enabled ? c : SDL_Color{86, 98, 118, 255};
-    fillRect(renderer, rect.x, rect.y, rect.w, rect.h, enabled ? SDL_Color{16, 22, 38, 235} : SDL_Color{12, 16, 26, 210});
+    SDL_Color text = enabled ? c : SDL_Color{86, 98, 118, 255};
+    SDL_Color fill = enabled ? SDL_Color{16, 22, 38, 235} : SDL_Color{12, 16, 26, 210};
+
+    if (pressed) {
+        fill = stroke;
+        text = {12, 16, 26, 255};
+    } else if (hovered) {
+        fill = SDL_Color{ Uint8(c.r / 3 + 16), Uint8(c.g / 3 + 22), Uint8(c.b / 3 + 38), 235 };
+    }
+
+    fillRect(renderer, rect.x, rect.y, rect.w, rect.h, fill);
     strokeRect(renderer, rect.x, rect.y, rect.w, rect.h, stroke);
     drawText(renderer, rect.x + 10, rect.y + 7, label, text, 1);
 }
@@ -809,10 +840,23 @@ bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window&
 bool handleSystemWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int screenW, int screenH, int mouseX, int mouseY) {
     const SystemLayout layout = systemLayout(window);
     if (contains(layout.route, mouseX, mouseY)) {
-        if (game.commandAgentToStar(game.playerAgent, window.star)) {
-            selection.star = window.star;
-            selection.agent = game.playerAgent;
-            selection.followAgent = true;
+        // Explicitly matched with GO implementation
+        if (window.star >= 0) {
+            bool success = game.commandAgentToStar(game.playerAgent, window.star);
+            printf("DEBUG UI: GO button clicked. Target star: %d. Success: %s\n", window.star, success ? "true" : "false");
+            if (success) {
+                selection.star = window.star;
+                selection.agent = game.playerAgent;
+                selection.followAgent = true;
+                
+                // Close the window immediately to reveal the ship and route line
+                for (size_t i = 0; i < state.windows.size(); ++i) {
+                    if (state.windows[i].id == window.id) {
+                        state.windows.erase(state.windows.begin() + i);
+                        break;
+                    }
+                }
+            }
         }
         return true;
     }
@@ -1304,7 +1348,20 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
             drawText(renderer, x, y, "MARKET UNKNOWN / NO SNAPSHOT", P.dim, 1);
         }
         const SystemLayout layout = systemLayout(window);
-        drawButton(renderer, layout.route, "ROUTE", P.cyan, game.playerAgent >= 0);
+        const bool isEnRoute = game.playerAgent >= 0 && game.agents[game.playerAgent].ship.enRoute;
+        const bool isEnRouteToThis = isEnRoute && game.agents[game.playerAgent].destStar == window.star;
+        const bool isAtThis = game.playerAgent >= 0 && game.agents[game.playerAgent].currentStar == window.star && !isEnRoute;
+        
+        std::string label = "GO";
+        SDL_Color color = P.cyan;
+        if (isEnRouteToThis) {
+            label = "EN ROUTE"; color = P.green;
+        } else if (isAtThis) {
+            label = "DOCKED"; color = P.dim;
+        } else if (isEnRoute) {
+            label = "MOVING"; color = P.red;
+        }
+        drawButton(renderer, layout.route, label, color, game.playerAgent >= 0);
         drawButton(renderer, layout.trade, "TRADE", P.green, false);
         drawButton(renderer, layout.contracts, "JOBS", P.cyan, game.playerCanOpenContractsAt(window.star));
         drawButton(renderer, layout.colony, "C COL/RE", P.amber, false);
@@ -1332,7 +1389,20 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
     drawLiveColonySummary(renderer, game, window.star, x, y);
 
     const SystemLayout layout = systemLayout(window);
-    drawButton(renderer, layout.route, "ROUTE", P.cyan, game.playerAgent >= 0);
+    const bool isEnRoute = game.playerAgent >= 0 && game.agents[game.playerAgent].ship.enRoute;
+    const bool isEnRouteToThis = isEnRoute && game.agents[game.playerAgent].destStar == window.star;
+    const bool isAtThis = game.playerAgent >= 0 && game.agents[game.playerAgent].currentStar == window.star && !isEnRoute;
+    
+    std::string label = "GO";
+    SDL_Color color = P.cyan;
+    if (isEnRouteToThis) {
+        label = "EN ROUTE"; color = P.green;
+    } else if (isAtThis) {
+        label = "DOCKED"; color = P.dim;
+    } else if (isEnRoute) {
+        label = "MOVING"; color = P.red;
+    }
+    drawButton(renderer, layout.route, label, color, game.playerAgent >= 0);
     drawButton(renderer, layout.trade, "TRADE", P.green, playerMarketStar(game) == window.star);
     drawButton(renderer, layout.contracts, "JOBS", P.cyan, game.playerCanOpenContractsAt(window.star));
     drawButton(renderer, layout.colony, "C COL/RE", P.amber, game.playerAtStar(window.star));
@@ -1472,13 +1542,14 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     }
     if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
         const Agent& player = game.agents[game.playerAgent];
-        char line[96];
-        std::snprintf(line, sizeof(line), "CR %.0F CARGO %.0F/%.0F FUEL %.0F%%",
-            player.money,
-            shipCargoMass(player.ship),
-            player.ship.cargoCapacity,
-            shipFuelFraction(player.ship) * 100.0);
-        drawText(renderer, topX, topY + 16, line, P.text, 1);
+        char buf1[32], buf2[32], buf3[32];
+        std::snprintf(buf1, sizeof(buf1), "%.0F", player.money);
+        std::snprintf(buf2, sizeof(buf2), "%.0F/%.0F", shipCargoMass(player.ship), player.ship.cargoCapacity);
+        std::snprintf(buf3, sizeof(buf3), "%.0F%%", shipFuelFraction(player.ship) * 100.0);
+        int cx = topX;
+        cx = drawStat(renderer, cx, topY + 16, "CREDITS ", buf1, P.green);
+        cx = drawStat(renderer, cx, topY + 16, "CARGO ", buf2);
+        cx = drawStat(renderer, cx, topY + 16, "FUEL ", buf3);
     }
 
     const std::vector<ElementDefinition>& elements = elementDefinitions();
@@ -1487,14 +1558,30 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         const SDL_Rect rect = elementRect(layout, idx);
         if (rect.w <= 0) continue;
 
+        int mx = 0, my = 0;
+        Uint32 mstate = SDL_GetMouseState(&mx, &my);
+        bool hovered = (mx >= rect.x && mx < rect.x + rect.w && my >= rect.y && my < rect.y + rect.h);
+        bool pressed = hovered && (mstate & SDL_BUTTON(SDL_BUTTON_LEFT));
+
         SDL_Color fill = {34, 44, 62, 190};
         if (market) fill = marketCellColor(*market, idx);
+
+        if (pressed) {
+            fill = {12, 16, 26, 255};
+        } else if (hovered) {
+            fill.r = Uint8(std::min(255, fill.r + 40));
+            fill.g = Uint8(std::min(255, fill.g + 40));
+            fill.b = Uint8(std::min(255, fill.b + 40));
+        }
+
         fillRect(renderer, rect.x, rect.y, rect.w, rect.h, fill);
 
         SDL_Color border = {52, 68, 92, 220};
         if (market && star && hasFocus(star->resourceFocus, idx)) border = P.cyan;
         if (market && star && hasFocus(star->demandFocus, idx)) border = P.red;
         if (idx == selection.element) border = P.amber;
+        if (pressed) border = P.amber;
+        
         strokeRect(renderer, rect.x, rect.y, rect.w, rect.h, border);
 
         drawText(renderer, rect.x + 3, rect.y + 3, elements[i].symbol, idx == selection.element ? P.amber : P.text, 1);
@@ -1527,15 +1614,18 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         const ElementDefinition& element = elements[selection.element];
         drawText(renderer, infoX, infoY, std::string(element.symbol) + " " + element.name, P.text, 1);
         if (market && selection.element < int(market->prices.size())) {
-            char line[96];
-            std::snprintf(line, sizeof(line), "PRICE %.1F", market->prices[selection.element]);
-            drawText(renderer, infoX, infoY + 14, line, P.amber, 1);
-            std::snprintf(line, sizeof(line), "SUP %.0F", market->supply[selection.element].amount);
-            drawText(renderer, infoX, infoY + 28, line, P.green, 1);
-            std::snprintf(line, sizeof(line), "DEM %.0F", market->demand[selection.element].amount);
-            drawText(renderer, infoX, infoY + 42, line, P.red, 1);
-            std::snprintf(line, sizeof(line), "MASS %.1F FUEL %.2F/%.2F", element.atomicMass, element.fusionFuelTrait, element.fissionFuelTrait);
-            drawText(renderer, infoX, infoY + 56, line, P.dim, 1);
+            char buf1[32], buf2[32];
+            std::snprintf(buf1, sizeof(buf1), "%.1F", market->prices[selection.element]);
+            drawStat(renderer, infoX, infoY + 14, "PRICE ", buf1, P.dim, P.amber);
+            std::snprintf(buf1, sizeof(buf1), "%.0F", market->supply[selection.element].amount);
+            drawStat(renderer, infoX, infoY + 28, "SUPPLY ", buf1, P.dim, P.green);
+            std::snprintf(buf1, sizeof(buf1), "%.0F", market->demand[selection.element].amount);
+            drawStat(renderer, infoX, infoY + 42, "DEMAND ", buf1, P.dim, P.red);
+            std::snprintf(buf1, sizeof(buf1), "%.1F", element.atomicMass);
+            std::snprintf(buf2, sizeof(buf2), "%.2F/%.2F", element.fusionFuelTrait, element.fissionFuelTrait);
+            int cx = infoX;
+            cx = drawStat(renderer, cx, infoY + 56, "MASS ", buf1, P.dim, P.text);
+            cx = drawStat(renderer, cx, infoY + 56, "FUEL ", buf2, P.dim, P.text);
         }
     }
 
@@ -1740,8 +1830,16 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
         }
         panel(renderer, 12, y, leftW, 44);
         drawText(renderer, 22, y + 10, "PLAYER STATUS", P.amber, 1);
-        std::snprintf(top, sizeof(top), "CR %.0F TR %d COL %d JOB %d", player.money, player.trades, game.playerColonyCount(), activeContracts);
-        drawText(renderer, 22, y + 27, top, P.text, 1);
+        char buf1[32], buf2[32], buf3[32], buf4[32];
+        std::snprintf(buf1, sizeof(buf1), "%.0F", player.money);
+        std::snprintf(buf2, sizeof(buf2), "%d", player.trades);
+        std::snprintf(buf3, sizeof(buf3), "%d", game.playerColonyCount());
+        std::snprintf(buf4, sizeof(buf4), "%d", activeContracts);
+        int cx = 22;
+        cx = drawStat(renderer, cx, y + 27, "CREDITS ", buf1, P.green);
+        cx = drawStat(renderer, cx, y + 27, "TRADES ", buf2);
+        cx = drawStat(renderer, cx, y + 27, "COLONIES ", buf3);
+        cx = drawStat(renderer, cx, y + 27, "JOBS ", buf4);
         y += 54;
     }
 
@@ -1777,6 +1875,79 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
     if (selection.followAgent) {
         drawText(renderer, screenW / 2 - 36, 14, "FOLLOW", P.amber, 2);
     }
+}
+
+void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int screenW, int screenH, SDL_Texture* tex) {
+    if (!state.vnState.active) return;
+    
+    // Render Alice texture with glitch effect
+    if (tex) {
+        int texW = 0, texH = 0;
+        SDL_QueryTexture(tex, NULL, NULL, &texW, &texH);
+        
+        // Scale to fit on screen if needed, leave space for dialogue
+        float scale = std::min(1.0f, (float)(screenH - 180) / texH);
+        if (scale < 0.2f) scale = 0.2f;
+        int drawW = texW * scale;
+        int drawH = texH * scale;
+        
+        int baseX = 40; // Bottom-left corner
+        int baseY = screenH - drawH;
+        
+        // Draw the normal base image first
+        SDL_Rect baseSrc = {0, 0, texW, texH};
+        SDL_Rect baseDst = {baseX, baseY, drawW, drawH};
+        SDL_SetTextureColorMod(tex, 255, 255, 255);
+        SDL_RenderCopy(renderer, tex, &baseSrc, &baseDst);
+        
+        // Add rectangular random glitch blocks
+        int numGlitches = rand() % 15;
+        for (int i = 0; i < numGlitches; ++i) {
+            // Random block dimensions
+            int gw = (rand() % (texW / 2)) + 10;
+            int gh = (rand() % (texH / 4)) + 5;
+            int gx = rand() % (texW - gw + 1);
+            int gy = rand() % (texH - gh + 1);
+            
+            SDL_Rect src = {gx, gy, gw, gh};
+            
+            // Random offset in both X and Y directions
+            int offsetX = (rand() % 80) - 40;
+            int offsetY = (rand() % 20) - 10;
+            
+            SDL_Rect dst = {
+                baseX + (int)(gx * scale) + offsetX, 
+                baseY + (int)(gy * scale) + offsetY, 
+                (int)(gw * scale) + 1, 
+                (int)(gh * scale) + 1
+            };
+            
+            // Black and white intensity glitch
+            int intensity = 50 + (rand() % 205);
+            SDL_SetTextureColorMod(tex, intensity, intensity, intensity);
+            SDL_RenderCopy(renderer, tex, &src, &dst);
+        }
+        SDL_SetTextureColorMod(tex, 255, 255, 255); // Reset
+    }
+    
+    // Draw Dialogue Box
+    int boxH = 150;
+    int boxY = screenH - boxH - 20;
+    int boxX = 20;
+    int boxW = screenW - 40;
+    
+    // Semi-transparent background
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 220);
+    SDL_Rect boxRect = {boxX, boxY, boxW, boxH};
+    SDL_RenderFillRect(renderer, &boxRect);
+    
+    // Border
+    SDL_SetRenderDrawColor(renderer, 70, 240, 255, 255);
+    SDL_RenderDrawRect(renderer, &boxRect);
+    
+    // Text
+    drawText(renderer, boxX + 20, boxY + 20, "ALICE", {70, 240, 255, 255}, 2);
+    drawText(renderer, boxX + 20, boxY + 60, state.vnState.currentText, {214, 228, 238, 255}, 2);
 }
 
 }

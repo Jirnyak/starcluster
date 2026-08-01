@@ -5,6 +5,8 @@
 #include "local.h"
 #include "render2d.h"
 #include <SDL.h>
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -516,6 +518,26 @@ int main(int argc, char** argv) {
         return 1;
     }
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    
+    SDL_Texture* aliceTex = nullptr;
+    int aliceW, aliceH, aliceChannels;
+    unsigned char* aliceData = stbi_load("alice.png", &aliceW, &aliceH, &aliceChannels, 4);
+    if (aliceData) {
+        SDL_Surface* surface = SDL_CreateRGBSurfaceFrom((void*)aliceData, aliceW, aliceH, 32, aliceW * 4,
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+                                                        0xff000000, 0x00ff0000, 0x0000ff00, 0x000000ff
+#else
+                                                        0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000
+#endif
+                                                       );
+        if (surface) {
+            aliceTex = SDL_CreateTextureFromSurface(renderer, surface);
+            SDL_FreeSurface(surface);
+        }
+        stbi_image_free(aliceData);
+    } else {
+        std::cerr << "Failed to load alice.png: " << stbi_failure_reason() << "\n";
+    }
 
     Game game;
     game.init(STAR_COUNT);
@@ -647,14 +669,27 @@ int main(int argc, char** argv) {
     };
 
     auto drawBar = [&](const std::vector<ActionButton>& bar) {
+        int mx = 0, my = 0;
+        Uint32 mstate = SDL_GetMouseState(&mx, &my);
         for (size_t i = 0; i < bar.size(); ++i) {
             const ActionButton& b = bar[i];
-            const SDL_Color fill = b.on
+            bool hovered = b.enabled && (mx >= b.rect.x && mx < b.rect.x + b.rect.w && my >= b.rect.y && my < b.rect.y + b.rect.h);
+            bool pressed = hovered && (mstate & SDL_BUTTON(SDL_BUTTON_LEFT));
+
+            SDL_Color fill = b.on
                 ? SDL_Color{ Uint8(b.color.r / 3 + 10), Uint8(b.color.g / 3 + 10), Uint8(b.color.b / 3 + 14), 235 }
                 : (b.enabled ? SDL_Color{ 16, 22, 38, 235 } : SDL_Color{ 12, 16, 26, 200 });
+            SDL_Color txt = b.enabled ? (b.on ? UI::P.text : b.color) : SDL_Color{ 86, 98, 118, 255 };
+
+            if (pressed) {
+                fill = b.color;
+                txt = { 12, 16, 26, 255 };
+            } else if (hovered) {
+                fill = SDL_Color{ Uint8(b.color.r / 3 + 16), Uint8(b.color.g / 3 + 22), Uint8(b.color.b / 3 + 38), 235 };
+            }
+
             UI::fillRect(renderer, b.rect.x, b.rect.y, b.rect.w, b.rect.h, fill);
             UI::strokeRect(renderer, b.rect.x, b.rect.y, b.rect.w, b.rect.h, b.enabled ? b.color : UI::P.dim);
-            const SDL_Color txt = b.enabled ? (b.on ? UI::P.text : b.color) : SDL_Color{ 86, 98, 118, 255 };
             const int lw = int(b.label.size()) * 6;
             UI::drawText(renderer, b.rect.x + (b.rect.w - lw) / 2, b.rect.y + (b.rect.h - 7) / 2, b.label, txt, 1);
         }
@@ -802,11 +837,17 @@ int main(int argc, char** argv) {
                 followAgent = clickSelection.followAgent;
                 if (!handled) {
                     const int star = nearestStar(game, e.button.x, e.button.y, winW, winH, view);
-                    if (star >= 0 && game.commandAgentToStar(game.playerAgent, star)) {
-                        selectedStar = star;
-                        selectedAgent = game.playerAgent;
-                        followAgent = true;
-                        UI::openSystemWindow(ui, selectedStar, winW, winH);
+                    if (star >= 0) {
+                        bool success = game.commandAgentToStar(game.playerAgent, star);
+                        printf("DEBUG MOUSE: Right-click GO. Target star: %d. Success: %s\n", star, success ? "true" : "false");
+                        if (!success) {
+                            printf("DEBUG MOUSE: Reason: %s\n", game.lastEvent.c_str());
+                        } else {
+                            selectedStar = star;
+                            selectedAgent = game.playerAgent;
+                            followAgent = true;
+                            UI::openSystemWindow(ui, selectedStar, winW, winH);
+                        }
                     }
                 }
             }
@@ -836,6 +877,12 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 if (UI::handleKeyDown(ui, e.key.keysym.sym)) continue;
+                
+                if (e.key.keysym.sym == SDLK_v) {
+                    ui.vnState.active = !ui.vnState.active;
+                    continue;
+                }
+                
                 // L — вход/выход из локального режима полёта (работает в обоих режимах)
                 if (e.key.keysym.sym == SDLK_l) {
                     if (localScene.active) {
@@ -1309,6 +1356,8 @@ int main(int argc, char** argv) {
         UI::drawHud(renderer, game, winW, winH, hud);
         UI::drawWindows(renderer, game, winW, winH, hud, ui);
         { std::vector<ActionButton> bar; buildBar(bar); drawBar(bar); }
+        
+        UI::drawVisualNovel(renderer, ui, winW, winH, aliceTex);
 
         SDL_RenderPresent(renderer);
         if (smoke && ++frames >= 12) quit = true;
@@ -1321,6 +1370,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (aliceTex) SDL_DestroyTexture(aliceTex);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
