@@ -5,7 +5,6 @@
 #include "local.h"
 #include "render2d.h"
 #include <SDL.h>
-#define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #include <algorithm>
 #include <cmath>
@@ -669,24 +668,13 @@ int main(int argc, char** argv) {
     };
 
     auto drawBar = [&](const std::vector<ActionButton>& bar) {
-        int mx = 0, my = 0;
-        Uint32 mstate = SDL_GetMouseState(&mx, &my);
         for (size_t i = 0; i < bar.size(); ++i) {
             const ActionButton& b = bar[i];
-            bool hovered = b.enabled && (mx >= b.rect.x && mx < b.rect.x + b.rect.w && my >= b.rect.y && my < b.rect.y + b.rect.h);
-            bool pressed = hovered && (mstate & SDL_BUTTON(SDL_BUTTON_LEFT));
 
             SDL_Color fill = b.on
                 ? SDL_Color{ Uint8(b.color.r / 3 + 10), Uint8(b.color.g / 3 + 10), Uint8(b.color.b / 3 + 14), 235 }
                 : (b.enabled ? SDL_Color{ 16, 22, 38, 235 } : SDL_Color{ 12, 16, 26, 200 });
             SDL_Color txt = b.enabled ? (b.on ? UI::P.text : b.color) : SDL_Color{ 86, 98, 118, 255 };
-
-            if (pressed) {
-                fill = b.color;
-                txt = { 12, 16, 26, 255 };
-            } else if (hovered) {
-                fill = SDL_Color{ Uint8(b.color.r / 3 + 16), Uint8(b.color.g / 3 + 22), Uint8(b.color.b / 3 + 38), 235 };
-            }
 
             UI::fillRect(renderer, b.rect.x, b.rect.y, b.rect.w, b.rect.h, fill);
             UI::strokeRect(renderer, b.rect.x, b.rect.y, b.rect.w, b.rect.h, b.enabled ? b.color : UI::P.dim);
@@ -808,7 +796,7 @@ int main(int argc, char** argv) {
                     }
                     if (act != ACT_NONE) {
                         dispatch(act);
-                    } else if (!hitBtn && !localScene.active) {
+                    } else if (!hitBtn && (!localScene.active || localMapMode)) {
                         const int star = nearestStar(game, e.button.x, e.button.y, winW, winH, view);
                         const int agent = nearestAgent(game, e.button.x, e.button.y, winW, winH, view);
                         if (agent >= 0) {
@@ -835,18 +823,18 @@ int main(int argc, char** argv) {
                 selectedAgent = clickSelection.agent;
                 selectedElement = clickSelection.element;
                 followAgent = clickSelection.followAgent;
-                if (!handled) {
+                if (!handled && (!localScene.active || localMapMode)) {
                     const int star = nearestStar(game, e.button.x, e.button.y, winW, winH, view);
                     if (star >= 0) {
+                        selectedStar = star;
+                        UI::openSystemWindow(ui, selectedStar, winW, winH);
                         bool success = game.commandAgentToStar(game.playerAgent, star);
                         printf("DEBUG MOUSE: Right-click GO. Target star: %d. Success: %s\n", star, success ? "true" : "false");
                         if (!success) {
                             printf("DEBUG MOUSE: Reason: %s\n", game.lastEvent.c_str());
                         } else {
-                            selectedStar = star;
                             selectedAgent = game.playerAgent;
                             followAgent = true;
-                            UI::openSystemWindow(ui, selectedStar, winW, winH);
                         }
                     }
                 }

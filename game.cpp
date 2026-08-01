@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <queue>
 
 std::mt19937 rng(42);
 
@@ -95,7 +96,7 @@ const char* contractTypeLabel(ContractType type) {
 }
 
 const unsigned short ROUTE_NO_HOP = 65535;
-const int ROUTE_NEIGHBORS = 14;
+const int ROUTE_NEIGHBORS = 32;
 const double ROUTE_REBUILD_INTERVAL_YEARS = 1000.0;
 const double MARKET_UPDATE_INTERVAL_YEARS = 1.0;
 const int SIGNAL_MEMORY_PER_STAR = 24;
@@ -3444,27 +3445,68 @@ void Game::rebuildRouteCache() {
         }
     }
 
+    // Ensure symmetry to guarantee bidirectional reachability
+    for (int i = 0; i < count; ++i) {
+        for (size_t e = 0; e < graph[i].size(); ++e) {
+            const RouteEdge& edge = graph[i][e];
+            bool found = false;
+            for (size_t rev = 0; rev < graph[edge.star].size(); ++rev) {
+                if (graph[edge.star][rev].star == i) { found = true; break; }
+            }
+            if (!found) {
+                routeAddEdge(graph, edge.star, i, edge.distance);
+            }
+        }
+    }
+
     const size_t countSize = size_t(count);
     routeNextHop.assign(countSize * countSize, ROUTE_NO_HOP);
-    for (int source = 0; source < count; ++source) {
-        const size_t row = size_t(source) * size_t(count);
-        routeNextHop[row + size_t(source)] = static_cast<unsigned short>(source);
-        for (int target = 0; target < count; ++target) {
-            if (target == source) continue;
-            const double direct2 = distanceSquaredStarToStar(cluster.stars[source], cluster.stars[target]);
-            double best2 = direct2;
-            int best = -1;
-            const std::vector<RouteEdge>& edges = graph[source];
-            for (size_t e = 0; e < edges.size(); ++e) {
-                const int neighbor = edges[e].star;
-                if (neighbor < 0 || neighbor >= count) continue;
-                const double neighbor2 = distanceSquaredStarToStar(cluster.stars[neighbor], cluster.stars[target]);
-                if (neighbor2 < best2) {
-                    best2 = neighbor2;
-                    best = neighbor;
+    
+    std::vector<double> dist(count);
+    std::vector<int> nextHop(count);
+    using PD = std::pair<double, int>;
+    std::vector<PD> pq;
+    pq.reserve(count * 8); // Pre-allocate heap space
+
+    // Run Dijkstra from each target to find optimal paths to all sources
+    for (int target = 0; target < count; ++target) {
+        std::fill(dist.begin(), dist.end(), std::numeric_limits<double>::max());
+        std::fill(nextHop.begin(), nextHop.end(), target);
+        
+        pq.clear();
+        dist[target] = 0.0;
+        pq.push_back({0.0, target});
+        
+        while (!pq.empty()) {
+            std::pop_heap(pq.begin(), pq.end(), std::greater<PD>());
+            PD top = pq.back();
+            pq.pop_back();
+            
+            double d = top.first;
+            int u = top.second;
+            
+            if (d > dist[u]) continue;
+            
+            for (size_t e = 0; e < graph[u].size(); ++e) {
+                const RouteEdge& edge = graph[u][e];
+                int v = edge.star;
+                double newDist = d + edge.distance;
+                if (newDist < dist[v]) {
+                    dist[v] = newDist;
+                    nextHop[v] = u;
+                    pq.push_back({newDist, v});
+                    std::push_heap(pq.begin(), pq.end(), std::greater<PD>());
                 }
             }
-            routeNextHop[row + size_t(target)] = best >= 0 ? static_cast<unsigned short>(best) : static_cast<unsigned short>(target);
+        }
+        
+        for (int source = 0; source < count; ++source) {
+            const size_t index = size_t(source) * countSize + size_t(target);
+            if (source == target) {
+                routeNextHop[index] = static_cast<unsigned short>(source);
+            } else {
+                routeNextHop[index] = static_cast<unsigned short>(nextHop[source]);
+            }
         }
     }
 }
