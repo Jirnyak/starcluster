@@ -3628,7 +3628,6 @@ void Game::init(size_t num_stars) {
             observeMarketForFaction(int(factionIndex), starIndex);
         }
     }
-    seedPlayerKnowledge(playerStart, 10.0);
     observeStar(playerStart);
     for (int i = 0; i < 4; ++i) {
         tryCreateDeliveryContract(*this, playerStart);
