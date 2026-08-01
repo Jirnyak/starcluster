@@ -1855,7 +1855,7 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
         const int facH = 44 + std::min(6, int(game.factions.size())) * 19;
         drawObjectivesPanel(renderer, game, screenW - 260, 12 + facH + 10, 248);
     }
-    drawControlHints(renderer, screenW, screenH);
+    // drawControlHints(renderer, screenW, screenH);
 
     {
         const int newsLines = screenH < 780 ? 8 : 14;
@@ -1891,29 +1891,47 @@ void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int scree
         int drawW = texW * scale;
         int drawH = texH * scale;
         
-        int baseX = 40; // Bottom-left corner
+        int baseX = screenW - drawW - 40; // Bottom-right corner
         int baseY = screenH - drawH;
         
-        // Draw the normal base image first
-        SDL_Rect baseSrc = {0, 0, texW, texH};
-        SDL_Rect baseDst = {baseX, baseY, drawW, drawH};
+        // Draw the base image with a smooth wave (CRT wobble/degaussing effect)
         SDL_SetTextureColorMod(tex, 255, 255, 255);
-        SDL_RenderCopy(renderer, tex, &baseSrc, &baseDst);
+        Uint32 time = SDL_GetTicks();
         
-        // Add rectangular random glitch blocks
-        int numGlitches = rand() % 15;
-        for (int i = 0; i < numGlitches; ++i) {
-            // Random block dimensions
-            int gw = (rand() % (texW / 2)) + 10;
-            int gh = (rand() % (texH / 4)) + 5;
-            int gx = rand() % (texW - gw + 1);
-            int gy = rand() % (texH - gh + 1);
+        // Slice the image horizontally to apply the wave
+        const int stripHeight = 4; // Higher is faster but blockier, 4 is a good balance
+        for (int sy = 0; sy < texH; sy += stripHeight) {
+            int h = std::min(stripHeight, texH - sy);
+            SDL_Rect src = {0, sy, texW, h};
+            
+            // Smooth wave combination
+            float wave = sin(sy * 0.015f + time * 0.002f) * 6.0f + 
+                         sin(sy * 0.040f - time * 0.008f) * 2.0f;
+                         
+            SDL_Rect dst = {
+                baseX + (int)wave, 
+                baseY + (int)(sy * scale), 
+                drawW, 
+                (int)(h * scale) + 1 // +1 to prevent gaps between strips
+            };
+            SDL_RenderCopy(renderer, tex, &src, &dst);
+        }
+        
+        // --- Glitch Effect ---
+        
+        // Mode 1: Constant Micro-Ripples (small blocks, small offsets, runs every frame)
+        int numMicro = 10 + (rand() % 15);
+        for (int i = 0; i < numMicro; ++i) {
+            int gw = 10 + (rand() % 40);
+            int gh = 2 + (rand() % 10);
+            int gx = rand() % std::max(1, (texW - gw + 1));
+            int gy = rand() % std::max(1, (texH - gh + 1));
             
             SDL_Rect src = {gx, gy, gw, gh};
             
-            // Random offset in both X and Y directions
-            int offsetX = (rand() % 80) - 40;
-            int offsetY = (rand() % 20) - 10;
+            // Small ripple offset (mostly horizontal, slight vertical)
+            int offsetX = (rand() % 20) - 10;
+            int offsetY = (rand() % 6) - 3;
             
             SDL_Rect dst = {
                 baseX + (int)(gx * scale) + offsetX, 
@@ -1922,17 +1940,49 @@ void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int scree
                 (int)(gh * scale) + 1
             };
             
-            // Black and white intensity glitch
-            int intensity = 50 + (rand() % 205);
+            // Randomly flash some ripples in dark/bright B&W
+            int intensity = (rand() % 2 == 0) ? 100 + (rand() % 155) : 255;
             SDL_SetTextureColorMod(tex, intensity, intensity, intensity);
             SDL_RenderCopy(renderer, tex, &src, &dst);
+        }
+        
+        // Mode 2: Occasional Macro-Glitch (large blocks, large offsets, rare)
+        if (rand() % 100 < 8) { // 8% chance per frame
+            int numMacro = 1 + (rand() % 3);
+            for (int i = 0; i < numMacro; ++i) {
+                // Large chunks, sometimes full width
+                int gw = (rand() % 2 == 0) ? texW : (texW / 2 + rand() % (texW / 2));
+                int gh = 10 + (rand() % (texH / 4));
+                int gx = rand() % std::max(1, (texW - gw + 1));
+                int gy = rand() % std::max(1, (texH - gh + 1));
+                
+                SDL_Rect src = {gx, gy, gw, gh};
+                
+                // Large jerky offset
+                int offsetX = (rand() % 100) - 50;
+                int offsetY = (rand() % 20) - 10;
+                
+                SDL_Rect dst = {
+                    baseX + (int)(gx * scale) + offsetX, 
+                    baseY + (int)(gy * scale) + offsetY, 
+                    (int)(gw * scale) + 1, 
+                    (int)(gh * scale) + 1
+                };
+                
+                // Severe color distortion (dark or bright white)
+                int intensity = (rand() % 2 == 0) ? 50 : 255; 
+                SDL_SetTextureColorMod(tex, intensity, intensity, intensity);
+                SDL_RenderCopy(renderer, tex, &src, &dst);
+            }
         }
         SDL_SetTextureColorMod(tex, 255, 255, 255); // Reset
     }
     
-    // Draw Dialogue Box
+    // Draw Dialogue Box (above the log)
+    int newsLines = screenH < 780 ? 8 : 14;
+    int newsH = 26 + newsLines * 12;
     int boxH = 150;
-    int boxY = screenH - boxH - 20;
+    int boxY = screenH - newsH - 72 - boxH - 20;
     int boxX = 20;
     int boxW = screenW - 40;
     
@@ -1946,7 +1996,7 @@ void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int scree
     SDL_RenderDrawRect(renderer, &boxRect);
     
     // Text
-    drawText(renderer, boxX + 20, boxY + 20, "ALICE", {70, 240, 255, 255}, 2);
+    drawText(renderer, boxX + 20, boxY + 20, "TIMERTIA", {70, 240, 255, 255}, 2);
     drawText(renderer, boxX + 20, boxY + 60, state.vnState.currentText, {214, 228, 238, 255}, 2);
 }
 
