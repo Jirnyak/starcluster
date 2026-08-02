@@ -241,16 +241,34 @@ void drawRouteLine(SDL_Renderer* renderer, const Game& game, const Agent& agent,
 }
 
 void drawStarGlyph(SDL_Renderer* renderer, int x, int y, int size, Uint8 r, Uint8 g, Uint8 b, Uint8 alpha) {
-    SDL_SetRenderDrawColor(renderer, r, g, b, alpha);
-    SDL_Rect core = {x - size / 2, y - size / 2, size, size};
-    SDL_RenderFillRect(renderer, &core);
-
-    if (size >= 3) {
-        SDL_SetRenderDrawColor(renderer, r, g, b, Uint8(alpha / 2));
-        SDL_RenderDrawPoint(renderer, x - size, y);
-        SDL_RenderDrawPoint(renderer, x + size, y);
-        SDL_RenderDrawPoint(renderer, x, y - size);
-        SDL_RenderDrawPoint(renderer, x, y + size);
+    if (size <= 4) {
+        SDL_SetRenderDrawColor(renderer, r, g, b, alpha);
+        SDL_Rect core = {x - size / 2, y - size / 2, size, size};
+        SDL_RenderFillRect(renderer, &core);
+        if (size >= 3) {
+            SDL_SetRenderDrawColor(renderer, r, g, b, Uint8(alpha / 2));
+            SDL_RenderDrawPoint(renderer, x - size, y);
+            SDL_RenderDrawPoint(renderer, x + size, y);
+            SDL_RenderDrawPoint(renderer, x, y - size);
+            SDL_RenderDrawPoint(renderer, x, y + size);
+        }
+    } else {
+        // Natural halo (drawn first so core overlays it)
+        if (size >= 8) {
+            SDL_SetRenderDrawColor(renderer, r, g, b, Uint8(alpha / 3));
+            int haloRadius = size;
+            for (int dy = -haloRadius; dy <= haloRadius; ++dy) {
+                int dx = std::round(std::sqrt(std::max(0, haloRadius * haloRadius - dy * dy)));
+                SDL_RenderDrawLine(renderer, x - dx, y + dy, x + dx, y + dy);
+            }
+        }
+        // Solid core
+        SDL_SetRenderDrawColor(renderer, r, g, b, alpha);
+        int radius = size / 2;
+        for (int dy = -radius; dy <= radius; ++dy) {
+            int dx = std::round(std::sqrt(std::max(0, radius * radius - dy * dy)));
+            SDL_RenderDrawLine(renderer, x - dx, y + dy, x + dx, y + dy);
+        }
     }
 }
 
@@ -330,11 +348,11 @@ int main(int argc, char** argv) {
     }
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     
-    SDL_Texture* aliceTex = nullptr;
-    int aliceW, aliceH, aliceChannels;
-    unsigned char* aliceData = stbi_load("alice.png", &aliceW, &aliceH, &aliceChannels, 4);
-    if (aliceData) {
-        SDL_Surface* surface = SDL_CreateRGBSurfaceFrom((void*)aliceData, aliceW, aliceH, 32, aliceW * 4,
+    SDL_Texture* timertiaTex = nullptr;
+    int timertiaW, timertiaH, timertiaChannels;
+    unsigned char* timertiaData = stbi_load("timertia.png", &timertiaW, &timertiaH, &timertiaChannels, 4);
+    if (timertiaData) {
+        SDL_Surface* surface = SDL_CreateRGBSurfaceFrom((void*)timertiaData, timertiaW, timertiaH, 32, timertiaW * 4,
 #if SDL_BYTEORDER == SDL_BIG_ENDIAN
                                                         0xff000000, 0x00ff0000, 0x0000ff00, 0x000000ff
 #else
@@ -342,12 +360,12 @@ int main(int argc, char** argv) {
 #endif
                                                        );
         if (surface) {
-            aliceTex = SDL_CreateTextureFromSurface(renderer, surface);
+            timertiaTex = SDL_CreateTextureFromSurface(renderer, surface);
             SDL_FreeSurface(surface);
         }
-        stbi_image_free(aliceData);
+        stbi_image_free(timertiaData);
     } else {
-        std::cerr << "Failed to load alice.png: " << stbi_failure_reason() << "\n";
+        std::cerr << "Failed to load timertia.png: " << stbi_failure_reason() << "\n";
     }
 
     Game game;
@@ -764,7 +782,7 @@ int main(int argc, char** argv) {
             if (e.type == SDL_MOUSEWHEEL) {
                 if (e.wheel.y > 0) view.scale *= 1.15;
                 if (e.wheel.y < 0) view.scale /= 1.15;
-                view.scale = clampDouble(view.scale, 1.4, 42.0);
+                view.scale = clampDouble(view.scale, 1.4, 300.0);
             }
             if (e.type == SDL_TEXTINPUT) {
                 UI::handleTextInput(ui, e.text.text);
@@ -1070,22 +1088,33 @@ int main(int argc, char** argv) {
             const bool ownerKnown = game.playerKnowsOwner(int(i));
             const int knownOwner = game.playerKnownOwner(int(i));
             const bool liveInfo = game.playerAtStar(int(i));
+            const int baseSize = liveInfo ? 2 + (s.industry > 1.7 ? 1 : 0) + (ownerKnown && knownOwner >= 0 ? 1 : 0) : (ownerKnown ? 3 : 2);
+            int size = baseSize;
+            if (view.scale > 30.0) {
+                double zoomFactor = (view.scale - 30.0) / 25.0 * (1.0 + 0.4 * std::sqrt(s.radius));
+                size = std::min(60, int(baseSize * (1.0 + zoomFactor)));
+            }
+
             if (ownerKnown) {
                 setFactionColor(renderer, game, knownOwner, liveInfo ? 170 : 75);
-                const int ring = liveInfo && s.defense > 5.0 ? 6 : 5;
+                int ring = (view.scale > 30.0) ? (size * 2 + (liveInfo && s.defense > 5.0 ? 12 : 8)) : (liveInfo && s.defense > 5.0 ? 6 : 5);
                 SDL_Rect halo = {sx - ring / 2, sy - ring / 2, ring, ring};
                 SDL_RenderDrawRect(renderer, &halo);
             }
 
-            const int size = liveInfo ? 2 + (s.industry > 1.7 ? 1 : 0) + (ownerKnown && knownOwner >= 0 ? 1 : 0) : (ownerKnown ? 3 : 2);
-            Uint8 r = 92;
-            Uint8 g = 112;
-            Uint8 b = 136;
-            if (liveInfo) {
-                marketColor(game.markets[i], selectedElement, r, g, b);
-            } else if (ownerKnown) {
-                factionColor(game, knownOwner, r, g, b);
+            if (selectedElement >= 0 && liveInfo) {
+                Uint8 mr, mg, mb;
+                marketColor(game.markets[i], selectedElement, mr, mg, mb);
+                SDL_SetRenderDrawColor(renderer, mr, mg, mb, 200);
+                int mRing = (view.scale > 30.0) ? (size * 2 + 20) : 8;
+                SDL_Rect mRect = {sx - mRing / 2, sy - mRing / 2, mRing, mRing};
+                SDL_RenderDrawRect(renderer, &mRect);
             }
+
+            Uint8 r = s.colorR;
+            Uint8 g = s.colorG;
+            Uint8 b = s.colorB;
+            
             const double pulse = 0.62 + 0.38 * std::sin(game.time * (liveInfo ? (2.2 + s.habitability) : 2.2) + double(i) * 1.618);
             const double fade = depthFade(p.depth);
             const Uint8 alpha = liveInfo ? Uint8((170.0 + 85.0 * pulse) * fade) : (ownerKnown ? Uint8((95.0 + 85.0 * pulse) * fade) : Uint8((55.0 + 55.0 * pulse) * fade));
@@ -1259,7 +1288,7 @@ int main(int argc, char** argv) {
         UI::drawWindows(renderer, game, winW, winH, hud, ui);
         { std::vector<ActionButton> bar; buildBar(bar); drawBar(bar); }
         
-        UI::drawVisualNovel(renderer, ui, winW, winH, aliceTex);
+        UI::drawVisualNovel(renderer, ui, winW, winH, timertiaTex);
         UI::drawTariffModal(renderer, game, winW, winH);
 
         SDL_RenderPresent(renderer);
@@ -1278,7 +1307,7 @@ int main(int argc, char** argv) {
     }
     Mix_CloseAudio();
 
-    if (aliceTex) SDL_DestroyTexture(aliceTex);
+    if (timertiaTex) SDL_DestroyTexture(timertiaTex);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
