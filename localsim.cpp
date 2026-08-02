@@ -1237,49 +1237,84 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         }
 
         // --- Урон от столкновения с небесными телами (Звезда и Планеты) ---
-        auto isInsideBody = [&](double x, double y, double z) {
+        auto getMinDistToBodySurfaces = [&](double x, double y, double z, bool& isStar) {
+            double minDist = 1e9;
+            isStar = false;
             if (scene.hasStar && scene.starIndex >= 0) {
-                if (x*x + y*y + z*z < scene.starRadius * scene.starRadius) return true;
+                double d = std::sqrt(x*x + y*y + z*z) - scene.starRadius;
+                if (d < minDist) { minDist = d; isStar = true; }
             }
             for (const auto& bd : scene.bodies) {
                 double dx = x - bd.x, dy = y - bd.y, dz = z - bd.z;
-                if (dx*dx + dy*dy + dz*dz < bd.radius * bd.radius) return true;
+                double d = std::sqrt(dx*dx + dy*dy + dz*dz) - bd.radius;
+                if (d < minDist) { minDist = d; isStar = false; }
             }
-            return false;
+            return minDist;
+        };
+
+        auto isInsideBody = [&](double x, double y, double z) {
+            bool dummy;
+            return getMinDistToBodySurfaces(x, y, z, dummy) < 0.0;
         };
 
         double dmgRate = 1200.0 * h; // очень быстрое разрушение при столкновении
         
         // Игрок
-        if (playerValid && !scene.playerDestroyed && isInsideBody(scene.px, scene.py, scene.pz)) {
-            Ship& ps = game.agents[game.playerAgent].ship;
-            double before = ps.hullHP;
-            applyDamage(scene.pShield, scene.pShieldTimer, ps.hullHP, dmgRate);
-            if (ps.hullHP < before) {
-                scene.playerHitFlash = 1.0;
-                scene.toast = "TERRAIN COLLISION"; scene.toastTimer = 0.5;
-                scene.shake = std::min(40.0, std::max(scene.shake, 12.0));
-                if (before > 0.0 && ps.hullHP <= 0.0) {
-                    scene.playerDestroyed = true;
-                    std::mt19937 lr((uint32_t)(scene.fx.size() * 2654435761u) ^ (uint32_t)(uint64_t)(scene.localHours * 1000.0));
-                    std::uniform_real_distribution<double> us(-1.0, 1.0);
-                    std::uniform_real_distribution<double> u01(0.0, 1.0);
-                    if ((int)scene.fx.size() < LocalCfg::FX_MAX) {
-                        LocalFx f; f.x = scene.px; f.y = scene.py; f.z = scene.pz;
-                        f.kind = FX_RING; f.size = 30.0; f.life = 1.0; f.maxLife = 1.0;
-                        f.r = 255; f.g = 200; f.b = 120; f.a = 255; scene.fx.push_back(f);
+        if (playerValid && !scene.playerDestroyed) {
+            bool nearStar = false;
+            double distToSurf = getMinDistToBodySurfaces(scene.px, scene.py, scene.pz, nearStar);
+            
+            // Если летим на варпе, нужно гораздо большее расстояние для реакции
+            double speedMult = scene.warping ? LocalCfg::WARP_MULT : 1.0;
+            double reactionTime = 1.5; // 1.5 секунды на реакцию
+            
+            // Звезда визуально больше своего радиуса из-за короны (до 1.9x), 
+            // поэтому предупреждение должно начинаться далеко за ее пределами.
+            double dangerZone = std::max(60.0, scene.playerMaxSpeed * speedMult * reactionTime);
+            if (nearStar) {
+                // Добавляем к зоне опасности корону звезды (~0.9 * starRadius)
+                dangerZone += scene.starRadius * 0.9; 
+            }
+            
+            if (distToSurf < dangerZone && distToSurf > 0.0) {
+                // Эффекты опасного сближения
+                double intensity = 1.0 - (distToSurf / dangerZone); // 0.0 -> 1.0
+                scene.playerHitFlash = std::max(scene.playerHitFlash, intensity * 0.8);
+                scene.shake = std::max(scene.shake, intensity * 15.0);
+                scene.toast = nearStar ? "!!! DANGER: STAR PROXIMITY !!!" : "!!! DANGER: COLLISION IMMINENT !!!";
+                scene.toastTimer = 0.2;
+            }
+
+            if (distToSurf <= 0.0) {
+                Ship& ps = game.agents[game.playerAgent].ship;
+                double before = ps.hullHP;
+                applyDamage(scene.pShield, scene.pShieldTimer, ps.hullHP, dmgRate);
+                if (ps.hullHP < before) {
+                    scene.playerHitFlash = 1.0;
+                    scene.toast = "TERRAIN COLLISION"; scene.toastTimer = 0.5;
+                    scene.shake = std::min(40.0, std::max(scene.shake, 12.0));
+                    if (before > 0.0 && ps.hullHP <= 0.0) {
+                        scene.playerDestroyed = true;
+                        std::mt19937 lr((uint32_t)(scene.fx.size() * 2654435761u) ^ (uint32_t)(uint64_t)(scene.localHours * 1000.0));
+                        std::uniform_real_distribution<double> us(-1.0, 1.0);
+                        std::uniform_real_distribution<double> u01(0.0, 1.0);
+                        if ((int)scene.fx.size() < LocalCfg::FX_MAX) {
+                            LocalFx f; f.x = scene.px; f.y = scene.py; f.z = scene.pz;
+                            f.kind = FX_RING; f.size = 30.0; f.life = 1.0; f.maxLife = 1.0;
+                            f.r = 255; f.g = 200; f.b = 120; f.a = 255; scene.fx.push_back(f);
+                        }
+                        for (int k = 0; k < 14; ++k) {
+                            if ((int)scene.fx.size() >= LocalCfg::FX_MAX) break;
+                            LocalFx f; f.x = scene.px; f.y = scene.py; f.z = scene.pz;
+                            double sp = 25.0 + u01(lr) * 75.0;
+                            f.vx = scene.pvx + us(lr) * sp; f.vy = scene.pvy + us(lr) * sp; f.vz = scene.pvz + us(lr) * sp * 0.6;
+                            f.kind = FX_DEBRIS; f.size = 1.2 + u01(lr) * 2.0; f.life = 1.4 + u01(lr) * 0.8; f.maxLife = f.life;
+                            if (u01(lr) < 0.5) { f.r = 120; f.g = 180; f.b = 255; } else { f.r = 255; f.g = (uint8_t)(160.0 + u01(lr) * 80.0); f.b = 70; }
+                            f.a = 255; scene.fx.push_back(f);
+                        }
+                        scene.shake = 28.0;
+                        scene.toast = "FATAL COLLISION"; scene.toastTimer = 3.0;
                     }
-                    for (int k = 0; k < 14; ++k) {
-                        if ((int)scene.fx.size() >= LocalCfg::FX_MAX) break;
-                        LocalFx f; f.x = scene.px; f.y = scene.py; f.z = scene.pz;
-                        double sp = 25.0 + u01(lr) * 75.0;
-                        f.vx = scene.pvx + us(lr) * sp; f.vy = scene.pvy + us(lr) * sp; f.vz = scene.pvz + us(lr) * sp * 0.6;
-                        f.kind = FX_DEBRIS; f.size = 1.2 + u01(lr) * 2.0; f.life = 1.4 + u01(lr) * 0.8; f.maxLife = f.life;
-                        if (u01(lr) < 0.5) { f.r = 120; f.g = 180; f.b = 255; } else { f.r = 255; f.g = (uint8_t)(160.0 + u01(lr) * 80.0); f.b = 70; }
-                        f.a = 255; scene.fx.push_back(f);
-                    }
-                    scene.shake = 28.0;
-                    scene.toast = "FATAL COLLISION"; scene.toastTimer = 3.0;
                 }
             }
         }
