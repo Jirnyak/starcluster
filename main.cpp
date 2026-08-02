@@ -5,7 +5,9 @@
 #include "local.h"
 #include "render2d.h"
 #include <SDL.h>
+#include <SDL_mixer.h>
 #include "stb_image.h"
+#include <dirent.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -302,7 +304,7 @@ int main(int argc, char** argv) {
     const char* smokeEnv = std::getenv("STARCLUSTER_SMOKE");
     if (smokeEnv && std::strcmp(smokeEnv, "0") != 0) smoke = true;
 
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         std::cerr << "SDL_Init failed: " << SDL_GetError() << "\n";
         return 1;
     }
@@ -350,6 +352,26 @@ int main(int argc, char** argv) {
 
     Game game;
     game.init(STAR_COUNT);
+
+    std::vector<Mix_Music*> playlist;
+    if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 2048) < 0) {
+        std::cerr << "SDL_mixer could not initialize! Error: " << Mix_GetError() << "\n";
+    } else {
+        DIR* dir = opendir("music/processed");
+        if (dir) {
+            struct dirent* ent;
+            while ((ent = readdir(dir)) != NULL) {
+                std::string filename = ent->d_name;
+                if (filename.length() > 4 && filename.substr(filename.length() - 4) == ".mp3") {
+                    Mix_Music* music = Mix_LoadMUS(("music/processed/" + filename).c_str());
+                    if (music) {
+                        playlist.push_back(music);
+                    }
+                }
+            }
+            closedir(dir);
+        }
+    }
 
     bool quit = false;
     bool paused = false;
@@ -600,6 +622,10 @@ int main(int argc, char** argv) {
         lastCounter = frameStart;
         realDt = std::min(realDt, MAX_REAL_DT_SECONDS);
 
+        if (!playlist.empty() && !Mix_PlayingMusic()) {
+            int idx = rand() % playlist.size();
+            Mix_PlayMusic(playlist[idx], 1);
+        }
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) quit = true;
             if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
@@ -613,6 +639,47 @@ int main(int argc, char** argv) {
                     followAgent = false;
                 }
             }
+            
+            // Intercept clicks if tariff is pending
+            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT && game.pendingTariff) {
+                int boxW = 500;
+                int boxH = 150;
+                int boxX = (winW - boxW) / 2;
+                int boxY = (winH - boxH) / 2;
+                int btnY = boxY + boxH - 40;
+                
+                int payX = boxX + 40;
+                int payW = 150;
+                int refuseX = boxX + boxW - 150 - 40;
+                int refuseW = 150;
+                
+                if (e.button.y >= btnY && e.button.y <= btnY + 24) {
+                    if (e.button.x >= payX && e.button.x <= payX + payW) {
+                        if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
+                            Agent& pa = game.agents[game.playerAgent];
+                            if (pa.money >= game.tariffFee) {
+                                pa.money -= game.tariffFee;
+                                game.pendingTariff = false;
+                                game.lastEvent = "paid system access fee";
+                                game.pushNews("Paid system access fee.", 1);
+                            } else {
+                                game.pushNews("Not enough credits to pay tariff!", 0);
+                            }
+                        }
+                    } else if (e.button.x >= refuseX && e.button.x <= refuseX + refuseW) {
+                        game.pendingTariff = false;
+                        game.lastEvent = "refused tariff — hostile encounter!";
+                        game.pushNews("Tariff refused! Hostile intercept!", 3);
+                        if (game.tariffFaction >= 0) {
+                            game.adjustFactionRelation(game.playerFaction, game.tariffFaction, -30);
+                        }
+                        localScene.active = true;
+                        // Forcing local hostiles: just rely on the relation drop and existing local combat.
+                    }
+                }
+                continue; // Block all other UI interactions
+            }
+
             if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
                 UI::handleMouseUp(ui);
                 localFireHeld = false;   // отпустили гашетку
@@ -920,24 +987,24 @@ int main(int argc, char** argv) {
             // помощником buildLocalCamera (тот же код, что и в скриншот-харнесе).
             if (localScene.playerDestroyed) {
                 // Корпус разрушен в микромире — аварийный прыжок (не терминально):
-                // корабль восстанавливается частично, штраф за спасение/ремонт.
+                // корабль деградирует в спасательную капсулу (потеря груза).
                 localScene.active = false;
                 if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
-                    Ship& ps = game.agents[game.playerAgent].ship;
-                    ps.hullHP = std::max(1.0, ps.maxHullHP * 0.30);
-                    double& m = game.agents[game.playerAgent].money;
-                    m -= m * 0.20;
-                    if (m < 0.0) m = 0.0;
+                    Agent& pa = game.agents[game.playerAgent];
+                    extern void downgradeAgentToEscapePod(Agent&);
+                    downgradeAgentToEscapePod(pa);
+                    pa.ship.hullHP = pa.ship.maxHullHP; // escape pod is intact
                 }
-                game.lastEvent = "hull destroyed — emergency jump";
-                game.pushNews("Emergency jump: hull rebuilt at cost of credits", 3);
+                game.lastEvent = "ship destroyed — using escape pod";
+                game.pushNews("Ship destroyed! Cargo lost, using escape pod.", 3);
+
             } else if (dockStar >= 0) {
                 localScene.active = false;
                 selectedStar = dockStar;
                 UI::openTradeWindow(ui, dockStar, winW, winH);
                 game.lastEvent = "docked — market open";
             }
-        } else if (!paused) {
+        } else if (!paused && !game.pendingTariff) {
             advanceGame(game, realDt * simYearsPerSecond);
         }
         localMineEdge = localDockEdge = localTargetEdge = localFireClick = false;
@@ -1193,6 +1260,7 @@ int main(int argc, char** argv) {
         { std::vector<ActionButton> bar; buildBar(bar); drawBar(bar); }
         
         UI::drawVisualNovel(renderer, ui, winW, winH, aliceTex);
+        UI::drawTariffModal(renderer, game, winW, winH);
 
         SDL_RenderPresent(renderer);
         if (smoke && ++frames >= 12) quit = true;
@@ -1204,6 +1272,11 @@ int main(int argc, char** argv) {
             }
         }
     }
+
+    for (Mix_Music* m : playlist) {
+        Mix_FreeMusic(m);
+    }
+    Mix_CloseAudio();
 
     if (aliceTex) SDL_DestroyTexture(aliceTex);
     SDL_DestroyRenderer(renderer);

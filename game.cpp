@@ -3825,7 +3825,6 @@ void Game::update(double dt) {
     updateAgents(dt);
     processSignals();
     updateAnomalies(dt);
-    updateEncounters(dt);
     if (playerAgent >= 0 && playerAgent < int(agents.size()) && !agents[playerAgent].ship.enRoute) {
         observeStar(agents[playerAgent].currentStar);
         agentCompleteContracts(playerAgent);
@@ -4179,6 +4178,24 @@ void Game::updateAgents(double dt) {
                     agent.currentStar = agent.ship.targetStar;
                     agent.ship.targetStar = -1;
                     agent.ship.enRoute = false;
+
+                    if (int(i) == playerAgent && agent.currentStar >= 0 && agent.currentStar < int(cluster.stars.size())) {
+                        int owner = cluster.stars[agent.currentStar].ownerFaction;
+                        if (owner >= 0 && owner != playerFaction) {
+                            int rel = factionRelation(playerFaction, owner);
+                            if (rel < 50) {
+                                // 1% chance
+                                if (randomer(rng, 100) < 1) {
+                                    pendingTariff = true;
+                                    tariffFaction = owner;
+                                    double cargoPct = randomer(rng, 100) / 10000.0; // 0.0 to 0.01 (0% to 1%)
+                                    double moneyPct = randomer(rng, 100) / 10000.0; // 0.0 to 0.01 (0% to 1%)
+                                    tariffFee = randomer(rng, 1000) + int(agent.cargoCost * cargoPct + agent.money * moneyPct);
+                                }
+                            }
+                        }
+                    }
+
                     observeLocalThreatsForFaction(agent.ship.ownerFaction, agent.currentStar);
                     queueOwnerSignal(agent.ship.ownerFaction, agent.currentStar, agent.currentStar);
                     queueMarketSignal(agent.ship.ownerFaction, agent.currentStar, agent.currentStar);

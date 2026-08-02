@@ -2485,4 +2485,60 @@ void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int scree
     }
 }
 
+void drawTariffModal(SDL_Renderer* renderer, const Game& game, int screenW, int screenH) {
+    if (!game.pendingTariff) return;
+
+    int boxW = 500;
+    int boxH = 150;
+    int boxX = (screenW - boxW) / 2;
+    int boxY = (screenH - boxH) / 2;
+
+    // Semi-transparent background
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 240);
+    SDL_Rect boxRect = {boxX, boxY, boxW, boxH};
+    SDL_RenderFillRect(renderer, &boxRect);
+
+    // Border
+    SDL_SetRenderDrawColor(renderer, 255, 100, 100, 255);
+    SDL_RenderDrawRect(renderer, &boxRect);
+
+    // Text
+    drawText(renderer, boxX + 20, boxY + 20, "SYSTEM ACCESS FEE / TARIFF", {255, 100, 100, 255}, 2);
+    
+    std::string factionName = "UNKNOWN FACTION";
+    if (game.tariffFaction >= 0 && game.tariffFaction < int(game.factions.size())) {
+        factionName = game.factions[game.tariffFaction].name;
+    }
+    std::string msg = factionName + " demands a tariff to enter their system.";
+    drawText(renderer, boxX + 20, boxY + 60, msg, {214, 228, 238, 255}, 1);
+
+    char feeStr[64];
+    std::snprintf(feeStr, sizeof(feeStr), "FEE: %d CR", game.tariffFee);
+    drawText(renderer, boxX + 20, boxY + 80, feeStr, P.amber, 2);
+
+    // Buttons
+    int btnY = boxY + boxH - 40;
+    
+    // PAY button
+    int payX = boxX + 40;
+    int payW = 150;
+    SDL_Rect payRect = {payX, btnY, payW, 24};
+    SDL_SetRenderDrawColor(renderer, 0, 100, 0, 255);
+    SDL_RenderFillRect(renderer, &payRect);
+    SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
+    SDL_RenderDrawRect(renderer, &payRect);
+    drawText(renderer, payX + 50, btnY + 4, "PAY", {0, 255, 0, 255}, 1);
+
+    // REFUSE button
+    int refuseX = boxX + boxW - 150 - 40;
+    int refuseW = 150;
+    SDL_Rect refuseRect = {refuseX, btnY, refuseW, 24};
+    SDL_SetRenderDrawColor(renderer, 100, 0, 0, 255);
+    SDL_RenderFillRect(renderer, &refuseRect);
+    SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
+    SDL_RenderDrawRect(renderer, &refuseRect);
+    drawText(renderer, refuseX + 40, btnY + 4, "REFUSE", {255, 0, 0, 255}, 1);
 }
+
+}
+

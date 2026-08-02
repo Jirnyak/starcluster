@@ -83,5 +83,6 @@ void drawControlHints(SDL_Renderer* renderer, int screenW, int screenH);
 bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH);
 void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, int screenH);
 void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int screenW, int screenH, SDL_Texture* tex);
+void drawTariffModal(SDL_Renderer* renderer, const Game& game, int screenW, int screenH);
 
 }

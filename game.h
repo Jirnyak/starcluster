@@ -166,6 +166,12 @@ public:
     int foundedColonies = 0;
     int capturedSystems = 0;
     std::string lastEvent;
+    
+    // --- Tariff mechanics ---
+    bool pendingTariff = false;
+    int tariffFee = 0;
+    int tariffFaction = -1;
+
 
     // --- Расширения геймплея (вертикальный срез) ---
     TechState tech;                     // хромокоры игрока
@@ -291,7 +297,7 @@ public:
     void seedAnomalies();                                   // anomaly.cpp
     void updateAnomalies(double dt);                        // anomaly.cpp
     bool playerScanAnomaly();                               // anomaly.cpp
-    void updateEncounters(double dt);                       // combat.cpp
+
     bool playerRepairHull();                                // combat.cpp
     void grantChromocore(int stat);                         // chromo.cpp
     void addResearch(double amount);                        // chromo.cpp
