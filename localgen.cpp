@@ -226,12 +226,24 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
     // ТОЛЬКО от D/R (дистанция/радиус), поэтому орбиты ниже заданы как ДОЛИ R и держат D/R
     // малым везде. R/R_планеты ~ 7..60 => по объёму тысячи..десятки тысяч планет влезают.
     // Рисуем аналитически (см. localdraw §3) — большой радиус не стоит ничего по памяти.
-    scene.starRadius = 260.0 + star.metallicity * 100.0;   // 260..360 LU (гигант)
-
-    // Цвет звезды: пульсар — бело-голубой, обычная — тёплый.
-    if (star.stellarClass == 1) {
+    double baseOrbitRadius = 260.0 + star.metallicity * 100.0;   // 260..360 LU (база для орбит)
+    
+    // Цвет и визуальный размер звезды
+    if (star.stellarClass == 1) { // Пульсар
+        scene.starRadius = 4.0;
         scene.starR = 190; scene.starG = 210; scene.starB = 255;
-    } else {
+    } else if (star.stellarClass == 2) { // Чёрная дыра
+        scene.starRadius = 2.0;
+        scene.starR = 30; scene.starG = 15; scene.starB = 50;
+    } else if (star.stellarClass == 3) { // Белый карлик
+        scene.starRadius = 8.0;
+        scene.starR = 255; scene.starG = 255; scene.starB = 255;
+    } else if (star.stellarClass == 4) { // Красный гигант
+        scene.starRadius = baseOrbitRadius * 2.5; 
+        baseOrbitRadius = scene.starRadius; // Планеты отодвигаются от гиганта
+        scene.starR = 255; scene.starG = 120; scene.starB = 80;
+    } else { // Обычная звезда
+        scene.starRadius = baseOrbitRadius;
         scene.starR = 255; scene.starG = 232; scene.starB = col(150.0 + star.metallicity * 60.0);
     }
 
@@ -243,7 +255,7 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         LocalBody body;
         
         currentGap += frand(0.25, 0.65); // Процедурный шаг орбиты
-        double orbitRadius = scene.starRadius * currentGap;
+        double orbitRadius = baseOrbitRadius * currentGap;
 
         body.orbitRadius = orbitRadius;
         body.orbitPhase  = frand(0.0, 2.0 * M_PI);

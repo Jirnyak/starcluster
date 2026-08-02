@@ -105,8 +105,8 @@ void Game::updateMining(double dt) {
         miningYieldAccum += amt;
         addResearch(0.5); // подпитка исследований
 
-        // --- Редкий бонус у пульсара/нейтронной звезды ---
-        if (star.stellarClass == 1 && randomer(rng, 99) < 4) {
+        // --- Редкий бонус у пульсара/нейтронной звезды/чёрной дыры ---
+        if ((star.stellarClass == 1 || star.stellarClass == 2) && randomer(rng, 99) < 4) {
             // Ищем самый дорогой (по базовой цене) элемент.
             int bestIdx = idx;
             double bestPrice = -1.0;

@@ -168,7 +168,11 @@ SDL_Color radioColor(int kind) {
 
 // Цвет далёкой звезды скайбокса по спектральному классу/индексу (детерминированно).
 SDL_Color skyStarColor(unsigned i, int stellarClass) {
-    if (stellarClass == 1) return rgba(205, 224, 255, 255); // нейтронная/пульсар — голубовато-белая
+    if (stellarClass == 1) return rgba(205, 224, 255, 255); // нейтронная/пульсар
+    if (stellarClass == 2) return rgba(20, 10, 40, 255);    // чёрная дыра (слабое свечение)
+    if (stellarClass == 3) return rgba(255, 255, 255, 255); // белый карлик
+    if (stellarClass == 4) return rgba(255, 120, 80, 255);  // красный гигант
+
     unsigned h = (i + 1u) * 2654435761u; h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
     switch (h % 5u) {
         case 0:  return rgba(255, 214, 170, 255); // тёплая (K/M)

@@ -54,14 +54,37 @@ void Cluster::generate(size_t num_stars) {
         const double volatilePocket = unit(rng) < 0.18 ? 1.8 + unit(rng) * 2.5 : 1.0;
         star.miningRichness = richness;
         star.metallicity = metallicity;
-        star.stellarClass = unit(rng) < 0.008 ? 1 : 0;
-        
+        double sc_r = unit(rng);
+        if (sc_r < 0.008) star.stellarClass = 1;      // Neutron star
+        else if (sc_r < 0.010) star.stellarClass = 2; // Black hole (~20 per 10000)
+        else if (sc_r < 0.015) star.stellarClass = 3; // White dwarf (~50)
+        else if (sc_r < 0.025) star.stellarClass = 4; // Red giant (~100)
+        else star.stellarClass = 0;                   // Main sequence
+
         if (star.stellarClass == 1) {
             star.spectralType = 'X';
             star.temperature = 1000000.0;
             star.mass = 1.4 + unit(rng) * 0.7;
             star.radius = 0.000015;
             star.colorR = 100; star.colorG = 200; star.colorB = 255;
+        } else if (star.stellarClass == 2) {
+            star.spectralType = 'H';
+            star.temperature = 0.0;
+            star.mass = 3.0 + unit(rng) * 12.0;
+            star.radius = star.mass * 0.00000428; 
+            star.colorR = 30; star.colorG = 15; star.colorB = 50; // Dark purple/black
+        } else if (star.stellarClass == 3) {
+            star.spectralType = 'D';
+            star.temperature = 10000.0 + unit(rng) * 40000.0;
+            star.mass = 0.5 + unit(rng) * 0.9;
+            star.radius = 0.008 + unit(rng) * 0.01;
+            star.colorR = 255; star.colorG = 255; star.colorB = 255;
+        } else if (star.stellarClass == 4) {
+            star.spectralType = 'M';
+            star.temperature = 3000.0 + unit(rng) * 1500.0;
+            star.mass = 0.8 + unit(rng) * 1.5;
+            star.radius = 20.0 + unit(rng) * 80.0;
+            star.colorR = 255; star.colorG = 100; star.colorB = 60;
         } else {
             double r = unit(rng);
             if (r < 0.00003) {
