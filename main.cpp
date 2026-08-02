@@ -1085,35 +1085,50 @@ int main(int argc, char** argv) {
             const int sy = p.y;
             if (sx < -4 || sx > winW + 4 || sy < -4 || sy > winH + 4) continue;
 
+            if (view.scale > 100.0) {
+                double dx = s.x - view.centerX;
+                double dy = s.y - view.centerY;
+                double dz = s.z - view.centerZ;
+                if (dx * dx + dy * dy + dz * dz > 225.0) continue;
+            }
+
             const bool ownerKnown = game.playerKnowsOwner(int(i));
             const int knownOwner = game.playerKnownOwner(int(i));
             const bool liveInfo = game.playerAtStar(int(i));
             const int baseSize = liveInfo ? 2 + (s.industry > 1.7 ? 1 : 0) + (ownerKnown && knownOwner >= 0 ? 1 : 0) : (ownerKnown ? 3 : 2);
             int size = baseSize;
-            if (view.scale > 30.0) {
-                double zoomFactor = (view.scale - 30.0) / 25.0 * (1.0 + 0.4 * std::sqrt(s.radius));
+            if (view.scale > 100.0) {
+                double zoomFactor = (view.scale - 100.0) / 25.0 * (1.0 + 0.4 * std::sqrt(s.radius));
                 size = std::min(60, int(baseSize * (1.0 + zoomFactor)));
             }
 
             if (ownerKnown) {
                 setFactionColor(renderer, game, knownOwner, liveInfo ? 170 : 75);
-                int ring = (view.scale > 30.0) ? (size * 2 + (liveInfo && s.defense > 5.0 ? 12 : 8)) : (liveInfo && s.defense > 5.0 ? 6 : 5);
+                int ring = (view.scale > 100.0) ? (size * 2 + (liveInfo && s.defense > 5.0 ? 12 : 8)) : (liveInfo && s.defense > 5.0 ? 6 : 5);
                 SDL_Rect halo = {sx - ring / 2, sy - ring / 2, ring, ring};
                 SDL_RenderDrawRect(renderer, &halo);
-            }
-
-            if (selectedElement >= 0 && liveInfo) {
-                Uint8 mr, mg, mb;
-                marketColor(game.markets[i], selectedElement, mr, mg, mb);
-                SDL_SetRenderDrawColor(renderer, mr, mg, mb, 200);
-                int mRing = (view.scale > 30.0) ? (size * 2 + 20) : 8;
-                SDL_Rect mRect = {sx - mRing / 2, sy - mRing / 2, mRing, mRing};
-                SDL_RenderDrawRect(renderer, &mRect);
             }
 
             Uint8 r = s.colorR;
             Uint8 g = s.colorG;
             Uint8 b = s.colorB;
+            
+            if (view.scale <= 100.0) {
+                if (liveInfo) {
+                    marketColor(game.markets[i], selectedElement, r, g, b);
+                } else if (ownerKnown) {
+                    factionColor(game, knownOwner, r, g, b);
+                }
+            } else {
+                if (selectedElement >= 0 && liveInfo) {
+                    Uint8 mr, mg, mb;
+                    marketColor(game.markets[i], selectedElement, mr, mg, mb);
+                    SDL_SetRenderDrawColor(renderer, mr, mg, mb, 200);
+                    int mRing = size * 2 + 20;
+                    SDL_Rect mRect = {sx - mRing / 2, sy - mRing / 2, mRing, mRing};
+                    SDL_RenderDrawRect(renderer, &mRect);
+                }
+            }
             
             const double pulse = 0.62 + 0.38 * std::sin(game.time * (liveInfo ? (2.2 + s.habitability) : 2.2) + double(i) * 1.618);
             const double fade = depthFade(p.depth);
