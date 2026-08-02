@@ -21,7 +21,7 @@
 enum ActionId {
     ACT_NONE = 0,
     // Макро-режим (звёздная карта):
-    ACT_ENTER, ACT_GO, ACT_STOP, ACT_TRADE, ACT_SHIPFIT, ACT_SWITCH, ACT_REPAIR, ACT_HIRE, ACT_CARGO, ACT_PAUSE, ACT_SPEED,
+    ACT_ENTER, ACT_GO, ACT_STOP, ACT_TRADE, ACT_SHIPFIT, ACT_SWITCH, ACT_REPAIR, ACT_HIRE, ACT_CARGO, ACT_PAUSE, ACT_SPEED, ACT_TRANSACTIONS,
     // Локальный режим (полёт):
     ACT_FIRE, ACT_MINE, ACT_DOCK, ACT_TARGET, ACT_ZOOM_IN, ACT_ZOOM_OUT, ACT_VIEW, ACT_EXIT
 };
@@ -463,6 +463,7 @@ int main(int argc, char** argv) {
             specs.push_back(Spec{ACT_REPAIR, "J REPAIR", UI::P.green, docked && hullHurt, false});
             specs.push_back(Spec{ACT_HIRE, "H HIRE", UI::P.green, docked, false});
             specs.push_back(Spec{ACT_CARGO, "O CARGO", UI::P.cyan, game.playerAgent >= 0, false});
+            specs.push_back(Spec{ACT_TRANSACTIONS, "I LOG", UI::P.cyan, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_PAUSE, paused ? "|| PAUSE" : "> PLAY", UI::P.amber, true, paused});
             specs.push_back(Spec{ACT_SPEED, spd, UI::P.dim, true, false});
         }
@@ -536,7 +537,12 @@ int main(int argc, char** argv) {
             } break;
             case ACT_CARGO: {
                 UI::openCargoWindow(ui, anchorStar(), winW, winH);
-            } break;
+                break;
+            }
+            case ACT_TRANSACTIONS: {
+                UI::openTransactionsWindow(ui, winW, winH);
+                break;
+            }
             case ACT_SHIPFIT: {
                 int a = anchorStar();
                 if (a >= 0) { selectedStar = a; UI::openShipFitWindow(ui, a, winW, winH); }
@@ -825,6 +831,9 @@ int main(int argc, char** argv) {
                         selectedStar = syStar;
                         UI::openShipyardWindow(ui, syStar, std::max(20, winW / 2 - 235), 40);
                     }
+                }
+                if (e.key.keysym.sym == SDLK_i) {
+                    dispatch(ACT_TRANSACTIONS);
                 }
                 if (e.key.keysym.sym == SDLK_LEFT) {
                     panView(view, -18.0, 0.0);

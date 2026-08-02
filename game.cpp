@@ -3830,6 +3830,24 @@ void Game::update(double dt) {
         observeStar(agents[playerAgent].currentStar);
         agentCompleteContracts(playerAgent);
     }
+    
+    if (playerAgent >= 0 && playerAgent < int(agents.size())) {
+        double currentMoney = agents[playerAgent].money;
+        if (lastPlayerMoney >= 0.0) {
+            double diff = currentMoney - lastPlayerMoney;
+            if (std::abs(diff) > 0.01) {
+                Transaction t;
+                t.time = time;
+                t.starIndex = agents[playerAgent].currentStar;
+                t.amount = diff;
+                transactions.push_back(t);
+                if (transactions.size() > 100) {
+                    transactions.erase(transactions.begin(), transactions.begin() + 20);
+                }
+            }
+        }
+        lastPlayerMoney = currentMoney;
+    }
 }
 
 void Game::updateMarkets(double dt) {

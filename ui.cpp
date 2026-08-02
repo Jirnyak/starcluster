@@ -1235,6 +1235,24 @@ void openShipyardWindow(WindowState& state, int starIndex, int screenW, int scre
     state.activeId = w.id;
 }
 
+void openTransactionsWindow(WindowState& state, int screenW, int screenH) {
+    int cascade = 0;
+    for (auto& w : state.windows) {
+        if (w.kind == WindowKind::Transactions) {
+            state.activeId = w.id;
+            return;
+        }
+        if (w.kind != WindowKind::Transactions) cascade++;
+    }
+    Window w;
+    w.id = state.nextId++;
+    w.kind = WindowKind::Transactions;
+    w.star = -1;
+    w.rect = defaultWindowRect(WindowKind::SystemInfo, screenW, screenH, cascade);
+    state.windows.push_back(w);
+    state.activeId = w.id;
+}
+
 bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window& window, int mouseX, int mouseY, int button) {
     const int dockedStar = playerMarketStar(game);
     const bool liveShipyard = dockedStar == window.star && dockedStar >= 0 && dockedStar < int(game.markets.size());
@@ -1737,6 +1755,38 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     drawText(renderer, layout.tableX, window.rect.y + window.rect.h - 15, "CLICK AMOUNT + TYPE NUMBER / EMPTY=MAX / RMB CELL QUICK BUY", P.dim, 1);
 }
 
+void drawTransactionsWindow(SDL_Renderer* renderer, const Game& game, const Window& window, bool active) {
+    drawWindowFrame(renderer, window, "TRANSACTION HISTORY", active);
+    
+    int y = window.rect.y + TITLE_H + 12;
+    int x = window.rect.x + 12;
+    
+    if (game.transactions.empty()) {
+        drawText(renderer, x, y, "NO TRANSACTIONS RECORDED.", P.dim, 1);
+        return;
+    }
+    
+    // Draw in reverse order (newest first)
+    int count = 0;
+    for (auto it = game.transactions.rbegin(); it != game.transactions.rend(); ++it) {
+        const auto& t = *it;
+        if (y + 12 > window.rect.y + window.rect.h - 10) break;
+        
+        char buf[256];
+        std::string starName = "Deep Space";
+        if (t.starIndex >= 0 && t.starIndex < int(game.cluster.stars.size())) {
+            starName = game.cluster.stars[t.starIndex].name;
+        }
+        
+        std::snprintf(buf, sizeof(buf), "[YEAR %.2f] @ %s : %c%.0f Cr", 
+            t.time, starName.c_str(), t.amount >= 0 ? '+' : '-', std::abs(t.amount));
+        
+        drawText(renderer, x, y, buf, t.amount >= 0 ? P.green : P.red, 1);
+        y += 16;
+        count++;
+    }
+}
+
 void drawShipFitWindow(SDL_Renderer* renderer, const Game& game, const Window& window, bool active) {
     drawWindowFrame(renderer, window, "SHIP UPGRADES", active);
     
@@ -1850,6 +1900,8 @@ void drawWindows(SDL_Renderer* renderer, const Game& game, int, int, const HudSe
             drawShipFitWindow(renderer, game, window, active);
         } else if (window.kind == WindowKind::Cargo) {
             drawCargoWindow(renderer, game, window, active);
+        } else if (window.kind == WindowKind::Transactions) {
+            drawTransactionsWindow(renderer, game, window, active);
         } else {
             drawTradeWindow(renderer, game, window, selection, state, active);
         }

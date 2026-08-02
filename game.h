@@ -127,6 +127,12 @@ struct SignalMemoryRecord {
     std::vector<double> marketDemandPressure;
 };
 
+struct Transaction {
+    double time = 0.0;
+    int starIndex = -1;
+    double amount = 0.0;
+};
+
 // Главный игровой класс
 class Game {
 public:
@@ -172,6 +178,9 @@ public:
     double miningTimer = 0.0;
     int miningStar = -1;
     double miningYieldAccum = 0.0;
+
+    std::vector<Transaction> transactions;
+    double lastPlayerMoney = -1.0;
 
     Game();
     void init(size_t num_stars);
