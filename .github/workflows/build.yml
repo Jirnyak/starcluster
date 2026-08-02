@@ -16,10 +16,14 @@ jobs:
           hdiutil attach SDL2-2.30.10.dmg
           sudo cp -R /Volumes/SDL2/SDL2.framework /Library/Frameworks/
           hdiutil detach /Volumes/SDL2
+          curl -LO https://github.com/libsdl-org/SDL_mixer/releases/download/release-2.8.0/SDL2_mixer-2.8.0.dmg
+          hdiutil attach SDL2_mixer-2.8.0.dmg
+          sudo cp -R /Volumes/SDL2_mixer/SDL2_mixer.framework /Library/Frameworks/
+          hdiutil detach /Volumes/SDL2_mixer
       - name: Build
         run: |
           export MACOSX_DEPLOYMENT_TARGET=11.0
-          make game CXX="c++" SDL_CFLAGS="-F/Library/Frameworks -I/Library/Frameworks/SDL2.framework/Headers" SDL_LIBS="-F/Library/Frameworks -framework SDL2 -Wl,-rpath,@executable_path/../Frameworks"
+          make game CXX="c++" SDL_CFLAGS="-F/Library/Frameworks -I/Library/Frameworks/SDL2.framework/Headers -I/Library/Frameworks/SDL2_mixer.framework/Headers" SDL_LIBS="-F/Library/Frameworks -framework SDL2 -framework SDL2_mixer -Wl,-rpath,@executable_path/../Frameworks"
       - name: Package App and DMG
         run: |
           mkdir -p Starcluster.app/Contents/MacOS
@@ -28,6 +32,7 @@ jobs:
           
           # Bundle the official SDL2.framework
           cp -R /Library/Frameworks/SDL2.framework Starcluster.app/Contents/Frameworks/
+          cp -R /Library/Frameworks/SDL2_mixer.framework Starcluster.app/Contents/Frameworks/
           
           chmod +x Starcluster.app/Contents/MacOS/Starcluster
           
@@ -74,7 +79,7 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2 make
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2 mingw-w64-x86_64-SDL2_mixer make
       - name: Build
         run: |
           make game CXX="g++ -static-libgcc -static-libstdc++"
@@ -82,6 +87,7 @@ jobs:
           mkdir -p dist
           cp starcluster.exe dist/
           cp /mingw64/bin/SDL2.dll dist/
+          cp /mingw64/bin/SDL2_mixer.dll dist/
           cp /mingw64/bin/libwinpthread-1.dll dist/
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
@@ -94,7 +100,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install SDL2
-        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-mixer-dev
       - name: Build
         run: |
           make game
@@ -120,6 +126,7 @@ jobs:
           mv all-builds/Starcluster-macOS/Starcluster.dmg Starcluster-Multiplatform/
           mv all-builds/Starcluster-Windows/starcluster.exe Starcluster-Multiplatform/
           mv all-builds/Starcluster-Windows/SDL2.dll Starcluster-Multiplatform/
+          mv all-builds/Starcluster-Windows/SDL2_mixer.dll Starcluster-Multiplatform/
           mv all-builds/Starcluster-Windows/libwinpthread-1.dll Starcluster-Multiplatform/
           mv all-builds/Starcluster-Linux/starcluster-linux Starcluster-Multiplatform/
       - name: Upload Multiplatform Artifact
