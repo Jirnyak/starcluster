@@ -1709,8 +1709,8 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
 
         drawText(renderer, rect.x + 3, rect.y + 3, elements[i].symbol, idx == selection.element ? P.amber : P.text, 1);
         char z[8];
-        std::snprintf(z, sizeof(z), "%d", elements[i].atomicNumber);
-        drawText(renderer, rect.x + rect.w - 15, rect.y + rect.h - 9, z, P.dim, 1);
+        int len = std::snprintf(z, sizeof(z), "%d", elements[i].atomicNumber);
+        drawText(renderer, rect.x + rect.w - 3 - len * 6, rect.y + rect.h - 9, z, P.dim, 1);
     }
 
     drawText(renderer, layout.amount.x, layout.amount.y - 12, "AMOUNT", P.dim, 1);
