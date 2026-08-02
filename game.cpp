@@ -178,7 +178,7 @@ int pickLocalMaterialElement(const Market& market, MaterialNeed need) {
         if (availableMass <= 0.05) continue;
         const double pressure = i < market.prices.size() && elements[i].basePrice > 0.0 ?
             market.prices[i] / elements[i].basePrice : 1.0;
-        const double score = trait * (0.5 + std::sqrt(availableMass)) / std::sqrt(std::max(0.2, pressure));
+        const double score = trait * (0.5 + std::sqrt(availableMass)) / std::sqrt(std::max(0.01, pressure));
         if (score > bestScore) {
             bestScore = score;
             best = int(i);
@@ -3846,7 +3846,18 @@ void Game::updateMarkets(double dt) {
         if (starIndex < 0 || starIndex >= count) return;
         const double elapsed = std::max(0.0, time - marketUpdatedAt[size_t(starIndex)]);
         if (elapsed <= 0.0) return;
-        markets[size_t(starIndex)].update(elapsed);
+        
+        Market& m = markets[size_t(starIndex)];
+        if (m.demandNoise.empty()) {
+            m.demandNoise.assign(m.prices.size(), 0.0);
+        }
+        for (size_t i = 0; i < m.demandNoise.size(); ++i) {
+            double phase = time * 0.03 + double(starIndex * 73 + i * 137);
+            double noiseFactor = std::sin(phase) * std::sin(phase * 1.83);
+            m.demandNoise[i] = noiseFactor > 0.0 ? noiseFactor * 25.0 : 0.0;
+        }
+        
+        m.update(elapsed);
         marketUpdatedAt[size_t(starIndex)] = time;
     };
 

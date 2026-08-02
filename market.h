@@ -12,6 +12,7 @@ public:
     std::vector<double> productionRate;
     std::vector<double> demandRate;
     std::vector<double> eventMul; // временные ценовые множители (рыночные события)
+    std::vector<double> demandNoise; // случайный шум спроса (добавочный)
     std::string role;
     Market();
     void seed(const std::vector<Resource>& localResources, const std::vector<double>& demandBias, const std::string& role_, double population, double industry);
