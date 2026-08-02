@@ -2035,8 +2035,9 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
     }
 }
 
-std::string getTutorialText(const Game& game, int step, int& outArrowTarget, bool& outOpenTrade) {
+std::string getTutorialText(const Game& game, int step, int& outArrowTarget, bool& outOpenSystem, bool& outOpenTrade) {
     outArrowTarget = 0;
+    outOpenSystem = false;
     outOpenTrade = false;
     switch (step) {
         case 0: return "Master, I am Timertia - your AI core Agent.";
@@ -2053,8 +2054,9 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
                 }
             }
             outArrowTarget = 0;
+            outOpenSystem = true;
             char buf[256];
-            std::snprintf(buf, sizeof(buf), "Your vessel is curretnly at %s. You can acess a model of local star system here.", starName.c_str());
+            std::snprintf(buf, sizeof(buf), "Your vessel is currently at %s. You can access a model of local star system here.", starName.c_str());
             return buf;
         }
         case 6: outArrowTarget = 0; outOpenTrade = true; return "With your trading licence you can perform HIGH-FREQUENCY BROKERAGE on local market.";
@@ -2208,9 +2210,13 @@ bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH) {
                 vn.tutorialCompleted = true;
                 vn.active = false;
             } else {
+                bool openSystem = false;
                 bool openTrade = false;
-                vn.targetText = getTutorialText(game, vn.tutorialStep, vn.arrowTarget, openTrade);
+                vn.targetText = getTutorialText(game, vn.tutorialStep, vn.arrowTarget, openSystem, openTrade);
                 vn.textProgress = 0.0f;
+                if (openSystem && game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
+                    openSystemWindow(state, game.agents[game.playerAgent].currentStar, winW, winH);
+                }
                 if (openTrade && game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
                     openTradeWindow(state, game.agents[game.playerAgent].currentStar, winW, winH);
                 }
@@ -2232,8 +2238,8 @@ void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, i
             if (currentStar >= 0 && vn.visitedSystems.find(currentStar) == vn.visitedSystems.end()) {
                 vn.visitedSystems.insert(currentStar);
                 vn.tutorialStep = 100;
-                bool dummy;
-                vn.targetText = getTutorialText(game, 100, vn.arrowTarget, dummy);
+                bool dummySys, dummyTrade;
+                vn.targetText = getTutorialText(game, 100, vn.arrowTarget, dummySys, dummyTrade);
                 vn.textProgress = 0.0f;
                 vn.currentText = "";
                 vn.active = true;
@@ -2241,8 +2247,8 @@ void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, i
         }
     } else {
         if (vn.targetText.empty() && vn.tutorialStep == 0) {
-            bool dummyOpen = false;
-            vn.targetText = getTutorialText(game, vn.tutorialStep, vn.arrowTarget, dummyOpen);
+            bool dummySys = false, dummyTrade = false;
+            vn.targetText = getTutorialText(game, vn.tutorialStep, vn.arrowTarget, dummySys, dummyTrade);
         }
     }
     

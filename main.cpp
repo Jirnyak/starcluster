@@ -370,7 +370,6 @@ int main(int argc, char** argv) {
     double simSpeed = 1.0;
     UI::WindowState ui;
     ui.vnState.active = true; // Start introductory tutorial
-    if (selectedStar >= 0) UI::openSystemWindow(ui, selectedStar, winW, winH);
 
     // --- Локальный режим полёта ("микромир") ---
     LocalScene localScene;
