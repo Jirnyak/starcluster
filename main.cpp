@@ -623,7 +623,7 @@ int main(int argc, char** argv) {
         realDt = std::min(realDt, MAX_REAL_DT_SECONDS);
 
         if (!playlist.empty() && !Mix_PlayingMusic()) {
-            int idx = rand() % playlist.size();
+            int idx = randomer(rng, int(playlist.size()) - 1);
             Mix_PlayMusic(playlist[idx], 1);
         }
         while (SDL_PollEvent(&e)) {

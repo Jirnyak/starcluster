@@ -10,7 +10,7 @@
 #include <queue>
 #include <thread>
 #include <atomic>
-std::mt19937 rng(42);
+std::mt19937 rng(std::random_device{}());
 
 int randomer(std::mt19937& rng_, int max) {
     if (max <= 0) return 0;
