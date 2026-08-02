@@ -1236,20 +1236,62 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
             }
         }
 
-        // --- Урон от короны звезды (игрок и NPC) ---
-        if (scene.starIndex >= 0 && scene.hasStar) {
-            double r2 = scene.px*scene.px + scene.py*scene.py + scene.pz*scene.pz;
-            double starR2 = scene.starRadius * scene.starRadius;
-            double dmgRate = 1200.0 * h; // очень быстрое сгорание в короне
+        // --- Урон от столкновения с небесными телами (Звезда и Планеты) ---
+        auto getMinDistToBodySurfaces = [&](double x, double y, double z, bool& isStar) {
+            double minDist = 1e9;
+            isStar = false;
+            if (scene.hasStar && scene.starIndex >= 0) {
+                double d = std::sqrt(x*x + y*y + z*z) - scene.starRadius;
+                if (d < minDist) { minDist = d; isStar = true; }
+            }
+            for (const auto& bd : scene.bodies) {
+                double dx = x - bd.x, dy = y - bd.y, dz = z - bd.z;
+                double d = std::sqrt(dx*dx + dy*dy + dz*dz) - bd.radius;
+                if (d < minDist) { minDist = d; isStar = false; }
+            }
+            return minDist;
+        };
+
+        auto isInsideBody = [&](double x, double y, double z) {
+            bool dummy;
+            return getMinDistToBodySurfaces(x, y, z, dummy) < 0.0;
+        };
+
+        double dmgRate = 1200.0 * h; // очень быстрое разрушение при столкновении
+        
+        // Игрок
+        if (playerValid && !scene.playerDestroyed) {
+            bool nearStar = false;
+            double distToSurf = getMinDistToBodySurfaces(scene.px, scene.py, scene.pz, nearStar);
             
-            // Игрок
-            if (r2 < starR2 && playerValid && !scene.playerDestroyed) {
+            // Если летим на варпе, нужно гораздо большее расстояние для реакции
+            double speedMult = scene.warping ? LocalCfg::WARP_MULT : 1.0;
+            double reactionTime = 1.5; // 1.5 секунды на реакцию
+            
+            // Звезда визуально больше своего радиуса из-за короны (до 1.9x), 
+            // поэтому предупреждение должно начинаться далеко за ее пределами.
+            double dangerZone = std::max(60.0, scene.playerMaxSpeed * speedMult * reactionTime);
+            if (nearStar) {
+                // Добавляем к зоне опасности корону звезды (~0.9 * starRadius)
+                dangerZone += scene.starRadius * 0.9; 
+            }
+            
+            if (distToSurf < dangerZone && distToSurf > 0.0) {
+                // Эффекты опасного сближения
+                double intensity = 1.0 - (distToSurf / dangerZone); // 0.0 -> 1.0
+                scene.playerHitFlash = std::max(scene.playerHitFlash, intensity * 0.8);
+                scene.shake = std::max(scene.shake, intensity * 15.0);
+                scene.toast = nearStar ? "!!! DANGER: STAR PROXIMITY !!!" : "!!! DANGER: COLLISION IMMINENT !!!";
+                scene.toastTimer = 0.2;
+            }
+
+            if (distToSurf <= 0.0) {
                 Ship& ps = game.agents[game.playerAgent].ship;
                 double before = ps.hullHP;
                 applyDamage(scene.pShield, scene.pShieldTimer, ps.hullHP, dmgRate);
                 if (ps.hullHP < before) {
                     scene.playerHitFlash = 1.0;
-                    scene.toast = "STAR CORONA DAMAGE"; scene.toastTimer = 0.5;
+                    scene.toast = "TERRAIN COLLISION"; scene.toastTimer = 0.5;
                     scene.shake = std::min(40.0, std::max(scene.shake, 12.0));
                     if (before > 0.0 && ps.hullHP <= 0.0) {
                         scene.playerDestroyed = true;
@@ -1271,21 +1313,21 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                             f.a = 255; scene.fx.push_back(f);
                         }
                         scene.shake = 28.0;
-                        scene.toast = "INCINERATED BY STAR"; scene.toastTimer = 3.0;
+                        scene.toast = "FATAL COLLISION"; scene.toastTimer = 3.0;
                     }
                 }
             }
-            
-            // NPC
-            for (size_t i = 0; i < scene.craft.size(); ++i) {
-                LocalCraft& c = scene.craft[i];
-                if (c.hullHP <= 0.0) continue;
-                if (c.x*c.x + c.y*c.y + c.z*c.z < starR2) {
-                    double before = c.hullHP;
-                    applyDamage(c.shield, c.shieldRegenTimer, c.hullHP, dmgRate);
-                    if (before > 0.0 && c.hullHP <= 0.0) {
-                        spawnWreck(c.x, c.y, c.z, c.vx, c.vy, c.vz, c.r, c.g, c.b);
-                    }
+        }
+        
+        // NPC
+        for (size_t i = 0; i < scene.craft.size(); ++i) {
+            LocalCraft& c = scene.craft[i];
+            if (c.hullHP <= 0.0) continue;
+            if (isInsideBody(c.x, c.y, c.z)) {
+                double before = c.hullHP;
+                applyDamage(c.shield, c.shieldRegenTimer, c.hullHP, dmgRate);
+                if (before > 0.0 && c.hullHP <= 0.0) {
+                    spawnWreck(c.x, c.y, c.z, c.vx, c.vy, c.vz, c.r, c.g, c.b);
                 }
             }
         }

@@ -54,7 +54,85 @@ void Cluster::generate(size_t num_stars) {
         const double volatilePocket = unit(rng) < 0.18 ? 1.8 + unit(rng) * 2.5 : 1.0;
         star.miningRichness = richness;
         star.metallicity = metallicity;
-        star.stellarClass = unit(rng) < 0.008 ? 1 : 0;
+        double sc_r = unit(rng);
+        if (sc_r < 0.008) star.stellarClass = 1;      // Neutron star
+        else if (sc_r < 0.010) star.stellarClass = 2; // Black hole (~20 per 10000)
+        else if (sc_r < 0.015) star.stellarClass = 3; // White dwarf (~50)
+        else if (sc_r < 0.025) star.stellarClass = 4; // Red giant (~100)
+        else star.stellarClass = 0;                   // Main sequence
+
+        if (star.stellarClass == 1) {
+            star.spectralType = 'X';
+            star.temperature = 1000000.0;
+            star.mass = 1.4 + unit(rng) * 0.7;
+            star.radius = 0.000015;
+            star.colorR = 100; star.colorG = 200; star.colorB = 255;
+        } else if (star.stellarClass == 2) {
+            star.spectralType = 'H';
+            star.temperature = 0.0;
+            star.mass = 3.0 + unit(rng) * 12.0;
+            star.radius = star.mass * 0.00000428; 
+            star.colorR = 30; star.colorG = 15; star.colorB = 50; // Dark purple/black
+        } else if (star.stellarClass == 3) {
+            star.spectralType = 'D';
+            star.temperature = 10000.0 + unit(rng) * 40000.0;
+            star.mass = 0.5 + unit(rng) * 0.9;
+            star.radius = 0.008 + unit(rng) * 0.01;
+            star.colorR = 255; star.colorG = 255; star.colorB = 255;
+        } else if (star.stellarClass == 4) {
+            star.spectralType = 'M';
+            star.temperature = 3000.0 + unit(rng) * 1500.0;
+            star.mass = 0.8 + unit(rng) * 1.5;
+            star.radius = 20.0 + unit(rng) * 80.0;
+            star.colorR = 255; star.colorG = 100; star.colorB = 60;
+        } else {
+            double r = unit(rng);
+            if (r < 0.00003) {
+                star.spectralType = 'O';
+                star.temperature = 30000.0 + unit(rng) * 20000.0;
+                star.mass = 16.0 + unit(rng) * 34.0;
+                star.radius = 6.6 + unit(rng) * 10.0;
+                star.colorR = 155; star.colorG = 176; star.colorB = 255;
+            } else if (r < 0.0013) {
+                star.spectralType = 'B';
+                star.temperature = 10000.0 + unit(rng) * 20000.0;
+                star.mass = 2.1 + unit(rng) * 13.9;
+                star.radius = 1.8 + unit(rng) * 4.8;
+                star.colorR = 170; star.colorG = 191; star.colorB = 255;
+            } else if (r < 0.0073) {
+                star.spectralType = 'A';
+                star.temperature = 7500.0 + unit(rng) * 2500.0;
+                star.mass = 1.4 + unit(rng) * 0.7;
+                star.radius = 1.4 + unit(rng) * 0.4;
+                star.colorR = 202; star.colorG = 215; star.colorB = 255;
+            } else if (r < 0.0373) {
+                star.spectralType = 'F';
+                star.temperature = 6000.0 + unit(rng) * 1500.0;
+                star.mass = 1.04 + unit(rng) * 0.36;
+                star.radius = 1.15 + unit(rng) * 0.25;
+                star.colorR = 248; star.colorG = 247; star.colorB = 255;
+            } else if (r < 0.1133) {
+                star.spectralType = 'G';
+                star.temperature = 5200.0 + unit(rng) * 800.0;
+                star.mass = 0.8 + unit(rng) * 0.24;
+                star.radius = 0.96 + unit(rng) * 0.19;
+                star.colorR = 255; star.colorG = 244; star.colorB = 232;
+            } else if (r < 0.2343) {
+                star.spectralType = 'K';
+                star.temperature = 3700.0 + unit(rng) * 1500.0;
+                star.mass = 0.45 + unit(rng) * 0.35;
+                star.radius = 0.7 + unit(rng) * 0.26;
+                star.colorR = 255; star.colorG = 210; star.colorB = 161;
+            } else {
+                star.spectralType = 'M';
+                star.temperature = 2400.0 + unit(rng) * 1300.0;
+                star.mass = 0.08 + unit(rng) * 0.37;
+                star.radius = 0.1 + unit(rng) * 0.6;
+                star.colorR = 255; star.colorG = 204; star.colorB = 111;
+            }
+        }
+        star.luminosity = std::pow(star.radius, 2.0) * std::pow(star.temperature / 5778.0, 4.0);
+
         star.resources.reserve(elements.size());
         star.demandBias.assign(elements.size(), 0.35);
         std::vector<double> supplyBias(elements.size(), 1.0);

@@ -48,6 +48,7 @@ void Market::seed(const std::vector<Resource>& localResources, const std::vector
     prices.clear();
     productionRate.clear();
     demandRate.clear();
+    demandNoise.clear();
 
     const auto& elements = elementDefinitions();
     supply.reserve(elements.size());
@@ -91,7 +92,8 @@ void Market::updatePrices() {
         const double demandAmt = std::max(0.0, demand[i].amount);
         const double localDemand = i < demandRate.size() ? demandRate[i] * 80.0 : 1.0;
         const double localSupply = i < productionRate.size() ? productionRate[i] * 70.0 : 1.0;
-        const double scarcity = (demandAmt + localDemand + 1.0) / (supplyAmt + localSupply + 1.0);
+        const double noise = i < demandNoise.size() ? demandNoise[i] : 0.0;
+        const double scarcity = (demandAmt + localDemand + noise + 1.0) / (supplyAmt + localSupply + 1.0);
         double price = elements[i].basePrice * std::pow(scarcity, 0.62);
         const double ev = i < eventMul.size() ? eventMul[i] : 1.0;
         price *= ev;

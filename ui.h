@@ -3,6 +3,7 @@
 #include "game.h"
 #include <SDL.h>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace UI {
@@ -21,7 +22,10 @@ enum class WindowKind {
     SystemInfo,
     Trade,
     Contracts,
-    Shipyard
+    Shipyard,
+    Cargo,
+    ShipFit,
+    Transactions
 };
 
 struct Window {
@@ -35,6 +39,17 @@ struct Window {
     int scrollOffset = 0;
 };
 
+struct VisualNovelState {
+    bool active = false;
+    bool tutorialCompleted = false;
+    int tutorialStep = 0;
+    float textProgress = 0.0f;
+    std::string targetText = "";
+    std::string currentText = "";
+    std::unordered_set<int> visitedSystems;
+    int arrowTarget = 0;
+};
+
 struct WindowState {
     std::vector<Window> windows;
     int nextId = 1;
@@ -42,12 +57,18 @@ struct WindowState {
     int draggingId = -1;
     std::string tradeAmount;
     bool tradeAmountEditing = false;
+    int confirmBuyShipIndex = -1;
+    VisualNovelState vnState;
 };
 
 void openSystemWindow(WindowState& state, int starIndex, int screenW, int screenH);
 void openTradeWindow(WindowState& state, int starIndex, int screenW, int screenH);
 void openContractsWindow(WindowState& state, int starIndex, int screenW, int screenH);
 void openShipyardWindow(WindowState& state, int starIndex, int screenW, int screenH);
+void openCargoWindow(WindowState& state, int starIndex, int screenW, int screenH);
+void openShipFitWindow(WindowState& state, int starIndex, int screenW, int screenH);
+void openTransactionsWindow(WindowState& state, int screenW, int screenH);
+void closeWindow(WindowState& state, int id);
 bool handleMouseDown(WindowState& state, Game& game, HudSelection& selection, int screenW, int screenH, int mouseX, int mouseY, int button);
 void handleMouseMove(WindowState& state, int screenW, int screenH, int mouseX, int mouseY);
 void handleMouseUp(WindowState& state);
@@ -59,5 +80,9 @@ void drawStarPanel(SDL_Renderer* renderer, const Game& game, int starIndex, int 
 void drawAgentPanel(SDL_Renderer* renderer, const Game& game, int agentIndex, int x, int y, int w);
 void drawFactionPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w);
 void drawControlHints(SDL_Renderer* renderer, int screenW, int screenH);
+bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH);
+void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, int screenH);
+void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int screenW, int screenH, SDL_Texture* tex);
+void drawTariffModal(SDL_Renderer* renderer, const Game& game, int screenW, int screenH);
 
 }

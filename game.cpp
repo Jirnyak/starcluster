@@ -7,8 +7,10 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
-
-std::mt19937 rng(42);
+#include <queue>
+#include <thread>
+#include <atomic>
+std::mt19937 rng(std::random_device{}());
 
 int randomer(std::mt19937& rng_, int max) {
     if (max <= 0) return 0;
@@ -34,14 +36,6 @@ struct FactionSeed {
     int g;
     int b;
     double aggression;
-};
-
-struct RouteEdge {
-    int star = -1;
-    double distance = 0.0;
-
-    RouteEdge() {}
-    RouteEdge(int star_, double distance_) : star(star_), distance(distance_) {}
 };
 
 struct ThreatCandidate {
@@ -95,7 +89,7 @@ const char* contractTypeLabel(ContractType type) {
 }
 
 const unsigned short ROUTE_NO_HOP = 65535;
-const int ROUTE_NEIGHBORS = 14;
+const int ROUTE_NEIGHBORS = 32;
 const double ROUTE_REBUILD_INTERVAL_YEARS = 1000.0;
 const double MARKET_UPDATE_INTERVAL_YEARS = 1.0;
 const int SIGNAL_MEMORY_PER_STAR = 24;
@@ -184,7 +178,7 @@ int pickLocalMaterialElement(const Market& market, MaterialNeed need) {
         if (availableMass <= 0.05) continue;
         const double pressure = i < market.prices.size() && elements[i].basePrice > 0.0 ?
             market.prices[i] / elements[i].basePrice : 1.0;
-        const double score = trait * (0.5 + std::sqrt(availableMass)) / std::sqrt(std::max(0.2, pressure));
+        const double score = trait * (0.5 + std::sqrt(availableMass)) / std::sqrt(std::max(0.01, pressure));
         if (score > bestScore) {
             bestScore = score;
             best = int(i);
@@ -2637,7 +2631,8 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 6 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 7 " << cluster.stars.size() << '\n';
+    out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
         << nextContractId << ' ' << playerAgent << ' ' << playerFaction << ' '
@@ -2870,12 +2865,19 @@ bool Game::loadFromFile(const std::string& path) {
     std::string tag;
     int version = 0;
     size_t starCount = 0;
-    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 6) {
+    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version < 6 || version > 7) {
         lastEvent = "load failed: version";
         return false;
     }
 
     Game loaded;
+    loaded.seed = 42;
+    if (version >= 7) {
+        if (!expectTag(in, "SEED") || !(in >> loaded.seed)) {
+            lastEvent = "load failed: seed";
+            return false;
+        }
+    }
     loaded.cluster.generate(starCount);
     loaded.markets.assign(starCount, Market());
     loaded.playerKnowledge.assign(starCount, PlayerStarKnowledge());
@@ -3444,28 +3446,84 @@ void Game::rebuildRouteCache() {
         }
     }
 
+    // Ensure symmetry to guarantee bidirectional reachability
+    for (int i = 0; i < count; ++i) {
+        for (size_t e = 0; e < graph[i].size(); ++e) {
+            const RouteEdge& edge = graph[i][e];
+            bool found = false;
+            for (size_t rev = 0; rev < graph[edge.star].size(); ++rev) {
+                if (graph[edge.star][rev].star == i) { found = true; break; }
+            }
+            if (!found) {
+                routeAddEdge(graph, edge.star, i, edge.distance);
+            }
+        }
+    }
+
     const size_t countSize = size_t(count);
     routeNextHop.assign(countSize * countSize, ROUTE_NO_HOP);
-    for (int source = 0; source < count; ++source) {
-        const size_t row = size_t(source) * size_t(count);
-        routeNextHop[row + size_t(source)] = static_cast<unsigned short>(source);
-        for (int target = 0; target < count; ++target) {
-            if (target == source) continue;
-            const double direct2 = distanceSquaredStarToStar(cluster.stars[source], cluster.stars[target]);
-            double best2 = direct2;
-            int best = -1;
-            const std::vector<RouteEdge>& edges = graph[source];
-            for (size_t e = 0; e < edges.size(); ++e) {
-                const int neighbor = edges[e].star;
-                if (neighbor < 0 || neighbor >= count) continue;
-                const double neighbor2 = distanceSquaredStarToStar(cluster.stars[neighbor], cluster.stars[target]);
-                if (neighbor2 < best2) {
-                    best2 = neighbor2;
-                    best = neighbor;
+    
+    std::atomic<int> nextTarget(0);
+    int numThreads = std::thread::hardware_concurrency();
+    if (numThreads <= 0) numThreads = 4;
+    
+    std::vector<std::thread> threads;
+    for (int t = 0; t < numThreads; ++t) {
+        threads.emplace_back([this, count, countSize, &nextTarget, &graph]() {
+            std::vector<double> dist(count);
+            std::vector<int> nextHop(count);
+            using PD = std::pair<double, int>;
+            std::vector<PD> pq;
+            pq.reserve(count * 8);
+
+            while (true) {
+                int target = nextTarget.fetch_add(1);
+                if (target >= count) break;
+                
+                std::fill(dist.begin(), dist.end(), std::numeric_limits<double>::max());
+                std::fill(nextHop.begin(), nextHop.end(), target);
+                
+                pq.clear();
+                dist[target] = 0.0;
+                pq.push_back({0.0, target});
+                
+                while (!pq.empty()) {
+                    std::pop_heap(pq.begin(), pq.end(), std::greater<PD>());
+                    PD top = pq.back();
+                    pq.pop_back();
+                    
+                    double d = top.first;
+                    int u = top.second;
+                    
+                    if (d > dist[u]) continue;
+                    
+                    for (size_t e = 0; e < graph[u].size(); ++e) {
+                        const RouteEdge& edge = graph[u][e];
+                        int v = edge.star;
+                        double newDist = d + edge.distance;
+                        if (newDist < dist[v]) {
+                            dist[v] = newDist;
+                            nextHop[v] = u;
+                            pq.push_back({newDist, v});
+                            std::push_heap(pq.begin(), pq.end(), std::greater<PD>());
+                        }
+                    }
+                }
+                
+                for (int source = 0; source < count; ++source) {
+                    const size_t index = size_t(source) * countSize + size_t(target);
+                    if (source == target) {
+                        routeNextHop[index] = static_cast<unsigned short>(source);
+                    } else {
+                        routeNextHop[index] = static_cast<unsigned short>(nextHop[source]);
+                    }
                 }
             }
-            routeNextHop[row + size_t(target)] = best >= 0 ? static_cast<unsigned short>(best) : static_cast<unsigned short>(target);
-        }
+        });
+    }
+    
+    for (auto& th : threads) {
+        th.join();
     }
 }
 
@@ -3482,6 +3540,7 @@ int Game::routeNextStar(int originStar, int targetStar) const {
 
 void Game::init(size_t num_stars) {
     time = 0.0;
+    seed = rng();
     cluster.generate(num_stars);
     markets.clear();
     markets.resize(num_stars);
@@ -3628,7 +3687,6 @@ void Game::init(size_t num_stars) {
             observeMarketForFaction(int(factionIndex), starIndex);
         }
     }
-    seedPlayerKnowledge(playerStart, 10.0);
     observeStar(playerStart);
     for (int i = 0; i < 4; ++i) {
         tryCreateDeliveryContract(*this, playerStart);
@@ -3776,10 +3834,27 @@ void Game::update(double dt) {
     updateAgents(dt);
     processSignals();
     updateAnomalies(dt);
-    updateEncounters(dt);
     if (playerAgent >= 0 && playerAgent < int(agents.size()) && !agents[playerAgent].ship.enRoute) {
         observeStar(agents[playerAgent].currentStar);
         agentCompleteContracts(playerAgent);
+    }
+    
+    if (playerAgent >= 0 && playerAgent < int(agents.size())) {
+        double currentMoney = agents[playerAgent].money;
+        if (lastPlayerMoney >= 0.0) {
+            double diff = currentMoney - lastPlayerMoney;
+            if (std::abs(diff) > 0.01) {
+                Transaction t;
+                t.time = time;
+                t.starIndex = agents[playerAgent].currentStar;
+                t.amount = diff;
+                transactions.push_back(t);
+                if (transactions.size() > 100) {
+                    transactions.erase(transactions.begin(), transactions.begin() + 20);
+                }
+            }
+        }
+        lastPlayerMoney = currentMoney;
     }
 }
 
@@ -3797,7 +3872,18 @@ void Game::updateMarkets(double dt) {
         if (starIndex < 0 || starIndex >= count) return;
         const double elapsed = std::max(0.0, time - marketUpdatedAt[size_t(starIndex)]);
         if (elapsed <= 0.0) return;
-        markets[size_t(starIndex)].update(elapsed);
+        
+        Market& m = markets[size_t(starIndex)];
+        if (m.demandNoise.empty()) {
+            m.demandNoise.assign(m.prices.size(), 0.0);
+        }
+        for (size_t i = 0; i < m.demandNoise.size(); ++i) {
+            double phase = time * 0.03 + double(starIndex * 73 + i * 137);
+            double noiseFactor = std::sin(phase) * std::sin(phase * 1.83);
+            m.demandNoise[i] = noiseFactor > 0.0 ? noiseFactor * 25.0 : 0.0;
+        }
+        
+        m.update(elapsed);
         marketUpdatedAt[size_t(starIndex)] = time;
     };
 
@@ -4101,6 +4187,24 @@ void Game::updateAgents(double dt) {
                     agent.currentStar = agent.ship.targetStar;
                     agent.ship.targetStar = -1;
                     agent.ship.enRoute = false;
+
+                    if (int(i) == playerAgent && agent.currentStar >= 0 && agent.currentStar < int(cluster.stars.size())) {
+                        int owner = cluster.stars[agent.currentStar].ownerFaction;
+                        if (owner >= 0 && owner != playerFaction) {
+                            int rel = factionRelation(playerFaction, owner);
+                            if (rel < 50) {
+                                // 1% chance
+                                if (randomer(rng, 100) < 1) {
+                                    pendingTariff = true;
+                                    tariffFaction = owner;
+                                    double cargoPct = randomer(rng, 100) / 10000.0; // 0.0 to 0.01 (0% to 1%)
+                                    double moneyPct = randomer(rng, 100) / 10000.0; // 0.0 to 0.01 (0% to 1%)
+                                    tariffFee = randomer(rng, 1000) + int(agent.cargoCost * cargoPct + agent.money * moneyPct);
+                                }
+                            }
+                        }
+                    }
+
                     observeLocalThreatsForFaction(agent.ship.ownerFaction, agent.currentStar);
                     queueOwnerSignal(agent.ship.ownerFaction, agent.currentStar, agent.currentStar);
                     queueMarketSignal(agent.ship.ownerFaction, agent.currentStar, agent.currentStar);
@@ -4267,9 +4371,18 @@ bool Game::buyShip(int agentIndex, int starIndex, int classId) {
     if (classId < 0 || classId >= int(classes.size())) return false;
     const ShipClass& sc = classes[classId];
     
-    if (agent.money < sc.price) return false;
+    double currentHullPrice = 0.0;
+    for (const auto& c : classes) {
+        if (c.name == agent.ship.name) {
+            currentHullPrice = c.price;
+            break;
+        }
+    }
+    double upgradePrice = std::max(0.0, sc.price - currentHullPrice);
     
-    agent.money -= sc.price;
+    if (agent.money < upgradePrice) return false;
+    
+    agent.money -= upgradePrice;
     agent.ship.name = sc.name;
     agent.ship.dryMass = sc.dryMass;
     agent.ship.driveThrust = sc.driveThrust;
@@ -4280,8 +4393,57 @@ bool Game::buyShip(int agentIndex, int starIndex, int classId) {
     agent.ship.lightWeapons = sc.lightWeapons;
     agent.ship.armor = sc.armor;
     agent.ship.utility = sc.utility;
+    agent.ship.maxModules = sc.maxModules;
     shipAutofit(agent.ship);
     agent.lastAction = "bought " + sc.name;
+    return true;
+}
+
+bool Game::buyAdditionalShip(int agentIndex, int starIndex, int classId) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size()) || !validStar(*this, starIndex)) return false;
+    if (agents[agentIndex].currentStar != starIndex || agents[agentIndex].ship.enRoute) return false;
+    const Colony& colony = colonies[starIndex];
+    if (colony.shipyardLevel <= 0 && colony.infrastructure < 1.0) return false;
+    
+    const auto& classes = shipClasses();
+    if (classId < 0 || classId >= int(classes.size())) return false;
+    const ShipClass& sc = classes[classId];
+    
+    double totalPrice = sc.price + 1000000.0;
+    if (agents[agentIndex].money < totalPrice) return false;
+    
+    agents[agentIndex].money -= totalPrice;
+    
+    Ship newShip(sc.name, 0, 0, 0, 0, agents[agentIndex].ship.ownerFaction);
+    newShip.dryMass = sc.dryMass;
+    newShip.driveThrust = sc.driveThrust;
+    newShip.driveEfficiency = sc.driveEfficiency;
+    newShip.cargoCapacity = sc.cargoCapacity;
+    newShip.fuelCapacity = sc.fuelCapacity;
+    newShip.heavyWeapons = sc.heavyWeapons;
+    newShip.lightWeapons = sc.lightWeapons;
+    newShip.armor = sc.armor;
+    newShip.utility = sc.utility;
+    newShip.maxModules = sc.maxModules;
+    shipAutofit(newShip);
+    newShip.fuel = newShip.fuelCapacity;
+
+    Agent newAgent(agents[agentIndex].type, newShip);
+    newAgent.playerControlled = agents[agentIndex].playerControlled;
+    newAgent.currentStar = starIndex;
+    newAgent.homeStar = starIndex;
+    newAgent.destStar = starIndex;
+    newAgent.money = 0.0;
+    newAgent.lastAction = "bought " + sc.name;
+
+    int newAgentIndex = int(agents.size());
+    agents.push_back(newAgent);
+    registerFactionAgent(*this, newAgentIndex);
+    
+    if (agentIndex == playerAgent) {
+        playerAgent = newAgentIndex;
+    }
+    
     return true;
 }
 

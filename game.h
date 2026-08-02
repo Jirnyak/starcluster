@@ -9,6 +9,14 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <unordered_map>
+
+struct RouteEdge {
+    int star = 0;
+    double distance = 0.0;
+    RouteEdge() {}
+    RouteEdge(int star_, double distance_) : star(star_), distance(distance_) {}
+};
 
 const int STAR_COUNT = 10000;
 const int CIV_COUNT = 100;
@@ -119,6 +127,12 @@ struct SignalMemoryRecord {
     std::vector<double> marketDemandPressure;
 };
 
+struct Transaction {
+    double time = 0.0;
+    int starIndex = -1;
+    double amount = 0.0;
+};
+
 // Главный игровой класс
 class Game {
 public:
@@ -151,7 +165,14 @@ public:
     int playerFaction = -1;
     int foundedColonies = 0;
     int capturedSystems = 0;
+    unsigned int seed = 42;
     std::string lastEvent;
+    
+    // --- Tariff mechanics ---
+    bool pendingTariff = false;
+    int tariffFee = 0;
+    int tariffFaction = -1;
+
 
     // --- Расширения геймплея (вертикальный срез) ---
     TechState tech;                     // хромокоры игрока
@@ -164,6 +185,9 @@ public:
     double miningTimer = 0.0;
     int miningStar = -1;
     double miningYieldAccum = 0.0;
+
+    std::vector<Transaction> transactions;
+    double lastPlayerMoney = -1.0;
 
     Game();
     void init(size_t num_stars);
@@ -181,6 +205,7 @@ public:
     bool abortAgentRoute(int agentIndex);
     bool commandAgentToStar(int agentIndex, int starIndex);
     bool buyShip(int agentIndex, int starIndex, int classId);
+    bool buyAdditionalShip(int agentIndex, int starIndex, int classId);
     double routeDistance(int originStar, int targetStar) const;
     double agentRouteDistance(int agentIndex, int targetStar) const;
     double agentRouteTravelTime(int agentIndex, int targetStar) const;
@@ -273,11 +298,13 @@ public:
     void seedAnomalies();                                   // anomaly.cpp
     void updateAnomalies(double dt);                        // anomaly.cpp
     bool playerScanAnomaly();                               // anomaly.cpp
-    void updateEncounters(double dt);                       // combat.cpp
+
     bool playerRepairHull();                                // combat.cpp
     void grantChromocore(int stat);                         // chromo.cpp
     void addResearch(double amount);                        // chromo.cpp
-    bool installModule(int agentIndex, int defIndex);       // modules.cpp
+    bool buyModule(int agentIndex, int defIndex);           // modules.cpp
+    bool equipModule(int agentIndex, int defIndex);         // modules.cpp
+    bool unequipModule(int agentIndex, int moduleListIndex);// modules.cpp
     int shipyardLevelAtStar(int starIndex) const;           // modules.cpp
 
     void render(); // TODO: добавить SDL2

@@ -168,7 +168,11 @@ SDL_Color radioColor(int kind) {
 
 // Цвет далёкой звезды скайбокса по спектральному классу/индексу (детерминированно).
 SDL_Color skyStarColor(unsigned i, int stellarClass) {
-    if (stellarClass == 1) return rgba(205, 224, 255, 255); // нейтронная/пульсар — голубовато-белая
+    if (stellarClass == 1) return rgba(205, 224, 255, 255); // нейтронная/пульсар
+    if (stellarClass == 2) return rgba(20, 10, 40, 255);    // чёрная дыра (слабое свечение)
+    if (stellarClass == 3) return rgba(255, 255, 255, 255); // белый карлик
+    if (stellarClass == 4) return rgba(255, 120, 80, 255);  // красный гигант
+
     unsigned h = (i + 1u) * 2654435761u; h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
     switch (h % 5u) {
         case 0:  return rgba(255, 214, 170, 255); // тёплая (K/M)
@@ -187,196 +191,6 @@ SDL_Color skyStarColor(unsigned i, int stellarClass) {
 // смотришь на звезду — плазма, отворачиваешься — космос, влетаешь внутрь — вещество
 // вокруг с направленной структурой (НЕ плоская заливка). Изотропно ПО ПОСТРОЕНИЮ:
 // результат зависит только от R и |eye| относительно луча, одинаков со всех сторон.
-//
-// Рендер в персистентную стриминг-текстуру половинного разрешения (ARGB8888, BLEND):
-// диск непрозрачен (alpha=255 → честно перекрывает скайбокс, согласуясь с occ-окклюзией),
-// корона — полупрозрачное тёплое свечение. Далёкую звезду считаем только в bbox её
-// проекции; вблизи/внутри — весь кадр. Чистый SDL2 (никакого GL) — детерминированные
-// шоты продолжают работать на программном рендерере.
-static void renderStarPlasma(SDL_Renderer* renderer, const LocalScene& scene,
-                             const View3D& view, const CameraBasis& basis,
-                             int winW, int winH) {
-    const double R = scene.starRadius;
-    if (R <= 0.0 || winW <= 0 || winH <= 0) return;
-    const double ex = view.centerX, ey = view.centerY, ez = view.centerZ;
-    const double D2 = ex * ex + ey * ey + ez * ez;
-    const double R2 = R * R;
-    const double focal = std::max(1.0, view.focal);
-
-    // Персистентная стриминг-текстура (полуразрешение). Пересоздаём при смене рендерера/размера.
-    static SDL_Texture*  tex   = nullptr;
-    static SDL_Renderer* texRd = nullptr;
-    static int texW = 0, texH = 0;
-    const int bw = (winW + 1) / 2, bh = (winH + 1) / 2;
-    if (!tex || texRd != renderer || texW != bw || texH != bh) {
-        if (tex) SDL_DestroyTexture(tex);
-        tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
-                                SDL_TEXTUREACCESS_STREAMING, bw, bh);
-        texRd = renderer; texW = bw; texH = bh;
-        if (tex) {
-            SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-            SDL_SetTextureScaleMode(tex, SDL_ScaleModeLinear);
-        }
-    }
-    if (!tex) return;
-
-    // Экранный bbox в координатах буфера (полуразрешение). Далеко (D>R и центр перед
-    // камерой) — квадрат вокруг проекции центра радиусом screenR·coronaK; иначе весь кадр.
-    const double coronaK = 1.70;   // чуть шире — простор для протуберанцев/плюмов короны
-    int bx0 = 0, by0 = 0, bx1 = bw, by1 = bh;
-    if (D2 > R2 * 1.05) {
-        ProjectedPoint sp = projectPointWithBasis(0.0, 0.0, 0.0, winW, winH, view, basis);
-        if (sp.behind) return;                        // центр за камерой и D>R → звезда не в кадре
-        const double screenR = focal * R / std::sqrt(D2 - R2);
-        const double margin  = screenR * coronaK + 4.0;
-        bx0 = std::max(0,  (int)std::floor((sp.x - margin) * 0.5));
-        by0 = std::max(0,  (int)std::floor((sp.y - margin) * 0.5));
-        bx1 = std::min(bw, (int)std::ceil ((sp.x + margin) * 0.5) + 1);
-        by1 = std::min(bh, (int)std::ceil ((sp.y + margin) * 0.5) + 1);
-        if (bx0 >= bx1 || by0 >= by1) return;         // проекция целиком вне экрана
-    }
-
-    // Цвета ядра (горячее/светлее) и лимба (темнее/краснее) из спектрального цвета звезды.
-    // Прокси температуры O→M из синевы цвета (гор. звезда — сине-белая, высокая B; холодная —
-    // красно-оранжевая, низкая B). Усиливает спектральный контраст: горячие — сине-белый шар с
-    // ярким синим лимбом, холодные — жёлто-ядро + глубоко-красный сильно затемнённый лимб.
-    const double sR = (double)scene.starR, sG = (double)scene.starG, sB = (double)scene.starB;
-    double hot01 = (sB - 150.0) / 105.0; if (hot01 < 0.0) hot01 = 0.0; else if (hot01 > 1.0) hot01 = 1.0;
-    const double crR = std::min(255.0, sR + 10.0 + 22.0 * (1.0 - hot01)); // ядро: холод.→жёлто-белое
-    const double crG = std::min(255.0, sG + 26.0 + 10.0 * (1.0 - hot01));
-    const double crB = std::min(255.0, sB + 34.0 + 60.0 * hot01);         //        гор.→сине-белое
-    const double lmR = sR * (0.90 - 0.05 * hot01);                        // лимб: холод.→глубокий
-    const double lmG = sG * (0.40 + 0.22 * hot01);                        //  красно-оранж, гор.→
-    const double lmB = sB * (0.18 + 0.40 * hot01);                        //  синее и ярче
-    // Тон хромосферного ободка (аддитивно) и короны: холодная звезда — H-alpha красно-розовый,
-    // горячая — сине-белый (иначе красный ободок диссонирует на сине-белом диске). Холодный
-    // предел короны = ТОЧНО прежний оранж (lm·), горячий — синева → без регресса тёплых звёзд.
-    const double chR = 120.0 - 40.0 * hot01, chG = 30.0 + 90.0 * hot01, chB = 42.0 + 158.0 * hot01;
-    const double coR = lmR       * (1.0 - hot01) + 150.0 * hot01;
-    const double coG = lmG * 0.9 * (1.0 - hot01) + 180.0 * hot01;
-    const double coB = lmB * 0.8 * (1.0 - hot01) + 235.0 * hot01;
-    const double tcl = scene.fxClock;
-
-    void* vpix = nullptr; int pitch = 0;
-    if (SDL_LockTexture(tex, nullptr, &vpix, &pitch) != 0) return;
-    unsigned char* rowbase = (unsigned char*)vpix;
-
-    const double invF  = 1.0 / focal;
-    const double halfW = winW * 0.5, halfH = winH * 0.5;
-    const double coronaR = R * coronaK, coronaR2 = coronaR * coronaR;
-
-    for (int by = by0; by < by1; ++by) {
-        Uint32* row = (Uint32*)(rowbase + (size_t)by * pitch);
-        std::memset(row + bx0, 0, (size_t)(bx1 - bx0) * sizeof(Uint32)); // промахи = прозрачно
-        const double fy  = (double)(by * 2) + 0.5;    // полноэкранный y центра полупикселя
-        const double scy = -(fy - halfH) * invF;      // «вверх»-компонента луча камеры
-        for (int bx = bx0; bx < bx1; ++bx) {
-            const double fx  = (double)(bx * 2) + 0.5;
-            const double scx = (fx - halfW) * invF;   // «вправо»-компонента
-            // Мировой луч: dir = right·scx + up·scy + fwd (затем нормировка).
-            double dx = basis.rX * scx + basis.uX * scy + basis.fX;
-            double dy = basis.rY * scx + basis.uY * scy + basis.fY;
-            double dz = basis.rZ * scx + basis.uZ * scy + basis.fZ;
-            const double il = 1.0 / std::sqrt(dx * dx + dy * dy + dz * dz);
-            dx *= il; dy *= il; dz *= il;
-            const double bb0 = ex * dx + ey * dy + ez * dz;   // O·dir
-            double dmin2 = D2 - bb0 * bb0; if (dmin2 < 0.0) dmin2 = 0.0;
-            if (dmin2 <= R2) {
-                const double sq = std::sqrt(R2 - dmin2);
-                const double t1 = -bb0 + sq;                  // дальний корень
-                if (t1 > 0.0) {                               // сфера хотя бы частично впереди
-                    double mu2 = 1.0 - dmin2 / R2; if (mu2 < 0.0) mu2 = 0.0;
-                    const double mu = std::sqrt(mu2);         // косинус к лимбу (лимб-даркенинг)
-                    const double t0 = -bb0 - sq;
-                    const double te = t0 > 0.0 ? t0 : 0.0;    // точка входа (внутри звезды → глаз)
-                    const double nx = (ex + dx * te) / R;     // нормаль/позиция на поверхности
-                    const double ny = (ey + dy * te) / R;
-                    const double nz = (ez + dz * te) / R;
-                    // Многооктавная турбулентность + доменный варп 2-го порядка → «кипящая»
-                    // плазма (филаменты/гранулы), а не гладкий градиент. Частоты умеренные.
-                    const double wrp  = 0.35 * std::sin(ny * 7.0 - tcl * 0.5);
-                    const double wrp2 = 0.22 * std::sin((nx + nz) * 11.0 + wrp * 2.3 - tcl * 0.7); // варп варпа
-                    const double n1  = std::sin(nx * 8.0 + wrp + tcl * 0.6);
-                    const double n2  = std::sin((ny + nz) * 12.0 - wrp2 * 1.3 - tcl * 0.9);
-                    const double n3  = std::sin((nx - nz) * 19.0 + n1 * 1.6 + wrp2 + tcl * 0.4);
-                    const double n4  = std::sin((ny - nx) * 31.0 + n2 * 1.4 - tcl * 0.5); // мелкая октава
-                    const double turb = 0.46 * n1 + 0.28 * n2 + 0.20 * n3 + 0.12 * n4;
-                    double bright = (0.42 + 0.58 * mu) * (1.0 + 0.20 * turb);
-                    // Пятна (сунспоты): низкочаст. поле, мягко темнит редкие «клетки» (умбра+
-                    // полутень), без порога — концентрируем в мелкие ядра степенью ^4.
-                    double sf = 0.5 + 0.5 * std::sin(nx * 3.0 + tcl * 0.05)
-                                          * std::sin((ny + nz) * 2.6 - tcl * 0.04)
-                                          * std::sin(nz * 3.4 + n1 * 0.5);
-                    double spot = sf * sf; spot *= spot;      // ^4 — маленькие тёмные ядра, мягкий край
-                    bright *= 1.0 - 0.50 * spot;
-                    if (bright < 0.0) bright = 0.0;
-                    const double m = mu2;                     // ярче к ядру
-                    double rr = (lmR + (crR - lmR) * m) * bright;
-                    double gg = (lmG + (crG - lmG) * m) * bright;
-                    double bb = (lmB + (crB - lmB) * m) * bright;
-                    // Хромосферный ободок: тонкий H-alpha (красно-розовый) слой у самого лимба
-                    // (mu→0), излучение — аддитивно поверх фотосферы, с лёгкой неровностью.
-                    double rim = 1.0 - mu; rim *= rim; rim *= rim;    // (1-mu)^4 — узкая кромка
-                    rim *= 0.85 + 0.15 * n2;
-                    rr += rim * chR; gg += rim * chG; bb += rim * chB;
-                    const Uint32 ir = rr > 255.0 ? 255u : (rr < 0.0 ? 0u : (Uint32)rr);
-                    const Uint32 ig = gg > 255.0 ? 255u : (gg < 0.0 ? 0u : (Uint32)gg);
-                    const Uint32 ib = bb > 255.0 ? 255u : (bb < 0.0 ? 0u : (Uint32)bb);
-                    row[bx] = 0xFF000000u | (ir << 16) | (ig << 8) | ib;
-                    continue;
-                }
-            }
-            // Корона + протуберанцы: луч мимо сферы, но проходит рядом и «вперёд» (bb0<0).
-            if (bb0 < 0.0 && dmin2 < coronaR2) {
-                const double dm = std::sqrt(dmin2);
-                // Угловая позиция точки наибольшего сближения луча со звездой: P = O − d·(O·d).
-                const double px = ex - dx * bb0, py = ey - dy * bb0, pz = ez - dz * bb0;
-                const double ipl = 1.0 / std::max(1e-6, std::sqrt(px * px + py * py + pz * pz));
-                const double ax = px * ipl, ay = py * ipl, az = pz * ipl;
-                // Медленно дрейфующие угловые плюмы (несколько по лимбу) — фоновые протуберанцы.
-                const double prom = 0.5 * (std::sin(ax * 5.0 + tcl * 0.20) * std::sin(ay * 6.0 - tcl * 0.15)
-                                           + std::sin((ay + az) * 7.0 + tcl * 0.10));
-                // (§5.13.13) Вспышки-СОБЫТИЯ. Две активные области медленно дрейфуют по лимбу
-                //   (долгота = угол ap) и ПЕРИОДИЧЕСКИ извергаются: фаза внутри цикла (frac) даёт
-                //   мгновенный поджиг (env=1 в начале) с экспоненциальным спадом — резкий подъём
-                //   яркости, бело-голубой (горячий) тон и локальный вынос плазмы дальше фоновых
-                //   плюмов. Всё детерминировано по fxClock (никакого rng); эффект локализован у
-                //   долготы области (cosang), т.е. вспышка бьёт из ОДНОЙ точки лимба, а не по кольцу.
-                //   Вынос ограничен ТЕМ ЖЕ гейтом короны (coronaR2) — bbox/ambient-корона не тронуты.
-                double flareBoost = 0.0;
-                for (int k = 0; k < 2; ++k) {
-                    const double ap = tcl * (0.06 + 0.015 * double(k)) + double(k) * 2.1;
-                    double rx = std::cos(ap), ry = std::sin(ap), rz = 0.4 * std::sin(tcl * 0.05 + double(k));
-                    const double irn = 1.0 / std::sqrt(rx * rx + ry * ry + rz * rz);
-                    const double cosang = (ax * rx + ay * ry + az * rz) * irn; // близость луча к области
-                    if (cosang <= 0.6) continue;                              // только у активной долготы
-                    const double tight = (cosang - 0.6) * (1.0 / 0.4);        // 0..1 к центру области
-                    const double cyc = tcl * (0.5 + 0.1 * double(k)) + double(k) * 3.7;
-                    const double frac = cyc - std::floor(cyc);                // фаза внутри цикла 0..1
-                    flareBoost += tight * tight * std::exp(-frac * 5.0);      // поджиг → спад
-                }
-                const double reach = coronaR * (1.0 + 0.28 * prom + 0.30 * flareBoost); // вспышка — дальше
-                const double den   = 1.0 / std::max(1e-6, reach - R);
-                double g = (reach - dm) * den;                        // 1 у лимба → 0 у края плюма
-                if (g < 0.0) g = 0.0; else if (g > 1.0) g = 1.0;
-                const double flare = 0.6 + 0.5 * (prom > 0.0 ? prom : 0.0) + 1.6 * flareBoost; // ярче во вспышке
-                Uint32 ia = (Uint32)(g * g * flare * 255.0); if (ia > 255u) ia = 255u;
-                if (ia) {
-                    const double fb = flareBoost > 1.0 ? 1.0 : flareBoost; // тон → бело-голубой во вспышке
-                    const Uint32 ir = (Uint32)std::min(255.0, coR + (255.0 - coR) * fb);
-                    const Uint32 ig = (Uint32)std::min(255.0, coG + (248.0 - coG) * fb);
-                    const Uint32 ib = (Uint32)std::min(255.0, coB + (235.0 - coB) * fb);
-                    row[bx] = (ia << 24) | (ir << 16) | (ig << 8) | ib;
-                }
-            }
-        }
-    }
-    SDL_UnlockTexture(tex);
-
-    const SDL_Rect src = { bx0, by0, bx1 - bx0, by1 - by0 };
-    const SDL_Rect dst = { bx0 * 2, by0 * 2, (bx1 - bx0) * 2, (by1 - by0) * 2 };
-    SDL_RenderCopy(renderer, tex, &src, &dst);
-}
 
 // ── Планеты/луны как ИЗОТРОПНЫЕ ОСВЕЩЁННЫЕ СФЕРЫ (тот же ray-sphere «шейдер») ──
 // Продолжение философии звезды на ВСЕ тела системы (playtest #4: «заполнять пространство
@@ -535,7 +349,8 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
                             double gap;                                 // деления (Кассини)
                             { const double g = (u - 0.52) / 0.055; gap  = 1.0 - 0.85 * std::exp(-g * g); }
                             { const double g = (u - 0.80) / 0.030; gap *= 1.0 - 0.55 * std::exp(-g * g); }
-                            const double bands = 0.72 + 0.28 * std::sin(rad * 0.85 + seed * 2.0);
+                            const double rfreq = 0.85 + 0.4 * std::sin(seed * 1.4);
+                            const double bands = 0.72 + 0.28 * std::sin(rad * rfreq + seed * 2.0);
                             const double dens = edge * gap * bands;     // локальная плотность частиц
                             if (dens > 0.02) {
                                 // Тень тела на кольцах (мягкая): прицельный параметр луча
@@ -612,7 +427,8 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
                                 double gap;
                                 { const double g = (u - 0.52) / 0.055; gap  = 1.0 - 0.85 * std::exp(-g * g); }
                                 { const double g = (u - 0.80) / 0.030; gap *= 1.0 - 0.55 * std::exp(-g * g); }
-                                const double bands = 0.72 + 0.28 * std::sin(rad * 0.85 + seed * 2.0);
+                                const double rfreq = 0.85 + 0.4 * std::sin(seed * 1.4);
+                                const double bands = 0.72 + 0.28 * std::sin(rad * rfreq + seed * 2.0);
                                 double occ = edge * gap * bands * 0.80;           // как ralpha (до graze)
                                 if (occ < 0.0) occ = 0.0; else if (occ > 0.85) occ = 0.85;
                                 diff *= (1.0 - occ);                              // кольца затеняют планету
@@ -624,26 +440,34 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
                 double cr = baseR, cg = baseG, cb = baseB;
                 if (kind == LB_GASGIANT) {
                     const double lat  = nx * axX + ny * axY + nz * axZ;      // [-1,1] «широта»
+                    const double f1 = 6.0 + 4.0 * std::sin(seed * 1.73);
+                    const double f2 = 14.0 + 6.0 * std::cos(seed * 2.11);
                     const double warp = 0.35 * std::sin((nx - nz) * 4.0 + drift * 2.0 + seed);
-                    const double band = std::sin(lat * 8.0 + warp + seed * 3.0);
-                    const double swirl= std::sin(lat * 17.0 - warp * 2.2 + drift * 4.0);
+                    const double band = std::sin(lat * f1 + warp + seed * 3.0);
+                    const double swirl= std::sin(lat * f2 - warp * 2.2 + drift * 4.0);
                     const double m = 0.5 + 0.5 * (0.72 * band + 0.28 * swirl);  // 0..1 пояс
-                    const double f2 = 0.74 + 0.46 * m;
-                    cr = baseR * f2; cg = baseG * f2; cb = baseB * f2;
+                    const double f3 = 0.74 + 0.46 * m;
+                    cr = baseR * f3; cg = baseG * f3; cb = baseB * f3;
                 } else if (kind == LB_ICE) {
                     const double lat = std::fabs(nx * axX + ny * axY + nz * axZ);
-                    const double sp1 = std::sin(nx * 13.0 + seed) * std::sin(ny * 11.0 - seed) *
-                                       std::sin(nz * 12.0 + seed * 2.0);
+                    const double f1 = 11.0 + 4.0 * std::sin(seed * 1.5);
+                    const double f2 = 13.0 + 4.0 * std::cos(seed * 1.9);
+                    const double sp1 = std::sin(nx * f2 + seed) * std::sin(ny * f1 - seed) *
+                                       std::sin(nz * (f1+f2)*0.5 + seed * 2.0);
                     const double alb = 1.05 + 0.12 * lat + 0.05 * sp1;      // ярче к полюсам
                     cr = baseR * alb; cg = baseG * alb; cb = std::min(255.0, baseB * alb + 8.0);
                 } else if (kind == LB_MOON) {
-                    const double sp1 = std::sin(nx * 15.0 + seed * 2.0) * std::sin(ny * 14.0 - seed) *
-                                       std::sin(nz * 16.0 + seed);
+                    const double f1 = 13.0 + 5.0 * std::sin(seed * 1.1);
+                    const double f2 = 15.0 + 5.0 * std::cos(seed * 2.2);
+                    const double sp1 = std::sin(nx * f2 + seed * 2.0) * std::sin(ny * (f1+f2)*0.5 - seed) *
+                                       std::sin(nz * f1 + seed);
                     const double mare = 0.82 + 0.18 * sp1;                  // тёмные «моря»
                     cr = baseR * mare; cg = baseG * mare; cb = baseB * mare;
                 } else {                                                    // LB_ROCKY
-                    const double sp1 = std::sin(nx * 7.0 + seed) * std::sin(ny * 8.0 - seed * 1.3);
-                    const double sp2 = std::sin((nx + ny) * 13.0 - seed) * std::sin(nz * 11.0 + seed);
+                    const double f1 = 6.0 + 3.0 * std::sin(seed * 1.3);
+                    const double f2 = 11.0 + 4.0 * std::cos(seed * 1.8);
+                    const double sp1 = std::sin(nx * f1 + seed) * std::sin(ny * (f1+2.0) - seed * 1.3);
+                    const double sp2 = std::sin((nx + ny) * f2 - seed) * std::sin(nz * (f2-2.0) + seed);
                     const double mott = 0.86 + 0.14 * sp1 + 0.06 * sp2;     // континенты/кратеры
                     cr = baseR * mott; cg = baseG * mott; cb = baseB * mott;
                 }
@@ -1293,15 +1117,10 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         }
     }
 
-    // (3) ЗВЕЗДА — ИЗОТРОПНАЯ АНАЛИТИЧЕСКАЯ СФЕРА (ray-sphere «шейдер», см. renderStarPlasma).
-    //     Тело задано ТОЛЬКО центром (0,0,0) и радиусом R; плазма — функция геометрии луча,
-    //     одинаковая со всех сторон. Никаких порогов/«переключения режима» и заглушек-заливок:
-    //     каждый пиксель, чей мировой луч попадает в сферу, показывает вещество; остальные —
-    //     космос (или корону у лимба). ray-sphere окклюзия (occ) честно прячет за ней тела.
-    if (scene.hasStar && view.perspective) {
-        renderStarPlasma(renderer, scene, view, basis, winW, winH);
-    } else if (scene.hasStar) {
-        // Орто-карта (вид сверху): звезда — простой диск + два ореола (как раньше).
+    // (3) ЗВЕЗДА — ОТРИСОВКА ПРИМИТИВАМИ
+    //     Быстрый рендер через простые круги для орто-карты и перспективы,
+    //     решает проблему лагов от софтверного рейтрейсера и квадратных краев.
+    if (scene.hasStar && !sp.behind) {
         int sr = std::min(2000, std::max(3, radiusPx(scene.starRadius, sp.depth, view)));
         double gp = 1.0 + 0.04 * std::sin(scene.fxClock * 2.0);
         fillCircle(renderer, sp.x, sp.y, sr, rgba(scene.starR, scene.starG, scene.starB, 255));

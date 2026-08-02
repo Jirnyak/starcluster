@@ -32,6 +32,14 @@ public:
     double miningRichness = 1.0;     // насыщенность руды (для ручной добычи)
     double metallicity = 0.5;        // металличность (тип руды)
     int stellarClass = 0;            // 0 обычная звезда, 1 нейтронная/пульсар
+    char spectralType = 'G';         // O, B, A, F, G, K, M, X (Neutron)
+    double temperature = 5778.0;     // K
+    double mass = 1.0;               // Solar masses
+    double radius = 1.0;             // Solar radii
+    double luminosity = 1.0;         // Solar luminosities
+    uint8_t colorR = 255;
+    uint8_t colorG = 255;
+    uint8_t colorB = 255;
     std::vector<Resource> resources; // Ресурсы в системе
     std::vector<double> demandBias; // Процедурный спрос системы по элементам
     std::vector<int> resourceFocus; // Элементы, которыми система богата

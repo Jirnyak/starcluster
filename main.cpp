@@ -5,6 +5,9 @@
 #include "local.h"
 #include "render2d.h"
 #include <SDL.h>
+#include <SDL_mixer.h>
+#include "stb_image.h"
+#include <dirent.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -20,7 +23,7 @@
 enum ActionId {
     ACT_NONE = 0,
     // Макро-режим (звёздная карта):
-    ACT_ENTER, ACT_GO, ACT_STOP, ACT_TRADE, ACT_SHIPYARD, ACT_REPAIR, ACT_HIRE, ACT_PAUSE, ACT_SPEED,
+    ACT_ENTER, ACT_GO, ACT_STOP, ACT_TRADE, ACT_SHIPFIT, ACT_SWITCH, ACT_REPAIR, ACT_HIRE, ACT_CARGO, ACT_PAUSE, ACT_SPEED, ACT_TRANSACTIONS,
     // Локальный режим (полёт):
     ACT_FIRE, ACT_MINE, ACT_DOCK, ACT_TARGET, ACT_ZOOM_IN, ACT_ZOOM_OUT, ACT_VIEW, ACT_EXIT
 };
@@ -33,39 +36,6 @@ struct ActionButton {
     int action;
 };
 
-struct InfluenceSource {
-    int x = 0;
-    int y = 0;
-    double depth = 0.0;
-    int faction = -1;
-    double weight = 1.0;
-};
-
-struct InfluenceCell {
-    SDL_Rect rect;
-    int faction = -1;
-    Uint8 alpha = 0;
-};
-
-struct InfluenceOverlayCache {
-    bool valid = false;
-    bool forceRefresh = true;
-    int w = 0;
-    int h = 0;
-    int factionCount = 0;
-    size_t starCount = 0;
-    double centerX = 0.0;
-    double centerY = 0.0;
-    double centerZ = 0.0;
-    double scale = 0.0;
-    CameraBasis basis;
-    double gameTime = -1.0e30;
-    Uint64 refreshCounter = 0;
-    std::vector<InfluenceSource> sources;
-    std::vector<double> scores;
-    std::vector<InfluenceCell> cells;
-};
-
 const double TARGET_FPS = 100.0;
 const double TARGET_FRAME_SECONDS = 1.0 / TARGET_FPS;
 const double BASE_SIM_YEARS_PER_SECOND = 1.0;
@@ -74,17 +44,7 @@ const double MAX_CAMERA_DT_SECONDS = 0.05;
 const double MAX_SIM_STEP_YEARS = 0.01;
 const double CAMERA_YAW_RADIANS_PER_SECOND = 1.8;
 const double CAMERA_PITCH_RADIANS_PER_SECOND = 1.35;
-const double INFLUENCE_OVERLAY_MIN_REFRESH_SECONDS = 0.12;
-const double INFLUENCE_OVERLAY_MAX_STALE_SECONDS = 0.35;
-const double INFLUENCE_OVERLAY_GAME_REFRESH_YEARS = 0.35;
 const char* SAVE_FILE = "starcluster.save";
-
-InfluenceOverlayCache gInfluenceOverlayCache;
-
-void invalidateInfluenceOverlayCache() {
-    gInfluenceOverlayCache.valid = false;
-    gInfluenceOverlayCache.forceRefresh = true;
-}
 
 double clampDouble(double value, double lo, double hi) {
     return std::max(lo, std::min(hi, value));
@@ -175,153 +135,6 @@ void setAgentColor(SDL_Renderer* renderer, const Agent& agent, bool selected) {
     } else {
         SDL_SetRenderDrawColor(renderer, 70, 240, 255, 255);
     }
-}
-
-bool influenceOverlayCameraDirty(const InfluenceOverlayCache& cache, const View3D& view, const CameraBasis& basis) {
-    const double dx = view.centerX - cache.centerX;
-    const double dy = view.centerY - cache.centerY;
-    const double dz = view.centerZ - cache.centerZ;
-    const double centerDirty2 = 0.35 * 0.35;
-    if (dx * dx + dy * dy + dz * dz > centerDirty2) return true;
-    if (std::abs(view.scale - cache.scale) > std::max(0.02, cache.scale * 0.012)) return true;
-    if (std::abs(basis.cy - cache.basis.cy) > 0.006) return true;
-    if (std::abs(basis.sy - cache.basis.sy) > 0.006) return true;
-    if (std::abs(basis.cp - cache.basis.cp) > 0.006) return true;
-    if (std::abs(basis.sp - cache.basis.sp) > 0.006) return true;
-    return false;
-}
-
-void drawCachedInfluenceOverlay(SDL_Renderer* renderer, const Game& game, const InfluenceOverlayCache& cache) {
-    for (size_t i = 0; i < cache.cells.size(); ++i) {
-        const InfluenceCell& cell = cache.cells[i];
-        setFactionColor(renderer, game, cell.faction, cell.alpha);
-        SDL_RenderFillRect(renderer, &cell.rect);
-    }
-}
-
-void drawInfluenceOverlay(SDL_Renderer* renderer, const Game& game, int w, int h, const View3D& view, const CameraBasis& basis) {
-    if (w <= 0 || h <= 0 || game.factions.empty()) return;
-
-    InfluenceOverlayCache& cache = gInfluenceOverlayCache;
-    const Uint64 now = SDL_GetPerformanceCounter();
-    const Uint64 frequency = SDL_GetPerformanceFrequency();
-    const double realSinceRefresh = cache.refreshCounter == 0
-        ? INFLUENCE_OVERLAY_MAX_STALE_SECONDS
-        : double(now - cache.refreshCounter) / double(frequency);
-    const bool shapeDirty =
-        !cache.valid ||
-        cache.forceRefresh ||
-        cache.w != w ||
-        cache.h != h ||
-        cache.factionCount != int(game.factions.size()) ||
-        cache.starCount != game.cluster.stars.size();
-    const bool cameraDirty = !shapeDirty && influenceOverlayCameraDirty(cache, view, basis);
-    const bool gameTimeDirty =
-        !shapeDirty &&
-        (game.time < cache.gameTime || game.time - cache.gameTime >= INFLUENCE_OVERLAY_GAME_REFRESH_YEARS);
-    const bool staleDirty = !shapeDirty && realSinceRefresh >= INFLUENCE_OVERLAY_MAX_STALE_SECONDS;
-    const bool cadenceReady = realSinceRefresh >= INFLUENCE_OVERLAY_MIN_REFRESH_SECONDS;
-    if (!shapeDirty && !(cadenceReady && (cameraDirty || gameTimeDirty || staleDirty))) {
-        drawCachedInfluenceOverlay(renderer, game, cache);
-        return;
-    }
-
-    cache.sources.clear();
-    if (cache.sources.capacity() < game.cluster.stars.size()) {
-        cache.sources.reserve(game.cluster.stars.size());
-    }
-    const int margin = std::max(160, std::max(w, h) / 4);
-    for (size_t i = 0; i < game.cluster.stars.size(); ++i) {
-        if (!game.playerKnowsOwner(int(i))) continue;
-        const int owner = game.playerKnownOwner(int(i));
-        if (owner < 0 || owner >= int(game.factions.size())) continue;
-
-        const ClusterStar& star = game.cluster.stars[i];
-        const ProjectedPoint p = projectPointWithBasis(star.x, star.y, star.z, w, h, view, basis);
-        if (p.x < -margin || p.x > w + margin || p.y < -margin || p.y > h + margin) continue;
-
-        const double age = game.playerKnownOwnerAge(int(i));
-        const double ageWeight = age < 0.0 ? 1.0 : clampDouble(1.0 - age / 80.0, 0.35, 1.0);
-
-        InfluenceSource source;
-        source.x = p.x;
-        source.y = p.y;
-        source.depth = p.depth;
-        source.faction = owner;
-        source.weight = ageWeight * depthFade(p.depth);
-        cache.sources.push_back(source);
-    }
-
-    const int cols = 32;
-    const int rows = 24;
-    const int cellW = std::max(1, (w + cols - 1) / cols);
-    const int cellH = std::max(1, (h + rows - 1) / rows);
-    const double core = std::max(64.0, std::min(w, h) / 9.0);
-    const double core2 = core * core;
-    cache.scores.resize(game.factions.size());
-    cache.cells.clear();
-    if (cache.cells.capacity() < size_t(cols * rows)) {
-        cache.cells.reserve(size_t(cols * rows));
-    }
-
-    if (!cache.sources.empty()) {
-        for (int row = 0; row < rows; ++row) {
-            const int sy = row * cellH + cellH / 2;
-            for (int col = 0; col < cols; ++col) {
-                const int sx = col * cellW + cellW / 2;
-                std::fill(cache.scores.begin(), cache.scores.end(), 0.0);
-
-                for (size_t i = 0; i < cache.sources.size(); ++i) {
-                    const InfluenceSource& source = cache.sources[i];
-                    const double dx = double(sx - source.x);
-                    const double dy = double(sy - source.y);
-                    const double dz = source.depth * view.scale * 0.35;
-                    const double influence = source.weight / (dx * dx + dy * dy + dz * dz + core2);
-                    cache.scores[source.faction] += influence;
-                }
-
-                int bestFaction = -1;
-                double best = 0.0;
-                double second = 0.0;
-                for (size_t i = 0; i < cache.scores.size(); ++i) {
-                    const double score = cache.scores[i];
-                    if (score > best) {
-                        second = best;
-                        best = score;
-                        bestFaction = int(i);
-                    } else if (score > second) {
-                        second = score;
-                    }
-                }
-                if (bestFaction < 0 || best < 0.000009) continue;
-
-                const double confidence = second > 0.0 ? clampDouble((best - second) / best, 0.0, 1.0) : 1.0;
-                InfluenceCell cell;
-                cell.rect.x = col * cellW;
-                cell.rect.y = row * cellH;
-                cell.rect.w = cellW + 1;
-                cell.rect.h = cellH + 1;
-                cell.faction = bestFaction;
-                cell.alpha = Uint8(clampDouble((11.0 + best * 260000.0) * (0.45 + confidence * 0.55), 7.0, 42.0));
-                cache.cells.push_back(cell);
-            }
-        }
-    }
-
-    cache.valid = true;
-    cache.forceRefresh = false;
-    cache.w = w;
-    cache.h = h;
-    cache.factionCount = int(game.factions.size());
-    cache.starCount = game.cluster.stars.size();
-    cache.centerX = view.centerX;
-    cache.centerY = view.centerY;
-    cache.centerZ = view.centerZ;
-    cache.scale = view.scale;
-    cache.basis = basis;
-    cache.gameTime = game.time;
-    cache.refreshCounter = now;
-    drawCachedInfluenceOverlay(renderer, game, cache);
 }
 
 int strongestShortage(const Market& market) {
@@ -428,16 +241,34 @@ void drawRouteLine(SDL_Renderer* renderer, const Game& game, const Agent& agent,
 }
 
 void drawStarGlyph(SDL_Renderer* renderer, int x, int y, int size, Uint8 r, Uint8 g, Uint8 b, Uint8 alpha) {
-    SDL_SetRenderDrawColor(renderer, r, g, b, alpha);
-    SDL_Rect core = {x - size / 2, y - size / 2, size, size};
-    SDL_RenderFillRect(renderer, &core);
-
-    if (size >= 3) {
-        SDL_SetRenderDrawColor(renderer, r, g, b, Uint8(alpha / 2));
-        SDL_RenderDrawPoint(renderer, x - size, y);
-        SDL_RenderDrawPoint(renderer, x + size, y);
-        SDL_RenderDrawPoint(renderer, x, y - size);
-        SDL_RenderDrawPoint(renderer, x, y + size);
+    if (size <= 4) {
+        SDL_SetRenderDrawColor(renderer, r, g, b, alpha);
+        SDL_Rect core = {x - size / 2, y - size / 2, size, size};
+        SDL_RenderFillRect(renderer, &core);
+        if (size >= 3) {
+            SDL_SetRenderDrawColor(renderer, r, g, b, Uint8(alpha / 2));
+            SDL_RenderDrawPoint(renderer, x - size, y);
+            SDL_RenderDrawPoint(renderer, x + size, y);
+            SDL_RenderDrawPoint(renderer, x, y - size);
+            SDL_RenderDrawPoint(renderer, x, y + size);
+        }
+    } else {
+        // Natural halo (drawn first so core overlays it)
+        if (size >= 8) {
+            SDL_SetRenderDrawColor(renderer, r, g, b, Uint8(alpha / 3));
+            int haloRadius = size;
+            for (int dy = -haloRadius; dy <= haloRadius; ++dy) {
+                int dx = std::round(std::sqrt(std::max(0, haloRadius * haloRadius - dy * dy)));
+                SDL_RenderDrawLine(renderer, x - dx, y + dy, x + dx, y + dy);
+            }
+        }
+        // Solid core
+        SDL_SetRenderDrawColor(renderer, r, g, b, alpha);
+        int radius = size / 2;
+        for (int dy = -radius; dy <= radius; ++dy) {
+            int dx = std::round(std::sqrt(std::max(0, radius * radius - dy * dy)));
+            SDL_RenderDrawLine(renderer, x - dx, y + dy, x + dx, y + dy);
+        }
     }
 }
 
@@ -491,7 +322,7 @@ int main(int argc, char** argv) {
     const char* smokeEnv = std::getenv("STARCLUSTER_SMOKE");
     if (smokeEnv && std::strcmp(smokeEnv, "0") != 0) smoke = true;
 
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         std::cerr << "SDL_Init failed: " << SDL_GetError() << "\n";
         return 1;
     }
@@ -516,9 +347,49 @@ int main(int argc, char** argv) {
         return 1;
     }
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    
+    SDL_Texture* timertiaTex = nullptr;
+    int timertiaW, timertiaH, timertiaChannels;
+    unsigned char* timertiaData = stbi_load("timertia.png", &timertiaW, &timertiaH, &timertiaChannels, 4);
+    if (timertiaData) {
+        SDL_Surface* surface = SDL_CreateRGBSurfaceFrom((void*)timertiaData, timertiaW, timertiaH, 32, timertiaW * 4,
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+                                                        0xff000000, 0x00ff0000, 0x0000ff00, 0x000000ff
+#else
+                                                        0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000
+#endif
+                                                       );
+        if (surface) {
+            timertiaTex = SDL_CreateTextureFromSurface(renderer, surface);
+            SDL_FreeSurface(surface);
+        }
+        stbi_image_free(timertiaData);
+    } else {
+        std::cerr << "Failed to load timertia.png: " << stbi_failure_reason() << "\n";
+    }
 
     Game game;
     game.init(STAR_COUNT);
+
+    std::vector<Mix_Music*> playlist;
+    if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 2048) < 0) {
+        std::cerr << "SDL_mixer could not initialize! Error: " << Mix_GetError() << "\n";
+    } else {
+        DIR* dir = opendir("music/processed");
+        if (dir) {
+            struct dirent* ent;
+            while ((ent = readdir(dir)) != NULL) {
+                std::string filename = ent->d_name;
+                if (filename.length() > 4 && filename.substr(filename.length() - 4) == ".mp3") {
+                    Mix_Music* music = Mix_LoadMUS(("music/processed/" + filename).c_str());
+                    if (music) {
+                        playlist.push_back(music);
+                    }
+                }
+            }
+            closedir(dir);
+        }
+    }
 
     bool quit = false;
     bool paused = false;
@@ -536,10 +407,9 @@ int main(int argc, char** argv) {
     int selectedElement = elementIndex("Fe");
     if (selectedElement < 0) selectedElement = 0;
     bool followAgent = selectedAgent >= 0;
-    bool showInfluenceOverlay = false;
     double simSpeed = 1.0;
     UI::WindowState ui;
-    if (selectedStar >= 0) UI::openSystemWindow(ui, selectedStar, winW, winH);
+    ui.vnState.active = true; // Start introductory tutorial
 
     // --- Локальный режим полёта ("микромир") ---
     LocalScene localScene;
@@ -583,6 +453,16 @@ int main(int argc, char** argv) {
         int d = playerDocked();
         return d >= 0 ? d : selectedStar; // может быть -1, если ничего не выбрано
     };
+    auto localAnchorStar = [&]() -> int {
+        if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
+            if (!game.agents[game.playerAgent].ship.enRoute) {
+                return game.agents[game.playerAgent].currentStar;
+            } else {
+                return -1; // В полёте переходим в пустоту
+            }
+        }
+        return selectedStar >= 0 ? selectedStar : -1;
+    };
 
     auto buildBar = [&](std::vector<ActionButton>& out) {
         out.clear();
@@ -613,14 +493,17 @@ int main(int argc, char** argv) {
                 hullHurt = ps.hullHP < ps.maxHullHP - 0.5;
             }
             char spd[16]; std::snprintf(spd, sizeof(spd), "SPD X%d", int(simSpeed));
-            specs.push_back(Spec{ACT_ENTER, "L ENTER", UI::P.cyan, anchorStar() >= 0, false});
+            specs.push_back(Spec{ACT_ENTER, "L ENTER", UI::P.cyan, true, false});
             specs.push_back(Spec{ACT_GO, "G GO", UI::P.green,
                                  selectedStar >= 0 && game.playerAgent >= 0 && !enRoute, false});
             specs.push_back(Spec{ACT_STOP, "X STOP", UI::P.amber, enRoute, false});
             specs.push_back(Spec{ACT_TRADE, "T TRADE", UI::P.cyan, anchorStar() >= 0, false});
-            specs.push_back(Spec{ACT_SHIPYARD, "U YARD", UI::P.cyan, anchorStar() >= 0, false});
+            specs.push_back(Spec{ACT_SHIPFIT, "U FIT", UI::P.cyan, game.playerAgent >= 0, false});
+            specs.push_back(Spec{ACT_SWITCH, "W SWITCH", UI::P.amber, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_REPAIR, "J REPAIR", UI::P.green, docked && hullHurt, false});
             specs.push_back(Spec{ACT_HIRE, "H HIRE", UI::P.green, docked, false});
+            specs.push_back(Spec{ACT_CARGO, "O CARGO", UI::P.cyan, game.playerAgent >= 0, false});
+            specs.push_back(Spec{ACT_TRANSACTIONS, "I LOG", UI::P.cyan, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_PAUSE, paused ? "|| PAUSE" : "> PLAY", UI::P.amber, true, paused});
             specs.push_back(Spec{ACT_SPEED, spd, UI::P.dim, true, false});
         }
@@ -646,14 +529,27 @@ int main(int argc, char** argv) {
     };
 
     auto drawBar = [&](const std::vector<ActionButton>& bar) {
+        int mx = 0, my = 0;
+        Uint32 mstate = SDL_GetMouseState(&mx, &my);
         for (size_t i = 0; i < bar.size(); ++i) {
             const ActionButton& b = bar[i];
-            const SDL_Color fill = b.on
+            bool hovered = b.enabled && (mx >= b.rect.x && mx < b.rect.x + b.rect.w && my >= b.rect.y && my < b.rect.y + b.rect.h);
+            bool pressed = hovered && (mstate & SDL_BUTTON(SDL_BUTTON_LEFT));
+
+            SDL_Color fill = b.on
                 ? SDL_Color{ Uint8(b.color.r / 3 + 10), Uint8(b.color.g / 3 + 10), Uint8(b.color.b / 3 + 14), 235 }
                 : (b.enabled ? SDL_Color{ 16, 22, 38, 235 } : SDL_Color{ 12, 16, 26, 200 });
+            SDL_Color txt = b.enabled ? (b.on ? UI::P.text : b.color) : SDL_Color{ 86, 98, 118, 255 };
+
+            if (pressed) {
+                fill = b.color;
+                txt = { 12, 16, 26, 255 };
+            } else if (hovered) {
+                fill = SDL_Color{ Uint8(b.color.r / 3 + 16), Uint8(b.color.g / 3 + 22), Uint8(b.color.b / 3 + 38), 235 };
+            }
+
             UI::fillRect(renderer, b.rect.x, b.rect.y, b.rect.w, b.rect.h, fill);
             UI::strokeRect(renderer, b.rect.x, b.rect.y, b.rect.w, b.rect.h, b.enabled ? b.color : UI::P.dim);
-            const SDL_Color txt = b.enabled ? (b.on ? UI::P.text : b.color) : SDL_Color{ 86, 98, 118, 255 };
             const int lw = int(b.label.size()) * 6;
             UI::drawText(renderer, b.rect.x + (b.rect.w - lw) / 2, b.rect.y + (b.rect.h - 7) / 2, b.label, txt, 1);
         }
@@ -662,7 +558,7 @@ int main(int argc, char** argv) {
     auto dispatch = [&](int action) {
         switch (action) {
             case ACT_ENTER: {
-                buildLocalScene(game, anchorStar(), localScene);
+                buildLocalScene(game, localAnchorStar(), localScene);
                 localScene.active = true;
                 game.lastEvent = "entered local flight";
                 titleTick = 11;
@@ -679,9 +575,35 @@ int main(int argc, char** argv) {
                 int a = anchorStar();
                 if (a >= 0) { selectedStar = a; UI::openTradeWindow(ui, a, winW, winH); }
             } break;
-            case ACT_SHIPYARD: {
+            case ACT_CARGO: {
+                UI::openCargoWindow(ui, anchorStar(), winW, winH);
+                break;
+            }
+            case ACT_TRANSACTIONS: {
+                UI::openTransactionsWindow(ui, winW, winH);
+                break;
+            }
+            case ACT_SHIPFIT: {
                 int a = anchorStar();
-                if (a >= 0) { selectedStar = a; UI::openShipyardWindow(ui, a, std::max(20, winW / 2 - 235), 40); }
+                if (a >= 0) { selectedStar = a; UI::openShipFitWindow(ui, a, winW, winH); }
+            } break;
+            case ACT_SWITCH: {
+                if (game.playerAgent >= 0) {
+                    int nextAgent = game.playerAgent;
+                    for (size_t i = 1; i <= game.agents.size(); ++i) {
+                        int index = (game.playerAgent + i) % game.agents.size();
+                        if (game.agents[index].playerControlled && game.agents[index].ship.ownerFaction == game.playerFaction) {
+                            nextAgent = index;
+                            break;
+                        }
+                    }
+                    if (nextAgent != game.playerAgent) {
+                        game.playerAgent = nextAgent;
+                        selectedAgent = nextAgent;
+                        selectedStar = game.agents[nextAgent].ship.enRoute ? game.agents[nextAgent].destStar : game.agents[nextAgent].currentStar;
+                        followAgent = true;
+                    }
+                }
             } break;
             case ACT_REPAIR:
                 if (game.playerRepairHull()) { selectedAgent = game.playerAgent; titleTick = 11; }
@@ -718,6 +640,10 @@ int main(int argc, char** argv) {
         lastCounter = frameStart;
         realDt = std::min(realDt, MAX_REAL_DT_SECONDS);
 
+        if (!playlist.empty() && !Mix_PlayingMusic()) {
+            int idx = randomer(rng, int(playlist.size()) - 1);
+            Mix_PlayMusic(playlist[idx], 1);
+        }
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) quit = true;
             if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
@@ -731,6 +657,47 @@ int main(int argc, char** argv) {
                     followAgent = false;
                 }
             }
+            
+            // Intercept clicks if tariff is pending
+            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT && game.pendingTariff) {
+                int boxW = 500;
+                int boxH = 150;
+                int boxX = (winW - boxW) / 2;
+                int boxY = (winH - boxH) / 2;
+                int btnY = boxY + boxH - 40;
+                
+                int payX = boxX + 40;
+                int payW = 150;
+                int refuseX = boxX + boxW - 150 - 40;
+                int refuseW = 150;
+                
+                if (e.button.y >= btnY && e.button.y <= btnY + 24) {
+                    if (e.button.x >= payX && e.button.x <= payX + payW) {
+                        if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
+                            Agent& pa = game.agents[game.playerAgent];
+                            if (pa.money >= game.tariffFee) {
+                                pa.money -= game.tariffFee;
+                                game.pendingTariff = false;
+                                game.lastEvent = "paid system access fee";
+                                game.pushNews("Paid system access fee.", 1);
+                            } else {
+                                game.pushNews("Not enough credits to pay tariff!", 0);
+                            }
+                        }
+                    } else if (e.button.x >= refuseX && e.button.x <= refuseX + refuseW) {
+                        game.pendingTariff = false;
+                        game.lastEvent = "refused tariff — hostile encounter!";
+                        game.pushNews("Tariff refused! Hostile intercept!", 3);
+                        if (game.tariffFaction >= 0) {
+                            game.adjustFactionRelation(game.playerFaction, game.tariffFaction, -30);
+                        }
+                        localScene.active = true;
+                        // Forcing local hostiles: just rely on the relation drop and existing local combat.
+                    }
+                }
+                continue; // Block all other UI interactions
+            }
+
             if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
                 UI::handleMouseUp(ui);
                 localFireHeld = false;   // отпустили гашетку
@@ -769,7 +736,7 @@ int main(int argc, char** argv) {
                     }
                     if (act != ACT_NONE) {
                         dispatch(act);
-                    } else if (!hitBtn && !localScene.active) {
+                    } else if (!hitBtn && (!localScene.active || localMapMode)) {
                         const int star = nearestStar(game, e.button.x, e.button.y, winW, winH, view);
                         const int agent = nearestAgent(game, e.button.x, e.button.y, winW, winH, view);
                         if (agent >= 0) {
@@ -796,20 +763,26 @@ int main(int argc, char** argv) {
                 selectedAgent = clickSelection.agent;
                 selectedElement = clickSelection.element;
                 followAgent = clickSelection.followAgent;
-                if (!handled) {
+                if (!handled && (!localScene.active || localMapMode)) {
                     const int star = nearestStar(game, e.button.x, e.button.y, winW, winH, view);
-                    if (star >= 0 && game.commandAgentToStar(game.playerAgent, star)) {
+                    if (star >= 0) {
                         selectedStar = star;
-                        selectedAgent = game.playerAgent;
-                        followAgent = true;
                         UI::openSystemWindow(ui, selectedStar, winW, winH);
+                        bool success = game.commandAgentToStar(game.playerAgent, star);
+                        printf("DEBUG MOUSE: Right-click GO. Target star: %d. Success: %s\n", star, success ? "true" : "false");
+                        if (!success) {
+                            printf("DEBUG MOUSE: Reason: %s\n", game.lastEvent.c_str());
+                        } else {
+                            selectedAgent = game.playerAgent;
+                            followAgent = true;
+                        }
                     }
                 }
             }
             if (e.type == SDL_MOUSEWHEEL) {
                 if (e.wheel.y > 0) view.scale *= 1.15;
                 if (e.wheel.y < 0) view.scale /= 1.15;
-                view.scale = clampDouble(view.scale, 1.4, 42.0);
+                view.scale = clampDouble(view.scale, 1.4, 300.0);
             }
             if (e.type == SDL_TEXTINPUT) {
                 UI::handleTextInput(ui, e.text.text);
@@ -826,26 +799,24 @@ int main(int argc, char** argv) {
                     game.lastEvent = loaded ? "loaded starcluster.save" : "load failed";
                     if (loaded) {
                         resetSelectionAfterLoad(game, view, ui, winW, winH, selectedStar, selectedAgent, followAgent);
-                        invalidateInfluenceOverlayCache();
                     }
                     titleTick = 11;
                     continue;
                 }
                 if (UI::handleKeyDown(ui, e.key.keysym.sym)) continue;
+                
+                if (e.key.keysym.sym == SDLK_v) {
+                    ui.vnState.active = !ui.vnState.active;
+                    continue;
+                }
+                
                 // L — вход/выход из локального режима полёта (работает в обоих режимах)
                 if (e.key.keysym.sym == SDLK_l) {
                     if (localScene.active) {
                         localScene.active = false;
                         game.lastEvent = "exited local flight";
                     } else {
-                        int anchor = -1;
-                        if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()) &&
-                            !game.agents[game.playerAgent].ship.enRoute) {
-                            anchor = game.agents[game.playerAgent].currentStar;
-                        } else if (selectedStar >= 0) {
-                            anchor = selectedStar;
-                        }
-                        buildLocalScene(game, anchor, localScene);
+                        buildLocalScene(game, localAnchorStar(), localScene);
                         localScene.active = true;
                         game.lastEvent = "entered local flight";
                     }
@@ -883,16 +854,16 @@ int main(int argc, char** argv) {
                 if (e.key.keysym.sym == SDLK_r && selectedAgent >= 0 && selectedAgent != game.playerAgent) {
                     if (game.robAgent(game.playerAgent, selectedAgent)) followAgent = true;
                 }
-                if (e.key.keysym.sym == SDLK_i) {
-                    showInfluenceOverlay = !showInfluenceOverlay;
-                    invalidateInfluenceOverlayCache();
-                    titleTick = 11;
-                }
-                if (e.key.keysym.sym == SDLK_RETURN && game.playerAgent >= 0) {
-                    selectedStar = game.agents[game.playerAgent].currentStar;
-                    if (selectedStar >= 0) {
-                        followAgent = false;
-                        UI::openSystemWindow(ui, selectedStar, winW, winH);
+                if (e.key.keysym.sym == SDLK_RETURN) {
+                    if (UI::advanceVisualNovel(ui, game, winW, winH)) {
+                        continue;
+                    }
+                    if (game.playerAgent >= 0) {
+                        selectedStar = game.agents[game.playerAgent].currentStar;
+                        if (selectedStar >= 0) {
+                            followAgent = false;
+                            UI::openSystemWindow(ui, selectedStar, winW, winH);
+                        }
                     }
                 }
                 if (e.key.keysym.sym == SDLK_p && game.playerAgent >= 0) {
@@ -945,6 +916,9 @@ int main(int argc, char** argv) {
                         selectedStar = syStar;
                         UI::openShipyardWindow(ui, syStar, std::max(20, winW / 2 - 235), 40);
                     }
+                }
+                if (e.key.keysym.sym == SDLK_i) {
+                    dispatch(ACT_TRANSACTIONS);
                 }
                 if (e.key.keysym.sym == SDLK_LEFT) {
                     panView(view, -18.0, 0.0);
@@ -1031,24 +1005,24 @@ int main(int argc, char** argv) {
             // помощником buildLocalCamera (тот же код, что и в скриншот-харнесе).
             if (localScene.playerDestroyed) {
                 // Корпус разрушен в микромире — аварийный прыжок (не терминально):
-                // корабль восстанавливается частично, штраф за спасение/ремонт.
+                // корабль деградирует в спасательную капсулу (потеря груза).
                 localScene.active = false;
                 if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
-                    Ship& ps = game.agents[game.playerAgent].ship;
-                    ps.hullHP = std::max(1.0, ps.maxHullHP * 0.30);
-                    double& m = game.agents[game.playerAgent].money;
-                    m -= m * 0.20;
-                    if (m < 0.0) m = 0.0;
+                    Agent& pa = game.agents[game.playerAgent];
+                    extern void downgradeAgentToEscapePod(Agent&);
+                    downgradeAgentToEscapePod(pa);
+                    pa.ship.hullHP = pa.ship.maxHullHP; // escape pod is intact
                 }
-                game.lastEvent = "hull destroyed — emergency jump";
-                game.pushNews("Emergency jump: hull rebuilt at cost of credits", 3);
+                game.lastEvent = "ship destroyed — using escape pod";
+                game.pushNews("Ship destroyed! Cargo lost, using escape pod.", 3);
+
             } else if (dockStar >= 0) {
                 localScene.active = false;
                 selectedStar = dockStar;
                 UI::openTradeWindow(ui, dockStar, winW, winH);
                 game.lastEvent = "docked — market open";
             }
-        } else if (!paused) {
+        } else if (!paused && !game.pendingTariff) {
             advanceGame(game, realDt * simYearsPerSecond);
         }
         localMineEdge = localDockEdge = localTargetEdge = localFireClick = false;
@@ -1084,9 +1058,6 @@ int main(int argc, char** argv) {
             continue;
         }
         const CameraBasis cameraBasis = makeCameraBasis(view);
-        if (showInfluenceOverlay) {
-            drawInfluenceOverlay(renderer, game, winW, winH, view, cameraBasis);
-        }
 
         for (size_t i = 0; i < game.agents.size(); ++i) {
             const Agent& agent = game.agents[i];
@@ -1114,25 +1085,51 @@ int main(int argc, char** argv) {
             const int sy = p.y;
             if (sx < -4 || sx > winW + 4 || sy < -4 || sy > winH + 4) continue;
 
+            if (view.scale > 100.0) {
+                double dx = s.x - view.centerX;
+                double dy = s.y - view.centerY;
+                double dz = s.z - view.centerZ;
+                if (dx * dx + dy * dy + dz * dz > 225.0) continue;
+            }
+
             const bool ownerKnown = game.playerKnowsOwner(int(i));
             const int knownOwner = game.playerKnownOwner(int(i));
             const bool liveInfo = game.playerAtStar(int(i));
+            const int baseSize = liveInfo ? 2 + (s.industry > 1.7 ? 1 : 0) + (ownerKnown && knownOwner >= 0 ? 1 : 0) : (ownerKnown ? 3 : 2);
+            int size = baseSize;
+            if (view.scale > 100.0) {
+                double zoomFactor = (view.scale - 100.0) / 25.0 * (1.0 + 0.4 * std::sqrt(s.radius));
+                size = std::min(60, int(baseSize * (1.0 + zoomFactor)));
+            }
+
             if (ownerKnown) {
                 setFactionColor(renderer, game, knownOwner, liveInfo ? 170 : 75);
-                const int ring = liveInfo && s.defense > 5.0 ? 6 : 5;
+                int ring = (view.scale > 100.0) ? (size * 2 + (liveInfo && s.defense > 5.0 ? 12 : 8)) : (liveInfo && s.defense > 5.0 ? 6 : 5);
                 SDL_Rect halo = {sx - ring / 2, sy - ring / 2, ring, ring};
                 SDL_RenderDrawRect(renderer, &halo);
             }
 
-            const int size = liveInfo ? 2 + (s.industry > 1.7 ? 1 : 0) + (ownerKnown && knownOwner >= 0 ? 1 : 0) : (ownerKnown ? 3 : 2);
-            Uint8 r = 92;
-            Uint8 g = 112;
-            Uint8 b = 136;
-            if (liveInfo) {
-                marketColor(game.markets[i], selectedElement, r, g, b);
-            } else if (ownerKnown) {
-                factionColor(game, knownOwner, r, g, b);
+            Uint8 r = s.colorR;
+            Uint8 g = s.colorG;
+            Uint8 b = s.colorB;
+            
+            if (view.scale <= 100.0) {
+                if (liveInfo) {
+                    marketColor(game.markets[i], selectedElement, r, g, b);
+                } else if (ownerKnown) {
+                    factionColor(game, knownOwner, r, g, b);
+                }
+            } else {
+                if (selectedElement >= 0 && liveInfo) {
+                    Uint8 mr, mg, mb;
+                    marketColor(game.markets[i], selectedElement, mr, mg, mb);
+                    SDL_SetRenderDrawColor(renderer, mr, mg, mb, 200);
+                    int mRing = size * 2 + 20;
+                    SDL_Rect mRect = {sx - mRing / 2, sy - mRing / 2, mRing, mRing};
+                    SDL_RenderDrawRect(renderer, &mRect);
+                }
             }
+            
             const double pulse = 0.62 + 0.38 * std::sin(game.time * (liveInfo ? (2.2 + s.habitability) : 2.2) + double(i) * 1.618);
             const double fade = depthFade(p.depth);
             const Uint8 alpha = liveInfo ? Uint8((170.0 + 85.0 * pulse) * fade) : (ownerKnown ? Uint8((95.0 + 85.0 * pulse) * fade) : Uint8((55.0 + 55.0 * pulse) * fade));
@@ -1192,7 +1189,6 @@ int main(int argc, char** argv) {
         if (++titleTick % 12 == 0) {
             char title[1024];
             const ElementDefinition& element = elementDefinitions()[selectedElement];
-            const char* influenceMode = showInfluenceOverlay ? "inf on" : "inf off";
             const char* cargo = "empty";
             double speed = 0.0;
             double money = 0.0;
@@ -1258,8 +1254,8 @@ int main(int argc, char** argv) {
                     const int shortage = strongestShortage(market);
                     const int surplus = strongestSurplus(market);
                     std::snprintf(title, sizeof(title),
-                        "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s %s | factions %zu colonies %zu captures %d | %s owner %s %s pop %.0f ind %.2f hab %.2f def %.1f | %s price %.1f supply %.1f demand %.1f | shortage %s x%.1f surplus %s x%.1f | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s cr %.0f tr %d last %.0f %s | F5 save F9 load H hire/build C colony/reinforce | %s%s",
-                        coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, influenceMode, game.factions.size(), game.colonies.size(), game.capturedSystems,
+                        "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s | factions %zu colonies %zu captures %d | %s owner %s %s pop %.0f ind %.2f hab %.2f def %.1f | %s price %.1f supply %.1f demand %.1f | shortage %s x%.1f surplus %s x%.1f | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s cr %.0f tr %d last %.0f %s | F5 save F9 load H hire/build C colony/reinforce | %s%s",
+                        coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, game.factions.size(), game.colonies.size(), game.capturedSystems,
                         star.name.c_str(), ownerName.c_str(), star.economyRole.c_str(), star.population, star.industry, star.habitability, star.defense,
                         element.symbol, market.prices[selectedElement], market.supply[selectedElement].amount, market.demand[selectedElement].amount,
                         elementDefinitions()[shortage].symbol, marketPressureForElement(market, shortage),
@@ -1279,15 +1275,15 @@ int main(int argc, char** argv) {
                         marketLine = market;
                     }
                     std::snprintf(title, sizeof(title),
-                        "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s %s | factions %zu colonies %zu captures %d | %s owner %s | %s | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s cr %.0f tr %d last %.0f %s | F5 save F9 load H hire/build C colony/reinforce | %s%s",
-                        coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, influenceMode, game.factions.size(), game.colonies.size(), game.capturedSystems,
+                        "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s | factions %zu colonies %zu captures %d | %s owner %s | %s | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s cr %.0f tr %d last %.0f %s | F5 save F9 load H hire/build C colony/reinforce | %s%s",
+                        coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, game.factions.size(), game.colonies.size(), game.capturedSystems,
                         star.name.c_str(), ownerName.c_str(), marketLine.c_str(),
                         shipName, agentType.c_str(), agentOwner.c_str(), targetName.c_str(), speed, fuel, mass, cargo, money, trades, profit, action.c_str(),
                         game.lastEvent.c_str(), followAgent ? " follow" : "");
                 }
             } else {
-                std::snprintf(title, sizeof(title), "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s %s | factions %zu colonies %zu founded %d captures %d | traders %d military %d colonists %d | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s money %.0f | F5 save F9 load RMB/G route B buy S sell T auto H hire/build C colony/reinforce | %s%s",
-                    coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, influenceMode, game.factions.size(), game.colonies.size(), game.foundedColonies, game.capturedSystems,
+                std::snprintf(title, sizeof(title), "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s | factions %zu colonies %zu founded %d captures %d | traders %d military %d colonists %d | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s money %.0f | F5 save F9 load RMB/G route B buy S sell T auto H hire/build C colony/reinforce | %s%s",
+                    coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, game.factions.size(), game.colonies.size(), game.foundedColonies, game.capturedSystems,
                     countAgentsOfType(game, "trader"), countAgentsOfType(game, "military"), countAgentsOfType(game, "colonist"),
                     shipName, agentType.c_str(), agentOwner.c_str(), targetName.c_str(), speed, fuel, mass, cargo, money, game.lastEvent.c_str(), followAgent ? " follow" : "");
             }
@@ -1302,9 +1298,13 @@ int main(int argc, char** argv) {
         hud.followAgent = followAgent;
         hud.simSpeed = simSpeed;
         hud.simYearsPerSecond = simYearsPerSecond;
+        UI::updateVisualNovel(ui, game, realDt, winW, winH);
         UI::drawHud(renderer, game, winW, winH, hud);
         UI::drawWindows(renderer, game, winW, winH, hud, ui);
         { std::vector<ActionButton> bar; buildBar(bar); drawBar(bar); }
+        
+        UI::drawVisualNovel(renderer, ui, winW, winH, timertiaTex);
+        UI::drawTariffModal(renderer, game, winW, winH);
 
         SDL_RenderPresent(renderer);
         if (smoke && ++frames >= 12) quit = true;
@@ -1317,6 +1317,12 @@ int main(int argc, char** argv) {
         }
     }
 
+    for (Mix_Music* m : playlist) {
+        Mix_FreeMusic(m);
+    }
+    Mix_CloseAudio();
+
+    if (timertiaTex) SDL_DestroyTexture(timertiaTex);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
