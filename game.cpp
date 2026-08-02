@@ -2631,7 +2631,8 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 6 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 7 " << cluster.stars.size() << '\n';
+    out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
         << nextContractId << ' ' << playerAgent << ' ' << playerFaction << ' '
@@ -2864,12 +2865,19 @@ bool Game::loadFromFile(const std::string& path) {
     std::string tag;
     int version = 0;
     size_t starCount = 0;
-    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 6) {
+    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version < 6 || version > 7) {
         lastEvent = "load failed: version";
         return false;
     }
 
     Game loaded;
+    loaded.seed = 42;
+    if (version >= 7) {
+        if (!expectTag(in, "SEED") || !(in >> loaded.seed)) {
+            lastEvent = "load failed: seed";
+            return false;
+        }
+    }
     loaded.cluster.generate(starCount);
     loaded.markets.assign(starCount, Market());
     loaded.playerKnowledge.assign(starCount, PlayerStarKnowledge());
@@ -3532,6 +3540,7 @@ int Game::routeNextStar(int originStar, int targetStar) const {
 
 void Game::init(size_t num_stars) {
     time = 0.0;
+    seed = rng();
     cluster.generate(num_stars);
     markets.clear();
     markets.resize(num_stars);

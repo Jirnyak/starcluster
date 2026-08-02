@@ -345,7 +345,8 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
                             double gap;                                 // деления (Кассини)
                             { const double g = (u - 0.52) / 0.055; gap  = 1.0 - 0.85 * std::exp(-g * g); }
                             { const double g = (u - 0.80) / 0.030; gap *= 1.0 - 0.55 * std::exp(-g * g); }
-                            const double bands = 0.72 + 0.28 * std::sin(rad * 0.85 + seed * 2.0);
+                            const double rfreq = 0.85 + 0.4 * std::sin(seed * 1.4);
+                            const double bands = 0.72 + 0.28 * std::sin(rad * rfreq + seed * 2.0);
                             const double dens = edge * gap * bands;     // локальная плотность частиц
                             if (dens > 0.02) {
                                 // Тень тела на кольцах (мягкая): прицельный параметр луча
@@ -422,7 +423,8 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
                                 double gap;
                                 { const double g = (u - 0.52) / 0.055; gap  = 1.0 - 0.85 * std::exp(-g * g); }
                                 { const double g = (u - 0.80) / 0.030; gap *= 1.0 - 0.55 * std::exp(-g * g); }
-                                const double bands = 0.72 + 0.28 * std::sin(rad * 0.85 + seed * 2.0);
+                                const double rfreq = 0.85 + 0.4 * std::sin(seed * 1.4);
+                                const double bands = 0.72 + 0.28 * std::sin(rad * rfreq + seed * 2.0);
                                 double occ = edge * gap * bands * 0.80;           // как ralpha (до graze)
                                 if (occ < 0.0) occ = 0.0; else if (occ > 0.85) occ = 0.85;
                                 diff *= (1.0 - occ);                              // кольца затеняют планету
@@ -434,26 +436,34 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
                 double cr = baseR, cg = baseG, cb = baseB;
                 if (kind == LB_GASGIANT) {
                     const double lat  = nx * axX + ny * axY + nz * axZ;      // [-1,1] «широта»
+                    const double f1 = 6.0 + 4.0 * std::sin(seed * 1.73);
+                    const double f2 = 14.0 + 6.0 * std::cos(seed * 2.11);
                     const double warp = 0.35 * std::sin((nx - nz) * 4.0 + drift * 2.0 + seed);
-                    const double band = std::sin(lat * 8.0 + warp + seed * 3.0);
-                    const double swirl= std::sin(lat * 17.0 - warp * 2.2 + drift * 4.0);
+                    const double band = std::sin(lat * f1 + warp + seed * 3.0);
+                    const double swirl= std::sin(lat * f2 - warp * 2.2 + drift * 4.0);
                     const double m = 0.5 + 0.5 * (0.72 * band + 0.28 * swirl);  // 0..1 пояс
-                    const double f2 = 0.74 + 0.46 * m;
-                    cr = baseR * f2; cg = baseG * f2; cb = baseB * f2;
+                    const double f3 = 0.74 + 0.46 * m;
+                    cr = baseR * f3; cg = baseG * f3; cb = baseB * f3;
                 } else if (kind == LB_ICE) {
                     const double lat = std::fabs(nx * axX + ny * axY + nz * axZ);
-                    const double sp1 = std::sin(nx * 13.0 + seed) * std::sin(ny * 11.0 - seed) *
-                                       std::sin(nz * 12.0 + seed * 2.0);
+                    const double f1 = 11.0 + 4.0 * std::sin(seed * 1.5);
+                    const double f2 = 13.0 + 4.0 * std::cos(seed * 1.9);
+                    const double sp1 = std::sin(nx * f2 + seed) * std::sin(ny * f1 - seed) *
+                                       std::sin(nz * (f1+f2)*0.5 + seed * 2.0);
                     const double alb = 1.05 + 0.12 * lat + 0.05 * sp1;      // ярче к полюсам
                     cr = baseR * alb; cg = baseG * alb; cb = std::min(255.0, baseB * alb + 8.0);
                 } else if (kind == LB_MOON) {
-                    const double sp1 = std::sin(nx * 15.0 + seed * 2.0) * std::sin(ny * 14.0 - seed) *
-                                       std::sin(nz * 16.0 + seed);
+                    const double f1 = 13.0 + 5.0 * std::sin(seed * 1.1);
+                    const double f2 = 15.0 + 5.0 * std::cos(seed * 2.2);
+                    const double sp1 = std::sin(nx * f2 + seed * 2.0) * std::sin(ny * (f1+f2)*0.5 - seed) *
+                                       std::sin(nz * f1 + seed);
                     const double mare = 0.82 + 0.18 * sp1;                  // тёмные «моря»
                     cr = baseR * mare; cg = baseG * mare; cb = baseB * mare;
                 } else {                                                    // LB_ROCKY
-                    const double sp1 = std::sin(nx * 7.0 + seed) * std::sin(ny * 8.0 - seed * 1.3);
-                    const double sp2 = std::sin((nx + ny) * 13.0 - seed) * std::sin(nz * 11.0 + seed);
+                    const double f1 = 6.0 + 3.0 * std::sin(seed * 1.3);
+                    const double f2 = 11.0 + 4.0 * std::cos(seed * 1.8);
+                    const double sp1 = std::sin(nx * f1 + seed) * std::sin(ny * (f1+2.0) - seed * 1.3);
+                    const double sp2 = std::sin((nx + ny) * f2 - seed) * std::sin(nz * (f2-2.0) + seed);
                     const double mott = 0.86 + 0.14 * sp1 + 0.06 * sp2;     // континенты/кратеры
                     cr = baseR * mott; cg = baseG * mott; cb = baseB * mott;
                 }

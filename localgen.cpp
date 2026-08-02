@@ -70,7 +70,7 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
     scene.starIndex = starIndex;
 
     // --- Локальный детерминированный RNG (см. контракт в local.h) ---
-    std::mt19937 lrng(starIndex >= 0 ? (0x9E3779B9u ^ uint32_t(starIndex)) : 0xD1B54A35u);
+    std::mt19937 lrng(starIndex >= 0 ? (game.seed ^ (uint32_t(starIndex) * 2654435761u)) : (game.seed ^ 0xD1B54A35u));
 
     // Локальные помощники розыгрыша — работают только над lrng.
     auto frand = [&lrng](double a, double b) -> double {
@@ -235,46 +235,75 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         scene.starR = 255; scene.starG = 232; scene.starB = col(150.0 + star.metallicity * 60.0);
     }
 
-    // --- Планеты (3..6) ---
-    int planetCount = 3 + int(lrng() % 4u);
+    // --- Планеты (0..10) ---
+    int planetCount = int(lrng() % 11u);
+    double currentGap = 1.05 + frand(0.0, 0.2); // Начальный отступ от звезды
+    
     for (int i = 0; i < planetCount; ++i) {
         LocalBody body;
-        // Орбиты — ДОЛИ радиуса звезды (линейно по i), тугие оболочки ВОКРУГ гиганта:
-        // D/R держится малым (1.2..~3.44 при 6 планетах), поэтому звезда доминирует в кадре
-        // везде, где летает игрок (экранный размер зависит только от D/R). count-independent.
-        double orbitRadius = scene.starRadius * (1.20 + 0.42 * i + frand(0.0, 0.14));
+        
+        currentGap += frand(0.25, 0.65); // Процедурный шаг орбиты
+        double orbitRadius = scene.starRadius * currentGap;
 
         body.orbitRadius = orbitRadius;
         body.orbitPhase  = frand(0.0, 2.0 * M_PI);
         body.orbitSpeed  = 40.0 / std::pow(orbitRadius, 1.5);   // кеплерово ~ r^-1.5
-        body.inclination = frand(-0.40, 0.40);   // заметный 3D-наклон орбит — система читается как реальный диск
+        body.inclination = frand(-0.40, 0.40);   // заметный 3D-наклон орбит
 
-        // Тип: две внутренние — каменные, средние — газовые, самая внешняя — лёд.
-        if (i <= 1)                    body.kind = LB_ROCKY;
-        else if (i == planetCount - 1) body.kind = LB_ICE;
-        else                           body.kind = LB_GASGIANT;
+        // Процедурный тип по удалению от звезды
+        double heat = 1.0 - (double)i / std::max(1, planetCount - 1); // 1.0 = внутри, 0.0 = снаружи
+        double rType = frand(0.0, 1.0);
+        
+        if (i == 0) {
+            // Первая почти всегда каменная (чтобы рынок был на твердой земле)
+            body.kind = (rType < 0.85) ? LB_ROCKY : LB_GASGIANT;
+        } else if (heat > 0.6) {
+            body.kind = (rType < 0.7) ? LB_ROCKY : LB_GASGIANT;
+        } else if (heat > 0.3) {
+            body.kind = (rType < 0.5) ? LB_GASGIANT : ((rType < 0.75) ? LB_ROCKY : LB_ICE);
+        } else {
+            body.kind = (rType < 0.7) ? LB_ICE : LB_GASGIANT;
+        }
+
+        // Контекст для генерации (металличность 0..1)
+        double mNorm = (star.metallicity - 0.22) / 0.95;
+        if (mNorm < 0.0) mNorm = 0.0; else if (mNorm > 1.0) mNorm = 1.0;
 
         if (body.kind == LB_ROCKY) {
-            body.radius = frand(6.0, 12.0);   // крошечные рядом с гигантской звездой
-            double base = 120.0 + star.metallicity * 60.0;   // серый, тонированный металличностью
-            body.r = col(base + frand(-10.0, 10.0));
-            body.g = col(base + frand(-10.0, 10.0));
-            body.b = col(base + frand(-10.0, 10.0));
+            body.radius = frand(6.0, 14.0);
+            // Цвет каменных планет зависит от близости к звезде (выгорание/ржавчина) и металличности (темнота)
+            double rr = frand(80.0, 240.0) * (0.6 + 0.4 * heat);
+            double gg = frand(70.0, 220.0) * (0.8 + 0.2 * heat) * (1.0 - 0.3 * mNorm);
+            double bb = frand(60.0, 200.0) * (1.0 - 0.4 * heat) * (1.0 - 0.4 * mNorm);
+            body.r = col(rr); body.g = col(gg); body.b = col(bb);
         } else if (body.kind == LB_GASGIANT) {
-            body.radius = frand(18.0, 38.0);   // крупнейшие планеты, но всё равно << звезды
-            body.r = col(200.0 + frand(-15.0, 15.0));         // песочно-янтарный
-            body.g = col(170.0 + frand(-15.0, 15.0));
-            body.b = col(110.0 + frand(-15.0, 15.0));
-            // Кольца (~55% газовых гигантов); поля по умолчанию 0 = нет колец.
+            body.radius = frand(18.0, 42.0);
+            // Газовые гиганты: любой цвет спектра.
+            double hue = frand(0.0, M_PI * 2.0);
+            double sat = frand(0.4, 1.0);
+            double val = frand(150.0, 255.0);
+            double rr = val * (1.0 + sat * std::cos(hue));
+            double gg = val * (1.0 + sat * std::cos(hue - 2.09439));
+            double bb = val * (1.0 + sat * std::cos(hue + 2.09439));
+            double maxC = std::max(rr, std::max(gg, bb));
+            if (maxC > 255.0) { rr = rr * 255.0 / maxC; gg = gg * 255.0 / maxC; bb = bb * 255.0 / maxC; }
+            body.r = col(rr); body.g = col(gg); body.b = col(bb);
+            // Кольца (~55% газовых гигантов)
             if (frand(0.0, 1.0) < 0.55) {
                 body.ringInner = body.radius * frand(1.4, 1.7);
                 body.ringOuter = body.ringInner * frand(1.4, 1.9);
             }
         } else { // LB_ICE
             body.radius = frand(9.0, 18.0);
-            body.r = col(170.0 + frand(-10.0, 10.0));         // бледно-голубой
-            body.g = col(200.0 + frand(-10.0, 10.0));
-            body.b = col(230.0 + frand(-10.0, 10.0));
+            // Лёд: от классического голубого/белого до экзотического (розовый аммиак, зеленый метан)
+            double rr = frand(120.0, 240.0);
+            double gg = frand(160.0, 255.0);
+            double bb = frand(180.0, 255.0);
+            if (frand(0.0, 1.0) < 0.35) {
+                // Экзотический химический лёд
+                if (frand(0.0, 1.0) < 0.5) std::swap(rr, bb); else std::swap(gg, bb);
+            }
+            body.r = col(rr); body.g = col(gg); body.b = col(bb);
         }
 
         body.name = star.name + "-" + std::to_string(i + 1);
@@ -288,7 +317,7 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         scene.bodies.push_back(body);
     }
 
-    double outermostOrbit = scene.bodies[planetCount - 1].orbitRadius;
+    double outermostOrbit = planetCount > 0 ? scene.bodies[planetCount - 1].orbitRadius : scene.starRadius * 1.5;
 
     // Крупнейшая каменная планета — стыковочный хаб (рынок).
     int bestRocky = -1; double bestR = -1.0;
@@ -300,9 +329,12 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
     }
     if (bestRocky >= 0) scene.bodies[bestRocky].hasMarket = true;
 
-    // --- Пояс астероидов между двумя соседними орбитами ---
-    int gap = irand(0, planetCount - 2);
-    double beltR = 0.5 * (scene.bodies[gap].orbitRadius + scene.bodies[gap + 1].orbitRadius);
+    // --- Пояс астероидов ---
+    double beltR = scene.starRadius * frand(1.3, 2.0);
+    if (planetCount >= 2) {
+        int gap = irand(0, planetCount - 2);
+        beltR = 0.5 * (scene.bodies[gap].orbitRadius + scene.bodies[gap + 1].orbitRadius);
+    }
 
     const std::vector<ElementDefinition>& defs = elementDefinitions();
     int elemN = int(elementCount());
@@ -418,7 +450,7 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         st.kind = LB_STATION;
         st.hasMarket = true;
         st.radius = 9.0;
-        st.orbitRadius = scene.bodies[0].orbitRadius + 40.0;   // на своей орбите рядом с внутренней
+        st.orbitRadius = planetCount > 0 ? scene.bodies[0].orbitRadius + 40.0 : scene.starRadius * 1.2;
         st.orbitPhase  = frand(0.0, 2.0 * M_PI);
         st.orbitSpeed  = 40.0 / std::pow(st.orbitRadius, 1.5);
         st.inclination = frand(-0.05, 0.05);

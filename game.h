@@ -165,6 +165,7 @@ public:
     int playerFaction = -1;
     int foundedColonies = 0;
     int capturedSystems = 0;
+    unsigned int seed = 42;
     std::string lastEvent;
     
     // --- Tariff mechanics ---
