@@ -676,7 +676,7 @@ void drawFactionPanel(SDL_Renderer* renderer, const Game& game, int x, int y, in
 void drawControlHints(SDL_Renderer* renderer, int screenW, int screenH) {
     const char* hints[] = {
         "L ENTER SYSTEM",
-        "E EXCHANGE",
+        "E BROKERAGE",
         "F1 HIDE HELP",
         "F2 BUY BACK LIC",
         "LMB SELECT",
@@ -1445,7 +1445,7 @@ bool handleExchangeWindowMouseDown(WindowState& state, Game& game, const Window&
 void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& window,
                         const WindowState& state, bool active) {
     const ClusterStar* star = starAt(game, window.star);
-    drawWindowFrame(renderer, window, star ? ("EXCHANGE / " + star->name) : "EXCHANGE", active);
+    drawWindowFrame(renderer, window, star ? ("BROKERAGE / " + star->name) : "BROKERAGE", active);
 
     const int x = window.rect.x + WINDOW_PAD;
     int y = window.rect.y + TITLE_H + 10;
@@ -1477,13 +1477,21 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
     if (!live) {
         drawText(renderer, x, y, "DOCK IN THIS SYSTEM FOR LIVE QUOTES", P.red, 1);
     } else {
-        char sub[160];
+        char sub[192];
         if (state.exchangeElement >= 0) {
-            std::snprintf(sub, sizeof(sub), "EVERY SURVEYED MARKET FOR %s - %d MARKETS KNOWN",
-                          elementDefinitions()[state.exchangeElement].symbol,
-                          game.playerSurveyedMarketCount());
+            // Система, где мы стоим, в списке отсутствует по построению (сделке нужны
+            // ДВА разных рынка), поэтому её цену показываем здесь — это точка отсчёта,
+            // относительно которой читается вся колонка MODEL.
+            const int el = state.exchangeElement;
+            double here = 0.0;
+            if (window.star >= 0 && window.star < int(game.markets.size()) &&
+                el < int(game.markets[window.star].prices.size())) {
+                here = game.markets[window.star].prices[el];
+            }
+            std::snprintf(sub, sizeof(sub), "%s - HERE %.2F CR - EVERY ONE OF %d SURVEYED MARKETS BELOW",
+                          elementDefinitions()[el].symbol, here, game.playerSurveyedMarketCount());
         } else {
-            std::snprintf(sub, sizeof(sub), "BEST ACROSS %d SURVEYED MARKETS - NOT A LIVE FEED",
+            std::snprintf(sub, sizeof(sub), "BEST DEALS ACROSS %d SURVEYED MARKETS - NOT A LIVE FEED",
                           game.playerSurveyedMarketCount());
         }
         drawText(renderer, x, y, sub, P.dim, 1);
@@ -1539,7 +1547,9 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
                           d.units, d.buyPrice, d.sellPrice, d.profit, d.distanceLy,
                           d.ageYears >= 0.0 ? d.ageYears : 0.0, d.confidence * 100.0);
             // Цвет строки — доверие к модели: свежая разведка зелёная, протухшая тусклая.
-            const SDL_Color tone = d.confidence > 0.66 ? P.green : (d.confidence > 0.33 ? P.text : P.dim);
+            // Убыточное направление (видно только под фильтром) всегда красное.
+            const SDL_Color tone = d.profit <= 0.0 ? P.red
+                                 : (d.confidence > 0.66 ? P.green : (d.confidence > 0.33 ? P.text : P.dim));
             drawText(renderer, x, by, row, tone, 1);
             by += layout.rowH;
         }
@@ -1888,7 +1898,7 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
     drawButton(renderer, layout.shipyard, "YARD", P.cyan, true);
     // Свободная лицензия — условие покупки нового борта, поэтому кнопка светится,
     // когда она есть: игрок видит «можно расширяться» не открывая биржу.
-    drawButton(renderer, layout.exchange, "EXCHANGE", P.amber,
+    drawButton(renderer, layout.exchange, "BROKER", P.amber,
                game.playerFreeLicences() > 0 || playerMarketStar(game) == window.star);
 }
 
@@ -2680,7 +2690,7 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
             }
             
             char buf[512];
-            std::snprintf(buf, sizeof(buf), "Are you interested in recent stockings, Master? Local scans show peak supply of %s at %s, and highest demand for %s at %s.", 
+            std::snprintf(buf, sizeof(buf), "Care for a market report, Master? Local scans show peak supply of %s at %s, and highest demand for %s at %s.", 
                           supplyStr.c_str(), supplyStarName.c_str(), demandStr.c_str(), demandStarName.c_str());
             return buf;
         }

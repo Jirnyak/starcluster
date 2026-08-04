@@ -4512,7 +4512,7 @@ bool Game::buyAdditionalShip(int agentIndex, int starIndex, int classId) {
     // отдельной лицензии, и купить её надо заранее на бирже (§10.4). Расширение
     // флота = осознанно поднятая себе квота, а не стена из миллиона кредитов.
     if (agents[agentIndex].playerControlled && playerFreeLicences() <= 0) {
-        lastEvent = "no free licence - buy one at the exchange (E)";
+        lastEvent = "no free licence - buy one at the brokerage (E)";
         return false;
     }
 
@@ -5283,26 +5283,40 @@ std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDea
             // системой нет, есть «что я видел» плюс сползание к опорной цене по мере
             // старения (см. комментарий к ArbitrageDeal).
             const double sellPrice = playerProjectedPrice(target, e);
-            if (sellPrice <= leg.buyBase * 1.05) continue;
+            if (sellPrice <= 0.0) continue;
+            // Быстрый отсев «там не дороже» — только для общего списка. Под фильтром
+            // игрок хочет видеть ВСЕ разведанные системы по элементу, включая те, где
+            // продавать в убыток: это и есть карта «где почём».
+            if (elementFilter < 0 && sellPrice <= leg.buyBase * 1.05) continue;
 
-            // Оптимистичная оценка сверху: продали ВЕСЬ объём по модельной цене без
-            // проскальзывания, купили по котировке. Реальная прибыль всегда ниже,
-            // поэтому не перебивший порог кандидат не может попасть в top-N.
-            const double bound = leg.maxUnits * (sellPrice * (1.0 - sellTariff) - leg.buyBase);
-            if (bound <= worst) continue;
+            // Под фильтром по одному элементу показываем ВСЁ разведанное по нему —
+            // и убыточное тоже: игрок просил полную картину «где почём», а не только
+            // готовые сделки. Без фильтра список ранжирован по прибыли и отсечения
+            // обязательны, иначе он вырождается в 390 000 строк шума.
+            if (elementFilter < 0) {
+                // Оптимистичная оценка сверху: продали ВЕСЬ объём по модельной цене без
+                // проскальзывания, купили по котировке. Реальная прибыль всегда ниже,
+                // поэтому не перебивший порог кандидат не может попасть в top-N.
+                const double bound = leg.maxUnits * (sellPrice * (1.0 - sellTariff) - leg.buyBase);
+                if (bound <= worst) continue;
+            }
 
             // «Полный трюм» не оптимум: при тонком рынке назначения прибыль по объёму
             // имеет МАКСИМУМ (покупка дорожает, продажа дешевеет). Ищем его перебором —
             // сводка подсказывает не только КУДА, но и СКОЛЬКО.
             const double targetDepth = tm.depthOf(e);
             double units = 0.0, cost = 0.0, profit = 0.0;
+            bool haveBest = false;
             for (int step = 1; step <= 10; ++step) {
                 const double u = leg.maxUnits * double(step) / 10.0;
                 const double c = u * home.executionPrice(e, u, false);
                 const double r = u * sellPrice * marketExecutionFactor(u, targetDepth, true) * (1.0 - sellTariff);
-                if (r - c > profit) { profit = r - c; units = u; cost = c; }
+                if (!haveBest || r - c > profit) { profit = r - c; units = u; cost = c; haveBest = true; }
             }
-            if (units <= 0.01 || profit <= worst) continue;
+            if (units <= 0.01) continue;
+            // Под фильтром пропускаем только заведомый мусор (нулевой объём); без
+            // фильтра — всё, что не бьёт текущий порог top-N.
+            if (elementFilter < 0 && profit <= worst) continue;
 
             ArbitrageDeal deal;
             deal.element = e;
@@ -5319,7 +5333,8 @@ std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDea
 
             // Держим список ограниченным: 390 000 строк не влезают ни в память, ни в
             // глаза, а листать имеет смысл лучшие. Подрезаем вдвое реже, чем растём.
-            if (int(deals.size()) >= keep * 2) {
+            // Под фильтром порог `worst` не двигаем — иначе он снова отрежет убыточные.
+            if (elementFilter < 0 && int(deals.size()) >= keep * 2) {
                 std::partial_sort(deals.begin(), deals.begin() + keep, deals.end(),
                                   [](const ArbitrageDeal& a, const ArbitrageDeal& b) { return a.profit > b.profit; });
                 deals.resize(size_t(keep));

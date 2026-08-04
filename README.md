@@ -182,7 +182,7 @@ still reference `uni.cpp`; they are not the current project build path.
 - `I`: toggle faction influence overlay.
 - `G`: route the player ship to the selected star.
 - `L`: enter or leave local flight mode (first-person flight inside the system).
-- `E`: open the exchange (route board and trading licences).
+- `E`: open the brokerage (route board and trading licences).
 - `[` / `]`: change selected element.
 
 ### Trade, Contracts, Colonies
@@ -271,9 +271,9 @@ year per real second this is roughly seventeen minutes of play at `1x`.
   working, so the player always has a way out;
 - the HUD shows `QUOTA n/N CR  nY LEFT  TARIFF n%` in the player status panel.
 
-### The Exchange
+### The Brokerage
 
-`E`, or the `EXCHANGE` button on a system window, opens the exchange for the current system.
+`E`, or the `BROKER` button on a system window, opens the brokerage for the current system.
 It does two things.
 
 **Route board.** It lists concrete deals - buy element X here, sell it at system Y - built
