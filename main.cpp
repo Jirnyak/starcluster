@@ -5,6 +5,7 @@
 #include "camera.h"
 #include "local.h"
 #include "render2d.h"
+#include "shell.h"
 #include <SDL.h>
 #include <SDL_mixer.h>
 #include "stb_image.h"
@@ -437,6 +438,7 @@ int runEconReport() {
 int main(int argc, char** argv) {
     bool smoke = false;
     bool localSmoke = false;
+    bool shellSmoke = false;   // headless-прогон оболочки (см. Shell::run, autopilot)
     // Seed мира. По умолчанию новый на каждый запуск (партии не повторяются), но
     // теперь он ЗАПИСАН в Game::seed и уходит в сейв, поэтому мир воспроизводим:
     // `--seed N` повторяет чужую партию по номеру из бага.
@@ -444,13 +446,14 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--smoke") == 0) smoke = true;
         if (std::strcmp(argv[i], "--localsmoke") == 0) { smoke = true; localSmoke = true; }
+        if (std::strcmp(argv[i], "--shellsmoke") == 0) shellSmoke = true;
         if (std::strcmp(argv[i], "--econreport") == 0) return runEconReport();
         if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             worldSeed = (unsigned int)std::strtoul(argv[++i], NULL, 10);
         }
     }
     // Smoke-прогоны должны быть повторимы: падение в CI обязано воспроизводиться.
-    if (smoke) worldSeed = 42u;
+    if (smoke || shellSmoke) worldSeed = 42u;
     const char* smokeEnv = std::getenv("STARCLUSTER_SMOKE");
     if (smokeEnv && std::strcmp(smokeEnv, "0") != 0) smoke = true;
 
@@ -500,11 +503,6 @@ int main(int argc, char** argv) {
         std::cerr << "Failed to load timertia.png: " << stbi_failure_reason() << "\n";
     }
 
-    Game game;
-    game.seed = worldSeed;
-    game.init(STAR_COUNT);
-    std::printf("world seed: %u\n", game.seed);
-
     std::vector<Mix_Music*> playlist;
     if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 2048) < 0) {
         std::cerr << "SDL_mixer could not initialize! Error: " << Mix_GetError() << "\n";
@@ -537,13 +535,40 @@ int main(int argc, char** argv) {
             }
         }
     }
-    // Своё зерно для музыки. Раньше выбор трека тянул из глобального `rng`
-    // симуляции — момент окончания трека зависит от звуковой карты, поэтому один
-    // и тот же seed давал РАЗНЫЕ миры. Аудио не должно двигать симуляцию.
-    std::mt19937 musicRng(0x51A7C0DE);
+    // Мешок треков: одна перестановка на весь сеанс, общая с оболочкой (см.
+    // Shell::pumpMusic). Аудио по-прежнему не трогает глобальный `rng`
+    // симуляции — иначе один seed давал бы РАЗНЫЕ миры.
+    Shell::MusicState music;
+
+    // --- Оболочка: заставка студии, меню, комикс, генерация мира -------------
+    // Мир поднимается ЗДЕСЬ: Shell::run гонит генерацию в фоновом потоке, пока
+    // игрок листает пролог. Smoke-прогоны оболочку пропускают целиком — иначе
+    // CI встанет на ожидании клавиши (см. PROMPT_frontend_shell.md §6).
+    Game game;
+    bool soundOn = true;
+    if (smoke) {
+        game.seed = worldSeed;
+        game.init(STAR_COUNT);
+    } else {
+        const int outcome = Shell::run(window, renderer, game, STAR_COUNT, worldSeed,
+                                       savePath(), soundOn, playlist, music, shellSmoke);
+        if (outcome == Shell::OUTCOME_QUIT || shellSmoke) {
+            for (Mix_Music* m : playlist) Mix_FreeMusic(m);
+            Mix_CloseAudio();
+            if (timertiaTex) SDL_DestroyTexture(timertiaTex);
+            SDL_DestroyRenderer(renderer);
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+            return 0;
+        }
+    }
+    std::printf("world seed: %u\n", game.seed);
 
     bool quit = false;
-    bool paused = false;
+    // Партия начинается на паузе: игрок сперва читает обстановку, а мир не
+    // тикает у него за спиной. В smoke этого делать нельзя — 12 кадров должны
+    // реально прогнать симуляцию.
+    bool paused = !smoke;
     SDL_Event e;
     View3D view;
     view.yaw = 0.62;
@@ -558,7 +583,7 @@ int main(int argc, char** argv) {
     int selectedElement = elementIndex("Fe");
     if (selectedElement < 0) selectedElement = 0;
     bool followAgent = selectedAgent >= 0;
-    bool showHelp = true;   // легенда хоткеев видна с первого кадра, F1 — свернуть
+    bool showHelp = false;  // карточку управления игрок уже видел в оболочке; F1 — вернуть
     double simSpeed = 1.0;
     UI::WindowState ui;
     ui.vnState.active = true; // Start introductory tutorial
@@ -792,10 +817,7 @@ int main(int argc, char** argv) {
         lastCounter = frameStart;
         realDt = std::min(realDt, MAX_REAL_DT_SECONDS);
 
-        if (!playlist.empty() && !Mix_PlayingMusic()) {
-            const int idx = randomer(musicRng, int(playlist.size()) - 1);
-            Mix_PlayMusic(playlist[idx], 1);
-        }
+        Shell::pumpMusic(music, playlist, soundOn);
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) quit = true;
             if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
@@ -906,6 +928,12 @@ int main(int argc, char** argv) {
             if (e.type == SDL_KEYDOWN) {
                 if (e.key.keysym.sym == SDLK_F1) {
                     showHelp = !showHelp;
+                    continue;
+                }
+                // Открытая карточка управления перехватывает ESC — иначе один и
+                // тот же клавиш и закрывал бы её, и выходил из игры.
+                if (showHelp && e.key.keysym.sym == SDLK_ESCAPE) {
+                    showHelp = false;
                     continue;
                 }
                 // E — брокерская контора: сводка маршрутов по разведанным рынкам + лицензии.
@@ -1441,6 +1469,8 @@ int main(int argc, char** argv) {
         { std::vector<ActionButton> bar; buildBar(bar); drawBar(bar); }
         
         UI::drawVisualNovel(renderer, ui, winW, winH, timertiaTex);
+        // Карточка управления — поверх всего, включая окна и новеллу.
+        if (showHelp) UI::drawControlsCard(renderer, winW, winH);
 
         SDL_RenderPresent(renderer);
         if (smoke && ++frames >= 12) quit = true;

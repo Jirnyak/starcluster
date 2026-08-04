@@ -89,22 +89,62 @@ void testSlippageExists() {
 // --- 2. Один рейс не удваивает капитал --------------------------------------
 // Ловит любую поломку, от которой торговля снова становится печатным станком
 // (замер до введения проскальзывания: x44 за рейс).
+//
+// ⚠️ Мерить это от СТАРТОВОГО кошелька нельзя. Стартовый капитал — 100 Cr
+// (решение пользователя), а на объёме, который не двигает рынок, отношение
+// прибыли к капиталу равно голому спреду скопления (30x by design, §10.3).
+// То есть «x14.8 за рейс» на нищем старте — не поломка, а арифметика: игрок
+// беден, а не механизм сломан. Поэтому проверяем ДВА разных утверждения:
+//   а) при рабочем капитале (тысячи) отношение мало — проскальзывание кусается;
+//   б) отдача монотонно падает с ростом капитала — механизм вообще существует.
+// Это тот же урок, что §10.6: сперва убедись, что сценарий пробника осмыслен.
 void testRunProfitSane() {
     const unsigned seeds[] = {42u, 7u, 2024u, 999u};
+    const double REFERENCE_CAPITAL = 3600.0;
+
     double worstRatio = 0.0;
     unsigned worstSeed = 0;
+    int monotone = 0, monotoneTotal = 0;
     for (unsigned seed : seeds) {
-        Game g; buildWorld(g, seed, 80);
-        const double capital = g.agents[g.playerAgent].money;
-        ArbitrageDeal d; bool ok = false;
-        const double profit = executeTopDeal(g, d, ok);
-        if (!ok || capital <= 0.0) continue;
-        const double ratio = profit / capital;
-        if (ratio > worstRatio) { worstRatio = ratio; worstSeed = seed; }
+        {
+            Game g; buildWorld(g, seed, 80);
+            g.agents[g.playerAgent].money = REFERENCE_CAPITAL;
+            ArbitrageDeal d; bool ok = false;
+            const double profit = executeTopDeal(g, d, ok);
+            if (ok) {
+                const double ratio = profit / REFERENCE_CAPITAL;
+                if (ratio > worstRatio) { worstRatio = ratio; worstSeed = seed; }
+            }
+        }
+        // Кривая отдачи: бедный рейс окупается в разы лучше богатого — именно
+        // это и делает проскальзывание. Если механизм отключат, кривая станет
+        // плоской (отношение перестанет зависеть от капитала).
+        const double purses[] = {100.0, 3600.0, 120000.0};
+        double prev = -1.0;
+        bool falling = true, measured = false;
+        for (double purse : purses) {
+            Game g; buildWorld(g, seed, 80);
+            g.agents[g.playerAgent].money = purse;
+            ArbitrageDeal d; bool ok = false;
+            const double profit = executeTopDeal(g, d, ok);
+            if (!ok) continue;
+            const double ratio = profit / purse;
+            if (prev >= 0.0 && ratio > prev * 1.02) falling = false;
+            prev = ratio;
+            measured = true;
+        }
+        if (measured) { ++monotoneTotal; if (falling) ++monotone; }
     }
+
     char buf[160];
-    std::snprintf(buf, sizeof(buf), "максимум %.2fx капитала (seed %u)", worstRatio, worstSeed);
+    std::snprintf(buf, sizeof(buf), "при рабочих %.0F Cr максимум %.2Fx (seed %u)",
+                  REFERENCE_CAPITAL, worstRatio, worstSeed);
     check(worstRatio < 3.0, "один рейс не печатает капитал", buf);
+
+    std::snprintf(buf, sizeof(buf), "отдача падает с ростом кошелька на %d из %d сидов",
+                  monotone, monotoneTotal);
+    check(monotoneTotal > 0 && monotone == monotoneTotal,
+          "проскальзывание наказывает объём", buf);
 }
 
 // --- 3. Сводка не врёт на свежих данных -------------------------------------

@@ -7,6 +7,9 @@
 /ui_click_test
 /shot_test
 /shot_test_asan
+/balance_test
+/econ_test
+/test_rng
 shot_*.bmp
 shot_*.png
 *.dSYM/

@@ -673,49 +673,56 @@ void drawFactionPanel(SDL_Renderer* renderer, const Game& game, int x, int y, in
     }
 }
 
-void drawControlHints(SDL_Renderer* renderer, int screenW, int screenH) {
-    const char* hints[] = {
-        "L ENTER SYSTEM",
-        "E BROKERAGE",
-        "F1 HIDE HELP",
-        "F2 BUY BACK LIC",
-        "LMB SELECT",
-        "RMB ROUTE",
-        "G GO",
-        "B BUY",
-        "V SELL",
-        "T AUTO TRADE",
-        "U SHIPYARD",
-        "M MINE ORE",
-        "J REPAIR HULL",
-        "K SCAN ANOMALY",
-        "H HIRE SHIP",
-        "C COL/REINF",
-        "F5 SAVE",
-        "F9 LOAD",
-        "1-4 SPEED",
-        "WHEEL ZOOM",
-        "MMB DRAG PAN",
-        "ARROWS PAN",
-        "WASD ROTATE",
-        "SPACE PAUSE",
-        "TAB AGENT",
-        "F FOLLOW",
-        "R ROB",
-        "[ ] MARKET",
-        "P PLAYER",
-        "0 RESET",
-        "X STOP SHIP",
-        "ENTER OPEN SYS",
-        "L ENTER SYSTEM"
+// Карточка управления. Раньше это была вечная колонка из 33 строк в правом
+// нижнем углу — она занимала угол экрана всю партию и всё равно читалась как
+// свалка. Теперь это одна центрированная карточка, разбитая по смыслу: её
+// показывает оболочка перед стартом партии и клавиша F1 в игре.
+// ⚠️ Совсем убирать её нельзя: кроме неё игрок нигде не узнаёт про клавишу L
+// (вход в локальный полёт) — см. master_prompt.md §10.1(D).
+void drawControlsCard(SDL_Renderer* renderer, int screenW, int screenH) {
+    struct Group { const char* title; const char* lines[10]; };
+    static const Group groups[] = {
+        { "FLIGHT", { "L    ENTER SYSTEM", "G    GO TO SELECTED", "X    STOP SHIP",
+                      "F    FOLLOW SHIP", "TAB  NEXT AGENT", "ENTER OPEN SYSTEM",
+                      "SPACE PAUSE", "1-4  SIM SPEED", NULL, NULL } },
+        { "TRADE",  { "T    AUTO TRADE", "B    BUY", "V    SELL", "E    BROKERAGE",
+                      "O    CARGO", "I    TRANSACTION LOG", "F2   BUY BACK LICENCE",
+                      "[ ]  CYCLE ELEMENT", NULL, NULL } },
+        { "SHIP",   { "U    SHIPYARD / FIT", "M    MINE ORE", "J    REPAIR HULL",
+                      "K    SCAN ANOMALY", "H    HIRE SHIP", "W    SWITCH SHIP",
+                      "C    COLONY / REINFORCE", "R    ROB", NULL, NULL } },
+        { "VIEW",   { "LMB  SELECT", "RMB  SET ROUTE", "WHEEL ZOOM", "MMB  DRAG PAN",
+                      "ARROWS PAN", "WASD ROTATE", "P    PLAYER SHIP", "0    RESET VIEW",
+                      NULL, NULL } },
+        { "GAME",   { "F5   SAVE", "F9   LOAD", "F1   THIS CARD", NULL, NULL,
+                      NULL, NULL, NULL, NULL, NULL } }
     };
-    const int w = 144;
-    const int h = 18 + int(sizeof(hints) / sizeof(hints[0])) * 12;
-    const int x = std::max(8, screenW - w - 12);
-    const int y = std::max(8, screenH - h - 12);
+    const int groupCount = int(sizeof(groups) / sizeof(groups[0]));
+
+    const int cols = screenW >= 1000 ? 3 : 2;
+    const int rows = (groupCount + cols - 1) / cols;
+    const int colW = 232;
+    const int groupH = 9 * 13 + 26;
+    const int w = std::min(screenW - 24, cols * colW + 28);
+    const int h = std::min(screenH - 24, rows * groupH + 54);
+    const int x = (screenW - w) / 2;
+    const int y = (screenH - h) / 2;
+
+    fillRect(renderer, 0, 0, screenW, screenH, {3, 5, 14, 205});
     panel(renderer, x, y, w, h);
-    for (int i = 0; i < int(sizeof(hints) / sizeof(hints[0])); ++i) {
-        drawText(renderer, x + 10, y + 10 + i * 12, hints[i], i == 0 ? P.cyan : P.dim, 1);
+    header(renderer, x + 14, y + 12, "CONTROLS");
+    drawText(renderer, x + w - 108, y + 14, "F1 / ESC CLOSE", P.dim, 1);
+
+    for (int g = 0; g < groupCount; ++g) {
+        const int cx = x + 16 + (g % cols) * colW;
+        const int cy = y + 42 + (g / cols) * groupH;
+        drawText(renderer, cx, cy, groups[g].title, P.cyan, 1);
+        for (int i = 0; i < 10 && groups[g].lines[i]; ++i) {
+            // Первая строка FLIGHT — вход в локальный полёт. Единственное место,
+            // где игрок вообще может о нём узнать, поэтому она подсвечена.
+            const SDL_Color c = (g == 0 && i == 0) ? P.amber : P.dim;
+            drawText(renderer, cx, cy + 15 + i * 13, groups[g].lines[i], c, 1);
+        }
     }
 }
 
@@ -2527,14 +2534,6 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
         const int facH = 44 + std::min(6, int(game.factions.size())) * 19;
         drawObjectivesPanel(renderer, game, screenW - 260, 12 + facH + 10, 248);
     }
-    // Легенда хоткеев. Долго стояла закомментированной — игрок не мог узнать ни
-    // об одном из 29 действий, включая вход в локальный полёт (L).
-    if (selection.showHelp) {
-        drawControlHints(renderer, screenW, screenH);
-    } else {
-        drawText(renderer, screenW - 78, screenH - 22, "F1 HELP", P.dim, 1);
-    }
-
     {
         const int newsLines = screenH < 780 ? 8 : 14;
         const int newsH = 26 + newsLines * 12;

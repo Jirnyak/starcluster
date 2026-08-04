@@ -2,10 +2,12 @@ CXX ?= g++
 SDL_CFLAGS := $(shell sdl2-config --cflags)
 SDL_LIBS := $(shell sdl2-config --libs) -lSDL2_mixer
 
-SOURCES = main.cpp game.cpp cluster.cpp resource.cpp market.cpp econ.cpp ship.cpp agent.cpp colony.cpp faction.cpp ui.cpp mining.cpp combat.cpp spaceevents.cpp anomaly.cpp modules.cpp chromo.cpp render2d.cpp localgen.cpp localsim.cpp localdraw.cpp stb_image.cpp
+SOURCES = main.cpp shell.cpp game.cpp cluster.cpp resource.cpp market.cpp econ.cpp ship.cpp agent.cpp colony.cpp faction.cpp ui.cpp mining.cpp combat.cpp spaceevents.cpp anomaly.cpp modules.cpp chromo.cpp render2d.cpp localgen.cpp localsim.cpp localdraw.cpp stb_image.cpp
 
-# Всё, кроме main.cpp (для линковки альтернативных точек входа — soak-теста).
-LIBSOURCES = $(filter-out main.cpp,$(SOURCES))
+# Всё, кроме точки входа (для линковки альтернативных main — soak/uiclick/balance).
+# shell.cpp тоже исключён: оболочка опирается на assetPath() из main.cpp и в
+# headless-харнесах не нужна.
+LIBSOURCES = $(filter-out main.cpp shell.cpp,$(SOURCES))
 
 SANFLAGS = -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
 

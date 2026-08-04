@@ -3755,7 +3755,10 @@ void Game::init(size_t num_stars) {
     player.currentStar = playerStart;
     player.homeStar = playerStart;
     player.destStar = playerStart;
-    player.money = 3600.0;
+    // Стартовый капитал. Решение пользователя: игрок начинает нищим (100 Cr),
+    // а не с оборотным капиталом на первый рейс — первая цель игры превращается
+    // из «куда везти» в «на что вообще купить груз».
+    player.money = 100.0;
     player.lastAction = "ready";
     playerAgent = int(agents.size());
     agents.push_back(player);

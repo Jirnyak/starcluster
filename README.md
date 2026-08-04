@@ -128,8 +128,8 @@ sudo apt install build-essential libsdl2-dev
 The active build path is the root `Makefile`. It compiles:
 
 ```text
-main.cpp game.cpp cluster.cpp resource.cpp market.cpp ship.cpp agent.cpp
-colony.cpp faction.cpp ui.cpp
+main.cpp shell.cpp game.cpp cluster.cpp resource.cpp market.cpp ship.cpp
+agent.cpp colony.cpp faction.cpp ui.cpp
 ```
 
 Build and run:
@@ -171,7 +171,7 @@ still reference `uni.cpp`; they are not the current project build path.
 - `0`: reset view.
 - `Space`: pause or resume.
 - `1`, `2`, `3`, `4`: set simulation speed to `1x`, `2x`, `5x`, `10x`.
-- `F1`: toggle the hotkey legend (shown by default).
+- `F1`: open or close the controls card (also shown once before the game starts).
 - `Esc`: quit.
 
 ### Player Ship And Map
@@ -433,6 +433,7 @@ the active code path draws text with its own bitmap glyphs and links only SDL2.
 | File | Responsibility |
 | --- | --- |
 | `main.cpp` | SDL2 window, event loop, camera, map projection, route drawing, influence overlay, frame pacing. |
+| `shell.h`, `shell.cpp` | Front end before the simulation: studio logo (a cellular field that scatters and rewinds into `TENEVIK GAMES`, pushable with the cursor), main menu, five-panel comic prologue, and the world-generation screen. World generation and save loading run on a background `std::thread`, so the ~9 s wait is spent reading the prologue. Uses its own RNG; the simulation's global `rng` is never touched. |
 | `game.h`, `game.cpp` | World composition, update order, saves, routes, markets, agents, contracts, factions, signals, player actions. |
 | `cluster.h`, `cluster.cpp` | Star data and procedural cluster generation. |
 | `resource.h`, `resource.cpp` | Element definitions, derived traits, resource ids. |

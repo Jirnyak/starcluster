@@ -14,7 +14,8 @@ struct HudSelection {
     int element = 0;
     bool paused = false;
     bool followAgent = false;
-    bool showHelp = true;   // легенда хоткеев (F1); по умолчанию видна новичку
+    bool showHelp = false;  // карточка управления (F1); по умолчанию свёрнута —
+                            // её показывает оболочка перед стартом партии
     double simSpeed = 1.0;
     double simYearsPerSecond = 1.0;
 };
@@ -95,7 +96,8 @@ void drawWindows(SDL_Renderer* renderer, const Game& game, int screenW, int scre
 void drawStarPanel(SDL_Renderer* renderer, const Game& game, int starIndex, int elementIndex, int x, int y, int w);
 void drawAgentPanel(SDL_Renderer* renderer, const Game& game, int agentIndex, int x, int y, int w);
 void drawFactionPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w);
-void drawControlHints(SDL_Renderer* renderer, int screenW, int screenH);
+// Карточка управления по центру экрана: F1 в игре и финальный экран оболочки.
+void drawControlsCard(SDL_Renderer* renderer, int screenW, int screenH);
 bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH);
 void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, int screenH);
 void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int screenW, int screenH, SDL_Texture* tex);

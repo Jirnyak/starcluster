@@ -36,6 +36,10 @@ jobs:
           cp timertia.png Starcluster.app/Contents/Resources/
           mkdir -p Starcluster.app/Contents/Resources/music
           cp -R music/processed Starcluster.app/Contents/Resources/music/
+          # Слайды комикс-пролога (оболочка ищет comic/slide1..5.png). Кадров
+          # может ещё не быть — тогда слайд рисуется пустой рамкой, не ошибкой.
+          mkdir -p Starcluster.app/Contents/Resources/comic
+          cp comic/*.png Starcluster.app/Contents/Resources/comic/ 2>/dev/null || true
 
           # Bundle the official SDL2.framework
           cp -R /Library/Frameworks/SDL2.framework Starcluster.app/Contents/Frameworks/
@@ -100,6 +104,8 @@ jobs:
           cp timertia.png dist/
           mkdir -p dist/music
           cp -R music/processed dist/music/
+          mkdir -p dist/comic
+          cp comic/*.png dist/comic/ 2>/dev/null || true
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -121,6 +127,8 @@ jobs:
           cp timertia.png dist/
           mkdir -p dist/music
           cp -R music/processed dist/music/
+          mkdir -p dist/comic
+          cp comic/*.png dist/comic/ 2>/dev/null || true
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -140,7 +148,7 @@ jobs:
         run: |
           mkdir Starcluster-Multiplatform
           # Windows и Linux кладём целиком: там теперь не только бинарь, но и
-          # ассеты (timertia.png, music/processed) — они у обеих платформ общие.
+          # ассеты (timertia.png, music/processed, comic/) — они у обеих платформ общие.
           cp -R all-builds/Starcluster-Windows/. Starcluster-Multiplatform/
           cp -R all-builds/Starcluster-Linux/. Starcluster-Multiplatform/
           # macOS самодостаточен: ассеты уже внутри .app.
