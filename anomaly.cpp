@@ -30,7 +30,7 @@ void addLootOrCredits(Ship& ship, double& money, int idx, double amount) {
         }
         if (!found) ship.cargo.emplace_back(sym, take);
     }
-    if (overflow > 0.0) money += overflow * elems[idx].basePrice;
+    if (overflow > 0.0) money += overflow * marketReferencePrice(idx);
 }
 
 // Размещает одну аномалию рядом со случайной звездой (общий для сева и респауна).
@@ -69,10 +69,10 @@ void placeAnomaly(Game& g) {
         if (ecount > 0) {
             // Тянем к дорогому: сэмплируем несколько кандидатов, оставляем самый ценный.
             a.lootElement = randomer(rng, ecount - 1);
-            double best = elems[a.lootElement].basePrice;
+            double best = marketReferencePrice(a.lootElement);
             for (int t = 0; t < 4; ++t) {
                 const int cand = randomer(rng, ecount - 1);
-                if (elems[cand].basePrice > best) { best = elems[cand].basePrice; a.lootElement = cand; }
+                if (marketReferencePrice(cand) > best) { best = marketReferencePrice(cand); a.lootElement = cand; }
             }
             a.lootAmount = 6 + randomer(rng, 26);
         }

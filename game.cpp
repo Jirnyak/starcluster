@@ -176,8 +176,9 @@ int pickLocalMaterialElement(const Market& market, MaterialNeed need) {
         if (trait <= 0.04) continue;
         const double availableMass = market.supply[i].amount * resourceUnitMassByIndex(int(i));
         if (availableMass <= 0.05) continue;
-        const double pressure = i < market.prices.size() && elements[i].basePrice > 0.0 ?
-            market.prices[i] / elements[i].basePrice : 1.0;
+        const double reference = marketReferencePrice(int(i));
+        const double pressure = i < market.prices.size() && reference > 0.0 ?
+            market.prices[i] / reference : 1.0;
         const double score = trait * (0.5 + std::sqrt(availableMass)) / std::sqrt(std::max(0.01, pressure));
         if (score > bestScore) {
             bestScore = score;
@@ -1099,8 +1100,9 @@ int pickSurplusResource(const Game& game, int originStar) {
     int best = -1;
     double bestScore = -std::numeric_limits<double>::max();
     for (size_t i = 0; i < market.prices.size() && i < elements.size(); ++i) {
-        if (market.supply[i].amount <= 8.0 || elements[i].basePrice <= 0.0) continue;
-        const double pressure = market.prices[i] / elements[i].basePrice;
+        const double reference = marketReferencePrice(int(i));
+        if (market.supply[i].amount <= 2.0 || reference <= 0.0) continue;
+        const double pressure = market.prices[i] / reference;
         const double unitMass = std::max(0.001, resourceUnitMassByIndex(int(i)));
         const double score = (1.18 - pressure) * std::sqrt(market.supply[i].amount) / unitMass;
         if (score > bestScore) {
@@ -1123,7 +1125,7 @@ int pickDeliveryTarget(const Game& game, int originStar, int resourceIndex) {
         if (target == originStar || target < 0 || target >= int(game.markets.size())) continue;
 
         const Market& market = game.markets[target];
-        const double base = elementDefinitions()[resourceIndex].basePrice;
+        const double base = marketReferencePrice(resourceIndex);
         const double pressure = base > 0.0 ? market.prices[resourceIndex] / base : 1.0;
         const double spread = market.prices[resourceIndex] - origin.prices[resourceIndex];
         if (pressure < 1.08 || spread <= 0.0) continue;
@@ -1282,7 +1284,7 @@ bool tryCreateColonySupplyContract(Game& game, int originStar) {
         if (colonyIndexAt(game, target) < 0) continue;
 
         const Market& targetMarket = game.markets[target];
-        const double base = elementDefinitions()[resourceIndex].basePrice;
+        const double base = marketReferencePrice(resourceIndex);
         const double pressure = base > 0.0 ? targetMarket.prices[resourceIndex] / base : 1.0;
         if (pressure < 1.16) continue;
 
@@ -1303,7 +1305,7 @@ bool tryCreateColonySupplyContract(Game& game, int originStar) {
     if (amount <= 0.25) return false;
 
     const double distance = cachedRouteDistance(game, originStar, best);
-    const double scarcity = std::max(0.0, target.prices[resourceIndex] / elementDefinitions()[resourceIndex].basePrice - 1.0);
+    const double scarcity = std::max(0.0, target.prices[resourceIndex] / std::max(0.1, marketReferencePrice(resourceIndex)) - 1.0);
 
     Contract contract;
     contract.id = game.nextContractId++;
@@ -1715,7 +1717,7 @@ bool buyFuel(Game& game, Agent& agent, int starIndex, double targetFuel) {
     const double baseCost = amount * market.prices[fuelIndex];
     const double fee = baseCost * tariff;
     const int owner = game.cluster.stars[starIndex].ownerFaction;
-    market.supply[fuelIndex].amount -= amount;
+    market.applyTrade(fuelIndex, -amount);
     agent.money -= baseCost + fee;
     if (validFaction(game, owner)) {
         game.factions[owner].treasury += fee;
@@ -1753,7 +1755,7 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
     const int owner = game.cluster.stars[starIndex].ownerFaction;
     const double costShare = agent.cargoCost * (amount / std::max(0.001, cargoAmount));
 
-    market.supply[resourceIndex].amount += amount;
+    market.applyTrade(resourceIndex, amount);
     market.demand[resourceIndex].amount = std::max(0.0, market.demand[resourceIndex].amount - amount);
     agent.money += gross - fee;
     if (validFaction(game, owner)) {
@@ -1787,7 +1789,7 @@ void buyCargo(Game& game, Agent& agent, int starIndex, const TradePlan& plan) {
     const double fee = baseCost * tariff;
     const int owner = game.cluster.stars[starIndex].ownerFaction;
 
-    market.supply[plan.elementIndex].amount -= amount;
+    market.applyTrade(plan.elementIndex, -amount);
     market.demand[plan.elementIndex].amount += amount * 0.45;
     agent.money -= (baseCost + fee);
     if (validFaction(game, owner)) {
@@ -3903,8 +3905,9 @@ void Game::updateColonies(double dt) {
 
         ClusterStar& star = cluster.stars[colony.starIndex];
         Market& market = markets[colony.starIndex];
-        const double shortage = std::max(0.0, market.pricePressure() - 1.0);
-        const double supplySatisfaction = std::max(0.2, 1.0 - shortage * 0.18);
+        // Незакрытые нужды рынка (модель замещения) бьют по колонии напрямую:
+        // нечем дышать и строить — рост встаёт, производство чахнет.
+        const double supplySatisfaction = std::max(0.12, 1.0 - market.strain * 1.15);
         const double damageFactor = std::max(0.1, 1.0 - colony.damage);
         const double growthRate = (0.0012 + star.habitability * 0.0035 + colony.infrastructure * 0.00035) * supplySatisfaction * damageFactor;
         const double gained = std::min(1200.0, double(colony.population) * growthRate * dt);
@@ -4709,7 +4712,7 @@ bool Game::agentAcceptContract(int agentIndex, int contractId) {
             return false;
         }
 
-        origin.supply[contract->resource].amount -= contract->amount;
+        origin.applyTrade(contract->resource, -contract->amount);
         agent.ship.cargo.emplace_back(elementDefinitions()[contract->resource].symbol, contract->amount);
     }
     agent.cargoCost = 0.0;
@@ -4779,7 +4782,7 @@ bool Game::agentCompleteContract(int agentIndex, int contractId) {
             }
         }
         Market& target = markets[contract->targetStar];
-        target.supply[contract->resource].amount += contract->amount;
+        target.applyTrade(contract->resource, contract->amount);
         target.demand[contract->resource].amount = std::max(0.0, target.demand[contract->resource].amount - contract->amount);
         if (contract->type == ContractType::ColonySupply) {
             applyColonySupplyDelivery(*this, contract->targetStar, contract->resource, contract->amount);

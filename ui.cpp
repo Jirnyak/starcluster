@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "econ.h"
 #include "modules.h"
 #include "render2d.h"
 #include <algorithm>
@@ -195,12 +196,15 @@ int drawStat(SDL_Renderer* renderer, int x, int y, const std::string& label, con
     return x;
 }
 
+// Отношение местной цены к опорной цене скопления: <1 — здесь дёшево (бери),
+// >1 — здесь дорого (вези сюда). Это и есть сигнал арбитража.
 double marketPressure(const Market& market, int elementIndex) {
-    const std::vector<ElementDefinition>& elements = elementDefinitions();
-    if (elementIndex < 0 || elementIndex >= int(market.prices.size()) || elementIndex >= int(elements.size())) {
+    if (elementIndex < 0 || elementIndex >= int(market.prices.size())) {
         return market.pricePressure();
     }
-    return market.prices[elementIndex] / elements[elementIndex].basePrice;
+    const double reference = marketReferencePrice(elementIndex);
+    if (reference <= 0.0) return 1.0;
+    return market.prices[elementIndex] / reference;
 }
 
 bool playerMarketView(const Game& game, int starIndex, int elementIndex, PlayerMarketView& view) {
@@ -375,16 +379,21 @@ bool hasFocus(const std::vector<int>& focus, int elementIndex) {
 }
 
 SDL_Color marketCellColor(const Market& market, int elementIndex) {
+    // Бесполезное вещество (ни одной функции) — тусклая заглушка, не шум.
+    if (econPrimaryFunction(elementIndex) < 0) return {30, 34, 42, 200};
+
     const double pressure = marketPressure(market, elementIndex);
-    if (pressure > 1.25) {
-        const Uint8 r = Uint8(std::min(245.0, 88.0 + pressure * 46.0));
-        return {r, 66, 70, 225};
+    if (pressure > 1.15) {
+        // Дорого: чем ярче красный, тем выгоднее сюда ВЕЗТИ.
+        const double heat = std::min(1.0, std::log(pressure) / std::log(4.0));
+        return {Uint8(96 + 150 * heat), Uint8(62 - 26 * heat), Uint8(66 - 26 * heat), 230};
     }
-    if (pressure < 0.75) {
-        const Uint8 g = Uint8(std::min(235.0, 118.0 + (1.0 - pressure) * 180.0));
-        return {52, g, 142, 225};
+    if (pressure < 0.87) {
+        // Дёшево: чем ярче зелёный, тем выгоднее ЗДЕСЬ брать.
+        const double deal = std::min(1.0, std::log(1.0 / pressure) / std::log(5.0));
+        return {Uint8(38 + 30 * deal), Uint8(96 + 150 * deal), Uint8(104 + 40 * deal), 230};
     }
-    return {56, 82, 116, 220};
+    return {56, 72, 96, 218};
 }
 
 int playerMarketStar(const Game& game) {
@@ -1505,6 +1514,39 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
     drawText(renderer, x + 154, y, "NEED " + focusList(star->demandFocus, 5), P.red, 1);
     y += 16;
 
+    // Чего система хочет НА САМОМ ДЕЛЕ — три главные функции-нужды и их закрытие.
+    if (window.star >= 0 && window.star < int(game.markets.size())) {
+        const Market& market = game.markets[window.star];
+        if (market.needs.size() == size_t(EF_COUNT)) {
+            int order[EF_COUNT];
+            for (int f = 0; f < EF_COUNT; ++f) order[f] = f;
+            for (int a = 0; a < EF_COUNT; ++a) {
+                for (int b = a + 1; b < EF_COUNT; ++b) {
+                    if (market.needs[order[b]] > market.needs[order[a]]) {
+                        const int tmp = order[a]; order[a] = order[b]; order[b] = tmp;
+                    }
+                }
+            }
+            double total = 0.0;
+            for (int f = 0; f < EF_COUNT; ++f) total += market.needs[f];
+            std::string demandLine = "DEMANDS ";
+            for (int k = 0; k < 3 && total > 0.0; ++k) {
+                char buf[24];
+                std::snprintf(buf, sizeof(buf), "%s %.0F%%  ", econFunctionCode(order[k]),
+                              market.needs[order[k]] / total * 100.0);
+                demandLine += buf;
+            }
+            drawText(renderer, x, y, demandLine, P.amber, 1);
+            y += 14;
+            if (market.strain > 0.02) {
+                char buf[48];
+                std::snprintf(buf, sizeof(buf), "UNMET NEEDS %.0F%% - COLONY STARVING", market.strain * 100.0);
+                drawText(renderer, x, y, buf, market.strain > 0.25 ? P.red : P.amber, 1);
+                y += 14;
+            }
+        }
+    }
+
     if (marketKnown) {
         drawPlayerMarketView(renderer, marketView, elementDefinitions()[selection.element], x, y);
     }
@@ -1708,6 +1750,12 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         strokeRect(renderer, rect.x, rect.y, rect.w, rect.h, border);
 
         drawText(renderer, rect.x + 3, rect.y + 3, elements[i].symbol, idx == selection.element ? P.amber : P.text, 1);
+        // Для чего этот элемент годится — прямо в клетке (три буквы функции).
+        const int primary = econPrimaryFunction(idx);
+        if (rect.w >= 26 && rect.h >= 24) {
+            const char* code = primary >= 0 ? econFunctionCode(primary) : "-";
+            drawText(renderer, rect.x + 3, rect.y + 12, code, primary >= 0 ? P.dim : P.border, 1);
+        }
         char z[8];
         int len = std::snprintf(z, sizeof(z), "%d", elements[i].atomicNumber);
         drawText(renderer, rect.x + rect.w - 3 - len * 6, rect.y + rect.h - 9, z, P.dim, 1);
@@ -1736,19 +1784,62 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     if (selection.element >= 0 && selection.element < int(elements.size())) {
         const ElementDefinition& element = elements[selection.element];
         drawText(renderer, infoX, infoY, std::string(element.symbol) + " " + element.name, P.text, 1);
+
+        // К чему элемент пригоден: три лучшие функции с качеством кандидата.
+        int order[EF_COUNT];
+        for (int f = 0; f < EF_COUNT; ++f) order[f] = f;
+        for (int a = 0; a < EF_COUNT; ++a) {
+            for (int b = a + 1; b < EF_COUNT; ++b) {
+                if (econQuality(selection.element, order[b]) > econQuality(selection.element, order[a])) {
+                    const int tmp = order[a]; order[a] = order[b]; order[b] = tmp;
+                }
+            }
+        }
+        int line = infoY + 14;
+        bool anyUse = false;
+        for (int k = 0; k < 3; ++k) {
+            const int f = order[k];
+            const double q = econQuality(selection.element, f);
+            if (q <= ECON_QUALITY_FLOOR) continue;
+            anyUse = true;
+            char buf[64];
+            const double share = market ? market->marketShare(selection.element, f) : 0.0;
+            std::snprintf(buf, sizeof(buf), "%-4s Q%.2F", econFunctionCode(f), q);
+            int cx = drawStat(renderer, infoX, line, "", buf, P.dim, k == 0 ? P.cyan : P.dim);
+            if (market && share > 0.004) {
+                std::snprintf(buf, sizeof(buf), "%.0F%%", share * 100.0);
+                drawStat(renderer, cx, line, "SHARE ", buf, P.dim, P.text);
+            }
+            line += 13;
+        }
+        if (!anyUse) {
+            drawText(renderer, infoX, line, "NO INDUSTRIAL USE", P.red, 1);
+            line += 13;
+        }
+
         if (market && selection.element < int(market->prices.size())) {
             char buf1[32], buf2[32];
-            std::snprintf(buf1, sizeof(buf1), "%.1F", market->prices[selection.element]);
-            drawStat(renderer, infoX, infoY + 14, "PRICE ", buf1, P.dim, P.amber);
+            const double price = market->prices[selection.element];
+            const double reference = marketReferencePrice(selection.element);
+            std::snprintf(buf1, sizeof(buf1), "%.1F", price);
+            int cx = drawStat(renderer, infoX, line, "PRICE ", buf1, P.dim, P.amber);
+            if (reference > 0.0) {
+                const double ratio = price / reference;
+                std::snprintf(buf2, sizeof(buf2), "X%.2F", ratio);
+                drawStat(renderer, cx, line, "VS CLUSTER ", buf2, P.dim,
+                         ratio < 0.87 ? P.green : (ratio > 1.15 ? P.red : P.text));
+            }
+            line += 13;
             std::snprintf(buf1, sizeof(buf1), "%.0F", market->supply[selection.element].amount);
-            drawStat(renderer, infoX, infoY + 28, "SUPPLY ", buf1, P.dim, P.green);
-            std::snprintf(buf1, sizeof(buf1), "%.0F", market->demand[selection.element].amount);
-            drawStat(renderer, infoX, infoY + 42, "DEMAND ", buf1, P.dim, P.red);
-            std::snprintf(buf1, sizeof(buf1), "%.1F", element.atomicMass);
-            std::snprintf(buf2, sizeof(buf2), "%.2F/%.2F", element.fusionFuelTrait, element.fissionFuelTrait);
-            int cx = infoX;
-            cx = drawStat(renderer, cx, infoY + 56, "MASS ", buf1, P.dim, P.text);
-            cx = drawStat(renderer, cx, infoY + 56, "FUEL ", buf2, P.dim, P.text);
+            cx = drawStat(renderer, infoX, line, "STOCK ", buf1, P.dim, P.green);
+            std::snprintf(buf1, sizeof(buf1), "%.1F/Y", market->demandRate[selection.element]);
+            drawStat(renderer, cx, line, "USE ", buf1, P.dim, P.red);
+            line += 13;
+            const double cover = market->coverageYears(selection.element);
+            std::snprintf(buf1, sizeof(buf1), "%.1FY", std::min(999.0, cover));
+            cx = drawStat(renderer, infoX, line, "COVER ", buf1, P.dim, cover < 2.0 ? P.red : P.text);
+            std::snprintf(buf1, sizeof(buf1), "%.0F", element.atomicMass);
+            drawStat(renderer, cx, line, "MASS ", buf1, P.dim, P.text);
         }
     }
 

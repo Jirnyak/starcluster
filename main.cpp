@@ -1,5 +1,6 @@
 #define SDL_MAIN_HANDLED
 #include "game.h"
+#include "econ.h"
 #include "ui.h"
 #include "camera.h"
 #include "local.h"
@@ -84,7 +85,7 @@ void updateCameraRotation(View3D& view, const Uint8* keys, double dt) {
 
 double marketPressureForElement(const Market& market, int element) {
     if (element < 0 || element >= int(market.prices.size())) return market.pricePressure();
-    return market.prices[element] / elementDefinitions()[element].basePrice;
+    return market.prices[element] / std::max(0.1, marketReferencePrice(element));
 }
 
 void marketColor(const Market& market, int element, Uint8& r, Uint8& g, Uint8& b) {
@@ -141,7 +142,7 @@ int strongestShortage(const Market& market) {
     int best = 0;
     double bestPressure = -1.0;
     for (size_t i = 0; i < market.prices.size(); ++i) {
-        const double pressure = market.prices[i] / elementDefinitions()[i].basePrice;
+        const double pressure = market.prices[i] / std::max(0.1, marketReferencePrice(int(i)));
         if (pressure > bestPressure) {
             bestPressure = pressure;
             best = int(i);
@@ -154,7 +155,7 @@ int strongestSurplus(const Market& market) {
     int best = 0;
     double bestPressure = 1e9;
     for (size_t i = 0; i < market.prices.size(); ++i) {
-        const double pressure = market.prices[i] / elementDefinitions()[i].basePrice;
+        const double pressure = market.prices[i] / std::max(0.1, marketReferencePrice(int(i)));
         if (pressure < bestPressure) {
             bestPressure = pressure;
             best = int(i);
@@ -312,12 +313,86 @@ void resetSelectionAfterLoad(Game& game, View3D& view, UI::WindowState& ui, int 
     if (selectedStar >= 0) UI::openSystemWindow(ui, selectedStar, screenW, screenH);
 }
 
+// Балансовый отчёт по РЕАЛЬНОМУ сгенерированному скоплению: что творится на
+// рынке стартовой системы и её соседей. Без окна — только числа (--econreport).
+int runEconReport() {
+    Game game;
+    game.init(STAR_COUNT);
+    for (int year = 0; year < 40; ++year) game.update(1.0);
+
+    const int home = game.playerAgent >= 0 ? game.agents[game.playerAgent].currentStar : 0;
+    const ClusterStar& hs = game.cluster.stars[home];
+    std::printf("СТАРТ: %s  роль %s  нас %.0F  инд %.2F  strain %.0F%%\n",
+                hs.name.c_str(), hs.economyRole.c_str(), hs.population, hs.industry,
+                game.markets[home].strain * 100.0);
+    std::printf("КРЕДИТЫ %.0F  ТРЮМ %.0F\n\n",
+                game.agents[game.playerAgent].money, game.agents[game.playerAgent].ship.cargoCapacity);
+
+    // Соседи в радиусе 25 св. лет.
+    std::vector<std::pair<double, int> > neighbours;
+    for (size_t i = 0; i < game.cluster.stars.size(); ++i) {
+        if (int(i) == home) continue;
+        const ClusterStar& s = game.cluster.stars[i];
+        const double dx = s.x - hs.x, dy = s.y - hs.y, dz = s.z - hs.z;
+        const double d = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (d < 25.0) neighbours.push_back(std::make_pair(d, int(i)));
+    }
+    std::sort(neighbours.begin(), neighbours.end());
+    if (neighbours.size() > 12) neighbours.resize(12);
+    std::printf("СОСЕДЕЙ В 25 СВ.ЛЕТ: %d\n", int(neighbours.size()));
+
+    // Лучшие сделки: купить дома — продать у соседа, и наоборот.
+    struct Deal { double profit; int element; int target; double buy; double sell; double dist; };
+    std::vector<Deal> deals;
+    const Market& local = game.markets[home];
+    const double cargo = game.agents[game.playerAgent].ship.cargoCapacity;
+    for (size_t k = 0; k < neighbours.size(); ++k) {
+        const Market& remote = game.markets[neighbours[k].second];
+        for (size_t e = 0; e < local.prices.size(); ++e) {
+            if (econPrimaryFunction(int(e)) < 0) continue;
+            const double units = std::min(cargo / std::max(0.1, resourceUnitMassByIndex(int(e))),
+                                          local.supply[e].amount);
+            if (units < 1.0) continue;
+            const double spread = remote.prices[e] - local.prices[e];
+            if (spread <= 0.0) continue;
+            Deal d;
+            d.profit = spread * units;
+            d.element = int(e);
+            d.target = neighbours[k].second;
+            d.buy = local.prices[e];
+            d.sell = remote.prices[e];
+            d.dist = neighbours[k].first;
+            deals.push_back(d);
+        }
+    }
+    std::sort(deals.begin(), deals.end(), [](const Deal& a, const Deal& b) { return a.profit > b.profit; });
+    std::printf("\n%-4s %-4s %10s %10s %8s %7s %12s  %s\n", "SYM", "FUN", "КУПИТЬ", "ПРОДАТЬ", "СПРЕД", "СВ.ЛЕТ", "ПРИБЫЛЬ", "КУДА");
+    for (size_t k = 0; k < deals.size() && k < 15; ++k) {
+        const Deal& d = deals[k];
+        std::printf("%-4s %-4s %10.1F %10.1F %7.1FX %7.1F %12.0F  %s\n",
+                    elementDefinitions()[d.element].symbol,
+                    econFunctionCode(econPrimaryFunction(d.element)),
+                    d.buy, d.sell, d.sell / std::max(0.1, d.buy), d.dist, d.profit,
+                    game.cluster.stars[d.target].name.c_str());
+    }
+
+    double strainSum = 0.0, strainMax = 0.0;
+    for (size_t i = 0; i < game.markets.size(); ++i) {
+        strainSum += game.markets[i].strain;
+        strainMax = std::max(strainMax, game.markets[i].strain);
+    }
+    std::printf("\nSTRAIN ПО СКОПЛЕНИЮ: средний %.0F%%, максимум %.0F%%\n",
+                strainSum / double(game.markets.size()) * 100.0, strainMax * 100.0);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     bool smoke = false;
     bool localSmoke = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--smoke") == 0) smoke = true;
         if (std::strcmp(argv[i], "--localsmoke") == 0) { smoke = true; localSmoke = true; }
+        if (std::strcmp(argv[i], "--econreport") == 0) return runEconReport();
     }
     const char* smokeEnv = std::getenv("STARCLUSTER_SMOKE");
     if (smokeEnv && std::strcmp(smokeEnv, "0") != 0) smoke = true;

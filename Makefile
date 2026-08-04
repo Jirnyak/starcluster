@@ -2,7 +2,7 @@ CXX ?= g++
 SDL_CFLAGS := $(shell sdl2-config --cflags)
 SDL_LIBS := $(shell sdl2-config --libs) -lSDL2_mixer
 
-SOURCES = main.cpp game.cpp cluster.cpp resource.cpp market.cpp ship.cpp agent.cpp colony.cpp faction.cpp ui.cpp mining.cpp combat.cpp spaceevents.cpp anomaly.cpp modules.cpp chromo.cpp render2d.cpp localgen.cpp localsim.cpp localdraw.cpp stb_image.cpp
+SOURCES = main.cpp game.cpp cluster.cpp resource.cpp market.cpp econ.cpp ship.cpp agent.cpp colony.cpp faction.cpp ui.cpp mining.cpp combat.cpp spaceevents.cpp anomaly.cpp modules.cpp chromo.cpp render2d.cpp localgen.cpp localsim.cpp localdraw.cpp stb_image.cpp
 
 # Всё, кроме main.cpp (для линковки альтернативных точек входа — soak-теста).
 LIBSOURCES = $(filter-out main.cpp,$(SOURCES))
@@ -13,6 +13,12 @@ all: game
 
 game: $(SOURCES)
 	$(CXX) $(SOURCES) -O3 -std=c++11 $(SDL_CFLAGS) $(SDL_LIBS) -o game
+
+# Балансовый стенд экономики: матрица способностей, опорные цены, волна
+# замещения, пространственный разброс цен. Без SDL — только числа.
+econ: econ_test.cpp econ.cpp market.cpp resource.cpp
+	$(CXX) econ_test.cpp econ.cpp market.cpp resource.cpp -O2 -std=c++11 -o econ_test
+	./econ_test
 
 # Санитайзер-сборка игры. Проверка: `make asan && ./game_asan --smoke && ./game_asan --localsmoke`.
 asan: $(SOURCES)

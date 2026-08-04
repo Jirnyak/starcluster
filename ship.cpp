@@ -5,7 +5,6 @@
 
 namespace {
 
-const double RESOURCE_MASS_SCALE = 0.01;
 
 int defaultFuelElement() {
     const std::vector<ElementDefinition>& elements = elementDefinitions();
@@ -91,9 +90,7 @@ const std::vector<ShipClass>& shipClasses() {
 }
 
 double resourceUnitMassByIndex(int elementIndex) {
-    const std::vector<ElementDefinition>& elements = elementDefinitions();
-    if (elementIndex < 0 || elementIndex >= int(elements.size())) return 1.0;
-    return std::max(0.001, elements[elementIndex].atomicMass * RESOURCE_MASS_SCALE);
+    return elementUnitMass(elementIndex);
 }
 
 double resourceUnitMass(const std::string& element) {

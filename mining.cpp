@@ -111,8 +111,8 @@ void Game::updateMining(double dt) {
             int bestIdx = idx;
             double bestPrice = -1.0;
             for (int j = 0; j < ecount; ++j) {
-                if (elems[j].basePrice > bestPrice) {
-                    bestPrice = elems[j].basePrice;
+                if (marketReferencePrice(int(j)) > bestPrice) {
+                    bestPrice = marketReferencePrice(int(j));
                     bestIdx = j;
                 }
             }
