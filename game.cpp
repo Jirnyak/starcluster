@@ -5185,6 +5185,37 @@ bool Game::playerBuybackLicence() {
 // ценам соседей — то есть по данным, которые могут быть старыми. Возраст и
 // уверенность возвращаются вместе со сделкой, чтобы UI показал их игроку: сводка
 // это подсказка разведки, а не гарантия. Ничего не мутирует, RNG не трогает.
+int Game::playerSurveyedMarketCount() const {
+    int n = 0;
+    for (int i = 0; i < int(cluster.stars.size()); ++i) {
+        if (playerKnowsMarket(i)) ++n;
+    }
+    return n;
+}
+
+// Единственное место, где живёт МОДЕЛЬ цены чужого рынка. Сейчас модель — это само
+// наблюдение: «столько там стоило, когда я там был». Насколько ей верить сегодня,
+// говорит отдельно confidence (exp(-age/tau)).
+//
+// ⚠️ ИЗМЕРЕНО И ОТВЕРГНУТО (2026-08-04): экстраполяция «сползанием к опорной цене
+// скопления» с весом confidence выглядела элегантно (симуляция действительно тянет
+// цены к опорной через importBandDrive), но на замере оказалась ХУЖЕ простого
+// снимка. Медианная ошибка в разах по 200 разведанным рынкам:
+//     возраст 20 лет — снимок 1.45x, сползание 1.59x (−31% точности)
+//     возраст 40 лет — снимок 1.55x, сползание 1.63x (−14%)
+//     возраст 60 лет — снимок 1.58x, сползание 1.62x (−6%)
+// Причина содержательная: цены систем УСТОЙЧИВЫ. Система, дорогая по железу, дорога
+// по железу и через век — её недра и нужды не меняются. Сползание к средней по
+// скоплению выбрасывает ровно эту информацию. Не повторяй этот заход без замера.
+//
+// Куда копать за настоящей моделью: в системе знаний уже лежат supplyPressure и
+// demandPressure на момент наблюдения — это НАПРАВЛЕНИЕ движения цены, а не уровень.
+// Прогноз по тренду («видел дефицит ⇒ с тех пор подорожало») может дать реальный
+// выигрыш там, где возврат к среднему проиграл. Проверять тем же стендом.
+double Game::playerProjectedPrice(int starIndex, int elementIndex) const {
+    return playerKnownPrice(starIndex, elementIndex);
+}
+
 std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDeals) const {
     std::vector<ArbitrageDeal> deals;
     if (!validStar(*this, originStar) || originStar >= int(markets.size())) return deals;
@@ -5196,67 +5227,105 @@ std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDea
     const double freeMass = std::max(0.0, player.ship.cargoCapacity - shipCargoMass(player.ship));
     if (freeMass <= 0.0 || player.money <= 0.0) return deals;
 
-    const double SCAN_LY = 25.0;                 // дальше сводка бесполезна: топливо и время съедят маржу
-    const double sellTariff = licenceTariffRate; // лицензионный тариф удержат с продажи
+    const double sellTariff = licenceTariffRate;    // лицензионный тариф удержат с продажи
+    const int elems = std::min(int(elementCount()), int(home.prices.size()));
+    const int keep = maxDeals > 0 ? maxDeals : 200; // храним лучшие, а не все 390k строк
 
+    // Сколько чего можно увезти — зависит ТОЛЬКО от элемента и кошелька, а не от
+    // пункта назначения. Считаем один раз на элемент, а не заново для каждой из
+    // тысяч разведанных систем: раньше это был главный источник стоимости.
+    struct Leg { double maxUnits; double buyBase; bool usable; };
+    std::vector<Leg> legs(static_cast<size_t>(elems));   // скобки без cast'а — vexing parse
+    for (int e = 0; e < elems; ++e) {
+        Leg& leg = legs[size_t(e)];
+        leg.usable = false;
+        leg.buyBase = home.prices[e];
+        leg.maxUnits = 0.0;
+        if (leg.buyBase <= 0.001 || home.supply[e].amount < 1.0) continue;
+        const double unitMass = resourceUnitMassByIndex(e);
+        if (unitMass <= 0.0) continue;
+        double u = std::min(freeMass / unitMass, home.supply[e].amount);
+        if (u <= 0.01) continue;
+        // Верхняя граница по деньгам — по ФАКТИЧЕСКОЙ цене исполнения (она выше
+        // котировки: покупка сама разгоняет рынок, §10.3).
+        for (int pass = 0; pass < 2 && u > 0.0; ++pass) {
+            const double avg = home.executionPrice(e, u, false);
+            u = std::min(u, player.money / std::max(1e-9, avg));
+        }
+        if (u <= 0.01) continue;
+        leg.maxUnits = u;
+        leg.usable = true;
+    }
+
+    // Радиуса поиска НЕТ: сводка охватывает ВСЁ, что игрок когда-либо разведал, и
+    // растёт вместе с его картой — до всех 10 000 систем. Дальние строки не прячем,
+    // а показываем с дистанцией: везти за 60 ly или нет — решает игрок.
+    // Порог `worst` — прибыль худшей строки в текущей top-N: пара, которая не может
+    // его перебить даже в идеале, отбрасывается до дорогого перебора объёмов.
+    double worst = 0.0;
     for (int target = 0; target < int(cluster.stars.size()) && target < int(markets.size()); ++target) {
         if (target == originStar) continue;
+        if (!playerKnowsMarket(target)) continue;   // неразведанное не показываем — знание и есть ресурс
+
         const double distance = distanceBetween(hs, cluster.stars[target]);
-        if (distance > SCAN_LY) continue;
-        if (!playerKnowsMarket(target)) continue;      // неразведанное не показываем — знание и есть ресурс
-
         const double age = playerKnownMarketAge(target);
-        for (int e = 0; e < int(elementCount()) && e < int(home.prices.size()); ++e) {
-            const double buyBase = home.prices[e];
-            if (buyBase <= 0.001 || home.supply[e].amount < 1.0) continue;
-            const double sellPrice = playerKnownPrice(target, e);
-            if (sellPrice <= buyBase) continue;        // ниже закупки — не сделка
+        const Market& tm = markets[target];
+        for (int e = 0; e < elems; ++e) {
+            const Leg& leg = legs[size_t(e)];
+            if (!leg.usable) continue;
+            // Цена назначения — МОДЕЛЬ на сейчас, а не снимок: живого канала с чужой
+            // системой нет, есть «что я видел» плюс сползание к опорной цене по мере
+            // старения (см. комментарий к ArbitrageDeal).
+            const double sellPrice = playerProjectedPrice(target, e);
+            if (sellPrice <= leg.buyBase * 1.05) continue;
 
-            const double unitMass = resourceUnitMassByIndex(e);
-            if (unitMass <= 0.0) continue;
-            double maxUnits = std::min(freeMass / unitMass, home.supply[e].amount);
-            if (maxUnits <= 0.01) continue;
-            // Верхняя граница по деньгам — по ФАКТИЧЕСКОЙ цене исполнения (она выше
-            // котировки: покупка сама разгоняет рынок, §10.3).
-            for (int pass = 0; pass < 2 && maxUnits > 0.0; ++pass) {
-                const double avg = home.executionPrice(e, maxUnits, false);
-                maxUnits = std::min(maxUnits, player.money / std::max(1e-9, avg));
-            }
-            if (maxUnits <= 0.01) continue;
+            // Оптимистичная оценка сверху: продали ВЕСЬ объём по модельной цене без
+            // проскальзывания, купили по котировке. Реальная прибыль всегда ниже,
+            // поэтому не перебивший порог кандидат не может попасть в top-N.
+            const double bound = leg.maxUnits * (sellPrice * (1.0 - sellTariff) - leg.buyBase);
+            if (bound <= worst) continue;
 
-            // «Полный трюм» больше не оптимум: при тонком рынке назначения прибыль
-            // по объёму имеет МАКСИМУМ (покупка дорожает, продажа дешевеет). Ищем его
-            // перебором — сводка должна подсказывать не только КУДА, но и СКОЛЬКО.
-            double units = 0.0, cost = 0.0, revenue = 0.0, profit = 0.0;
-            const double targetDepth = markets[target].depthOf(e);
+            // «Полный трюм» не оптимум: при тонком рынке назначения прибыль по объёму
+            // имеет МАКСИМУМ (покупка дорожает, продажа дешевеет). Ищем его перебором —
+            // сводка подсказывает не только КУДА, но и СКОЛЬКО.
+            const double targetDepth = tm.depthOf(e);
+            double units = 0.0, cost = 0.0, profit = 0.0;
             for (int step = 1; step <= 10; ++step) {
-                const double u = maxUnits * double(step) / 10.0;
+                const double u = leg.maxUnits * double(step) / 10.0;
                 const double c = u * home.executionPrice(e, u, false);
                 const double r = u * sellPrice * marketExecutionFactor(u, targetDepth, true) * (1.0 - sellTariff);
-                if (r - c > profit) { profit = r - c; units = u; cost = c; revenue = r; }
+                if (r - c > profit) { profit = r - c; units = u; cost = c; }
             }
-            if (units <= 0.01) continue;
-            (void)revenue;
-            if (profit <= 0.0) continue;
+            if (units <= 0.01 || profit <= worst) continue;
 
             ArbitrageDeal deal;
             deal.element = e;
             deal.targetStar = target;
             deal.buyPrice = cost / units;
             deal.sellPrice = sellPrice;
+            deal.observedPrice = playerKnownPrice(target, e);
             deal.units = units;
             deal.profit = profit;
             deal.distanceLy = distance;
             deal.ageYears = age;
             deal.confidence = playerKnownMarketConfidence(target, e);
             deals.push_back(deal);
+
+            // Держим список ограниченным: 390 000 строк не влезают ни в память, ни в
+            // глаза, а листать имеет смысл лучшие. Подрезаем вдвое реже, чем растём.
+            if (int(deals.size()) >= keep * 2) {
+                std::partial_sort(deals.begin(), deals.begin() + keep, deals.end(),
+                                  [](const ArbitrageDeal& a, const ArbitrageDeal& b) { return a.profit > b.profit; });
+                deals.resize(size_t(keep));
+                worst = deals.back().profit;
+            }
         }
     }
 
     std::sort(deals.begin(), deals.end(), [](const ArbitrageDeal& a, const ArbitrageDeal& b) {
         return a.profit > b.profit;
     });
-    if (maxDeals > 0 && int(deals.size()) > maxDeals) deals.resize(size_t(maxDeals));
+    if (int(deals.size()) > keep) deals.resize(size_t(keep));
     return deals;
 }
 

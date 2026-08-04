@@ -277,9 +277,14 @@ year per real second this is roughly seventeen minutes of play at `1x`.
 It does two things.
 
 **Route board.** It lists concrete deals - buy element X here, sell it at system Y - built
-only from markets the player has actually surveyed, within 25 light years. The board starts
-empty - the player begins knowing one system, their own - and fills in with every system
-visited. The price map is not issued; it is earned. Each row carries
+only from markets the player has actually surveyed. The board starts empty - the player begins
+knowing one system, their own - and fills in with every system visited, without limit, up to
+the whole cluster. The price map is not issued; it is earned.
+
+Prices on the board are what the player saw when they were last there, not a live feed: there
+is no faster-than-light market ticker, and light from a distant system takes decades to arrive.
+Each row therefore carries the age of that survey and a confidence value. Docking at a system
+again refreshes its entry. The list is scrollable and ranked by expected profit. Each row carries
 the age of that survey and a confidence value, and rows are tinted by confidence, so stale
 intelligence is visible at a glance. Unsurveyed systems do not appear at all: knowing where
 the money is *is* the resource.

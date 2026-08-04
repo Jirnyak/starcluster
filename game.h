@@ -15,11 +15,21 @@
 // тем рынкам, которые игрок уже знает (§ система знаний/сигналов), поэтому данные
 // бывают устаревшими — возраст и уверенность идут в той же строке. Разведка чужих
 // систем становится источником дохода, а не декоративным флагом на карте.
+//
+// `sellPrice` — НЕ замороженный снимок, а МОДЕЛЬ на текущий момент. Биржа здесь не
+// биржа в привычном смысле: живого канала с чужой системой не существует (свет идёт
+// туда десятилетиями), есть только «что я там видел» плюс экстраполяция. Модель
+// строится по тому же закону, которому подчиняется настоящий рынок: цена медленно
+// тянется к опорной цене скопления, поэтому чем старше наблюдение, тем сильнее
+// оценка сползает от увиденного к опорной. Вес наблюдения — это ровно
+// `confidence = exp(-age/tau)`, уже существующий в системе знаний.
+// `observedPrice` хранит исходное наблюдение, чтобы игрок видел и то, и другое.
 struct ArbitrageDeal {
     int element = -1;
     int targetStar = -1;
     double buyPrice = 0.0;     // цена в системе отправления (живая — мы в ней стоим)
-    double sellPrice = 0.0;    // известная цена назначения (может быть устаревшей)
+    double sellPrice = 0.0;    // МОДЕЛЬНАЯ цена назначения на сейчас (не снимок, см. ниже)
+    double observedPrice = 0.0;// что игрок видел своими глазами в момент посещения
     double units = 0.0;        // сколько влезает в трюм и по карману
     double profit = 0.0;       // ожидаемая прибыль с учётом проскальзывания и тарифов
     double distanceLy = 0.0;
@@ -310,6 +320,9 @@ public:
     bool playerBuyLicence();             // купить лицензию (+1 борт разрешён, +квота)
     bool playerSettleQuota();            // закрыть остаток квоты кредитами
     std::vector<ArbitrageDeal> playerArbitrageBoard(int originStar, int maxDeals) const;
+    // МОДЕЛЬ цены на СЕЙЧАС по устаревшему наблюдению (см. ArbitrageDeal).
+    double playerProjectedPrice(int starIndex, int elementIndex) const;
+    int playerSurveyedMarketCount() const;   // сколько рынков игрок обследовал
     int playerColonyCount() const;
     bool playerCanOpenContractsAt(int starIndex) const;
     std::vector<Contract> playerVisibleContractsAt(int starIndex) const;

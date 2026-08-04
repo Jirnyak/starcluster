@@ -1290,6 +1290,8 @@ struct ExchangeLayout {
     SDL_Rect board = {0, 0, 0, 0};      // список сделок
     SDL_Rect buyLicence = {0, 0, 0, 0};
     SDL_Rect settleQuota = {0, 0, 0, 0};
+    SDL_Rect scrollUp = {0, 0, 0, 0};
+    SDL_Rect scrollDown = {0, 0, 0, 0};
     int rowH = 14;
     int rows = 0;
 };
@@ -1305,6 +1307,8 @@ ExchangeLayout exchangeLayout(const Window& window) {
     const int by = window.rect.y + window.rect.h - 32;
     layout.buyLicence  = {x, by, 170, 24};
     layout.settleQuota = {x + 178, by, 190, 24};
+    layout.scrollUp    = {window.rect.x + window.rect.w - 46, top - 18, 36, 16};
+    layout.scrollDown  = {window.rect.x + window.rect.w - 46, by, 36, 24};
     return layout;
 }
 
@@ -1327,9 +1331,55 @@ void openExchangeWindow(WindowState& state, int starIndex, int screenW, int scre
     state.activeId = w.id;
 }
 
+// Сводка пересчитывается не каждый кадр: при полной разведке это ~40 мс. Условия
+// пересчёта — сменилась система стоянки или прошло ощутимое время (цены дрейфуют,
+// а повторное посещение системы обновляет её запись в базе знаний, и сводка обязана
+// это подхватить). Два года игрового времени = две секунды на скорости x1.
+void updateExchangeBoard(WindowState& state, const Game& game) {
+    const Window* exchange = nullptr;
+    for (const Window& w : state.windows) {
+        if (w.kind == WindowKind::Exchange) { exchange = &w; break; }
+    }
+    if (!exchange) return;                      // окно закрыто — не тратим время
+    const int star = exchange->star;
+    const double REFRESH_YEARS = 2.0;
+    if (star == state.exchangeStar && game.time - state.exchangeBuiltAt < REFRESH_YEARS) return;
+    state.exchangeBoard = game.playerArbitrageBoard(star, 0);
+    state.exchangeStar = star;
+    state.exchangeBuiltAt = game.time;
+}
+
+bool handleMouseWheel(WindowState& state, int mouseX, int mouseY, int dy) {
+    // Колесо достаётся ВЕРХНЕМУ окну под курсором; если такого нет — вызывающая
+    // сторона зумит карту как раньше.
+    for (int i = int(state.windows.size()) - 1; i >= 0; --i) {
+        Window& w = state.windows[size_t(i)];
+        if (!contains(w.rect, mouseX, mouseY)) continue;
+        if (w.kind == WindowKind::Exchange || w.kind == WindowKind::Shipyard ||
+            w.kind == WindowKind::Transactions) {
+            w.scrollOffset = std::max(0, w.scrollOffset - dy * 3);
+            return true;
+        }
+        return true;                            // окно поймало колесо, но не листается
+    }
+    return false;
+}
+
 bool handleExchangeWindowMouseDown(WindowState& state, Game& game, const Window& window, int mouseX, int mouseY) {
-    (void)state;
     const ExchangeLayout layout = exchangeLayout(window);
+    Window* w = nullptr;
+    for (auto& win : state.windows) if (win.id == window.id) { w = &win; break; }
+    if (w) {
+        const int total = int(state.exchangeBoard.size());
+        if (contains(layout.scrollUp, mouseX, mouseY)) {
+            w->scrollOffset = std::max(0, w->scrollOffset - layout.rows);
+            return true;
+        }
+        if (contains(layout.scrollDown, mouseX, mouseY)) {
+            w->scrollOffset = std::min(std::max(0, total - layout.rows), w->scrollOffset + layout.rows);
+            return true;
+        }
+    }
     if (contains(layout.buyLicence, mouseX, mouseY)) {
         game.playerBuyLicence();
         return true;
@@ -1341,7 +1391,8 @@ bool handleExchangeWindowMouseDown(WindowState& state, Game& game, const Window&
     return false;
 }
 
-void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& window, bool active) {
+void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& window,
+                        const WindowState& state, bool active) {
     const ClusterStar* star = starAt(game, window.star);
     drawWindowFrame(renderer, window, star ? ("EXCHANGE / " + star->name) : "EXCHANGE", active);
 
@@ -1375,33 +1426,47 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
     if (!live) {
         drawText(renderer, x, y, "DOCK IN THIS SYSTEM FOR LIVE QUOTES", P.red, 1);
     } else {
-        drawText(renderer, x, y, "BUY HERE / SELL THERE - FROM SURVEYED MARKETS ONLY", P.dim, 1);
+        char sub[128];
+        std::snprintf(sub, sizeof(sub), "MODELLED FROM %d SURVEYED MARKETS - NOT A LIVE FEED",
+                      game.playerSurveyedMarketCount());
+        drawText(renderer, x, y, sub, P.dim, 1);
     }
 
-    // --- Сводка сделок.
+    // --- Сводка сделок. Данные из кэша (updateExchangeBoard), список листается.
+    const std::vector<ArbitrageDeal>& deals = state.exchangeBoard;
+    const int total = int(deals.size());
     int by = layout.board.y;
-    drawText(renderer, x, by, "ELEM  DESTINATION      UNITS   BUY   SELL   PROFIT  LY  AGE", P.cyan, 1);
+    drawText(renderer, x, by, "ELEM  DESTINATION      UNITS   BUY  MODEL   PROFIT  LY  AGE CONF", P.cyan, 1);
     by += layout.rowH;
 
-    if (live && layout.rows > 0) {
-        const std::vector<ArbitrageDeal> deals = game.playerArbitrageBoard(window.star, layout.rows);
-        if (deals.empty()) {
-            drawText(renderer, x, by, "NO PROFITABLE ROUTE IN SURVEYED RANGE - GO SCOUT ONE", P.dim, 1);
-        }
-        for (size_t i = 0; i < deals.size(); ++i) {
-            const ArbitrageDeal& d = deals[i];
+    const int startIdx = std::min(std::max(0, window.scrollOffset), std::max(0, total - layout.rows));
+    const int endIdx = std::min(total, startIdx + layout.rows);
+    if (!live) {
+        // не наша система — котировки покупки неживые, список не показываем
+    } else if (total == 0) {
+        drawText(renderer, x, by, "NOTHING SURVEYED YET.", P.dim, 1);
+        drawText(renderer, x, by + 14, "VISIT NEIGHBOURING SYSTEMS - EACH ONE YOU DOCK AT", P.dim, 1);
+        drawText(renderer, x, by + 28, "IS ADDED HERE AND STAYS IN YOUR MODEL.", P.dim, 1);
+    } else {
+        for (int i = startIdx; i < endIdx; ++i) {
+            const ArbitrageDeal& d = deals[size_t(i)];
             const ClusterStar* ts = starAt(game, d.targetStar);
             char row[192];
-            std::snprintf(row, sizeof(row), "%-5s %-15s %6.0F %5.1F %6.1F %7.0F %3.0F %3.0FY",
+            std::snprintf(row, sizeof(row), "%-5s %-15s %6.0F %5.1F %6.1F %8.0F %3.0F %4.0FY %3.0F%%",
                           d.element >= 0 ? elementDefinitions()[d.element].symbol : "?",
                           ts ? ts->name.substr(0, 15).c_str() : "?",
                           d.units, d.buyPrice, d.sellPrice, d.profit, d.distanceLy,
-                          d.ageYears >= 0.0 ? d.ageYears : 0.0);
-            // Цвет строки — доверие к данным: свежая разведка зелёная, протухшая тусклая.
+                          d.ageYears >= 0.0 ? d.ageYears : 0.0, d.confidence * 100.0);
+            // Цвет строки — доверие к модели: свежая разведка зелёная, протухшая тусклая.
             const SDL_Color tone = d.confidence > 0.66 ? P.green : (d.confidence > 0.33 ? P.text : P.dim);
             drawText(renderer, x, by, row, tone, 1);
             by += layout.rowH;
         }
+        char pos[64];
+        std::snprintf(pos, sizeof(pos), "%d-%d OF %d", startIdx + 1, endIdx, total);
+        drawText(renderer, layout.board.x + layout.board.w - 110, layout.board.y, pos, P.dim, 1);
+        if (startIdx > 0) drawButton(renderer, layout.scrollUp, "UP", P.cyan, true);
+        if (endIdx < total) drawButton(renderer, layout.scrollDown, "DOWN", P.cyan, true);
     }
 
     // --- Кнопки лицензий.
@@ -2157,7 +2222,7 @@ void drawWindows(SDL_Renderer* renderer, const Game& game, int, int, const HudSe
         } else if (window.kind == WindowKind::Transactions) {
             drawTransactionsWindow(renderer, game, window, active);
         } else if (window.kind == WindowKind::Exchange) {
-            drawExchangeWindow(renderer, game, window, active);
+            drawExchangeWindow(renderer, game, window, state, active);
         } else {
             drawTradeWindow(renderer, game, window, selection, state, active);
         }

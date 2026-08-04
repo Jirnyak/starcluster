@@ -54,6 +54,12 @@ struct VisualNovelState {
 
 struct WindowState {
     std::vector<Window> windows;
+    // Кэш биржевой сводки. Пересчёт при полной разведке стоит ~40 мс — это четыре
+    // кадра, поэтому считаем не каждый кадр, а по изменению обстановки (см.
+    // updateExchangeBoard). Здесь же живёт прокрутка списка.
+    std::vector<ArbitrageDeal> exchangeBoard;
+    int exchangeStar = -1;
+    double exchangeBuiltAt = -1.0e18;
     int nextId = 1;
     int activeId = -1;
     int draggingId = -1;
@@ -71,6 +77,10 @@ void openCargoWindow(WindowState& state, int starIndex, int screenW, int screenH
 void openShipFitWindow(WindowState& state, int starIndex, int screenW, int screenH);
 void openTransactionsWindow(WindowState& state, int screenW, int screenH);
 void openExchangeWindow(WindowState& state, int starIndex, int screenW, int screenH);
+// Держит кэш сводки свежим. Зовётся каждый кадр, пересчитывает редко.
+void updateExchangeBoard(WindowState& state, const Game& game);
+// Прокрутка списков колесом мыши. true — колесо съедено окном (не зумим карту).
+bool handleMouseWheel(WindowState& state, int mouseX, int mouseY, int dy);
 void closeWindow(WindowState& state, int id);
 bool handleMouseDown(WindowState& state, Game& game, HudSelection& selection, int screenW, int screenH, int mouseX, int mouseY, int button);
 void handleMouseMove(WindowState& state, int screenW, int screenH, int mouseX, int mouseY);

@@ -890,9 +890,15 @@ int main(int argc, char** argv) {
                 }
             }
             if (e.type == SDL_MOUSEWHEEL) {
-                if (e.wheel.y > 0) view.scale *= 1.15;
-                if (e.wheel.y < 0) view.scale /= 1.15;
-                view.scale = clampDouble(view.scale, 1.4, 300.0);
+                // Колесо сперва предлагается окну под курсором (списки листаются),
+                // и только если его никто не взял — зумим карту.
+                int wheelX = 0, wheelY = 0;
+                SDL_GetMouseState(&wheelX, &wheelY);
+                if (!UI::handleMouseWheel(ui, wheelX, wheelY, e.wheel.y)) {
+                    if (e.wheel.y > 0) view.scale *= 1.15;
+                    if (e.wheel.y < 0) view.scale /= 1.15;
+                    view.scale = clampDouble(view.scale, 1.4, 300.0);
+                }
             }
             if (e.type == SDL_TEXTINPUT) {
                 UI::handleTextInput(ui, e.text.text);
@@ -1429,6 +1435,7 @@ int main(int argc, char** argv) {
         hud.simSpeed = simSpeed;
         hud.simYearsPerSecond = simYearsPerSecond;
         UI::updateVisualNovel(ui, game, realDt, winW, winH);
+        UI::updateExchangeBoard(ui, game);   // держит биржевую сводку свежей (пересчёт редкий)
         UI::drawHud(renderer, game, winW, winH, hud);
         UI::drawWindows(renderer, game, winW, winH, hud, ui);
         { std::vector<ActionButton> bar; buildBar(bar); drawBar(bar); }
