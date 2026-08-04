@@ -3744,7 +3744,9 @@ void Game::init(size_t num_stars) {
     // что ты добыл ногами. Была попытка выдать стартовую разведку ради
     // непустой сводки — она убивала главную петлю мотивации и откачена.
     const ClusterStar& playerHome = cluster.stars[playerStart];
-    Ship playerShip("Player", playerHome.x, playerHome.y, playerHome.z, 0.28, playerFaction);
+    // Имя = класс из shipClasses(): иначе buyShip не находит текущий корпус и не
+    // засчитывает его стоимость (см. комментарий у класса "Hauler" в ship.cpp).
+    Ship playerShip("Hauler", playerHome.x, playerHome.y, playerHome.z, 0.28, playerFaction);
     playerShip.cargoCapacity = 110.0;
     playerShip.acceleration = 0.22;
     shipAutofit(playerShip);

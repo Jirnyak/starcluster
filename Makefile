@@ -30,6 +30,14 @@ uiclick: ui_click_test.cpp $(LIBSOURCES)
 	$(CXX) ui_click_test.cpp $(LIBSOURCES) $(SANFLAGS) -std=c++11 $(SDL_CFLAGS) $(SDL_LIBS) -o ui_click_test
 	SDL_VIDEODRIVER=dummy ASAN_OPTIONS=detect_leaks=0 ./ui_click_test
 
+# Регрессия БАЛАНСА: проскальзывание, честность биржевой сводки, проходимость
+# квоты, непрерывность лестницы цен, окупаемость трюма и разведки. Лестница
+# проверок покрывала память и инварианты, но не экономику — а все крупные
+# ошибки оказались именно там (см. balance_test.cpp).
+balance: balance_test.cpp $(LIBSOURCES)
+	$(CXX) balance_test.cpp $(LIBSOURCES) -O2 -std=c++11 $(WARNFLAGS) $(SDL_CFLAGS) $(SDL_LIBS) -o balance_test
+	SDL_VIDEODRIVER=dummy ./balance_test
+
 # Санитайзер-сборка игры. Проверка: `make asan && ./game_asan --smoke && ./game_asan --localsmoke`.
 asan: $(SOURCES)
 	$(CXX) $(SOURCES) $(SANFLAGS) -std=c++11 $(SDL_CFLAGS) $(SDL_LIBS) -o game_asan
@@ -56,4 +64,4 @@ shot_asan: shot_test.cpp $(LIBSOURCES)
 	SDL_VIDEODRIVER=dummy ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 ./shot_test_asan
 
 clean:
-	rm -rf game game_asan soak_asan ui_click_test shot_test shot_test_asan *.dSYM shot_*.bmp shot_*.png
+	rm -rf game game_asan soak_asan ui_click_test balance_test shot_test shot_test_asan *.dSYM shot_*.bmp shot_*.png

@@ -1708,21 +1708,39 @@ void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& 
                     }
                 }
             }
-            double upgradePrice = std::max(0.0, sc.price - currentHullPrice);
-            double buyNewPrice = sc.price + 1000000.0;
-            
+            const double upgradePrice = std::max(0.0, sc.price - currentHullPrice);
+            // Второй борт больше не стоит `price + 1000000` (заградительная константа
+            // убрана): он требует СВОБОДНОЙ ЛИЦЕНЗИИ, купленной в брокерской конторе.
+            const double buyNewPrice = sc.price;
+            const int freeLic = game.playerFreeLicences();
+
             std::snprintf(line, sizeof(line), "CR:%.0F | CG:%.0F HW:%.0F LW:%.0F AR:%.0F U:%.0F", sc.price, sc.cargoCapacity, sc.heavyWeapons, sc.lightWeapons, sc.armor, sc.utility);
             drawText(renderer, topX, rowY + 14, line, P.text, 1);
-            
+
+            // Разница с ТЕКУЩИМ корпусом. Не запрещаем невыгодную покупку — решает
+            // игрок, — но и не даём купить даунгрейд вслепую: первые два корпуса в
+            // списке по трюму МЕНЬШЕ стартового, и без этой строки это не видно.
+            if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
+                const Ship& mine = game.agents[game.playerAgent].ship;
+                if (sc.name != mine.name) {
+                    const double dCargo = sc.cargoCapacity - mine.cargoCapacity;
+                    const double dFuel = sc.fuelCapacity - mine.fuelCapacity;
+                    char delta[96];
+                    std::snprintf(delta, sizeof(delta), "VS YOURS  CARGO %+.0F  FUEL %+.0F", dCargo, dFuel);
+                    drawText(renderer, topX + 300, rowY + 28, delta, dCargo < 0.0 ? P.red : P.green, 1);
+                }
+            }
+
             SDL_Rect upgradeBtn = {window.rect.x + window.rect.w - 200, rowY, 90, 24};
             SDL_Rect buyNewBtn = {window.rect.x + window.rect.w - 105, rowY, 90, 24};
-            
+
             char upgStr[32], newStr[32];
             std::snprintf(upgStr, sizeof(upgStr), "UPG %.0F", upgradePrice);
-            std::snprintf(newStr, sizeof(newStr), "NEW %.0F", buyNewPrice);
-            
+            if (freeLic > 0) std::snprintf(newStr, sizeof(newStr), "NEW %.0F", buyNewPrice);
+            else             std::snprintf(newStr, sizeof(newStr), "NEED LICENCE");
+
             drawButton(renderer, upgradeBtn, upgStr, P.green, cash >= upgradePrice);
-            drawButton(renderer, buyNewBtn, newStr, P.amber, cash >= buyNewPrice);
+            drawButton(renderer, buyNewBtn, newStr, P.amber, freeLic > 0 && cash >= buyNewPrice);
         } else if (i == nShips) {
             fillRect(renderer, topX, rowY + 7, window.rect.w - 2 * WINDOW_PAD, 1, P.border);
             drawText(renderer, topX, rowY + 13, "-- SHIP MODULES (FIT WHILE DOCKED) --", P.amber, 1);

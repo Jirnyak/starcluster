@@ -450,7 +450,7 @@ the active code path draws text with its own bitmap glyphs and links only SDL2.
 | `localgen.cpp` | Procedural generation of a star system for local flight (bodies, belt, traffic). |
 | `localsim.cpp` | Local flight simulation: flight model, NPC AI, combat, mining, docking, write-back to the macro world. |
 | `localdraw.cpp` | Local flight rendering: ray-sphere star plasma, lit planets, rings, asteroids, nebula, HUD. |
-| `soak_test.cpp`, `shot_test.cpp`, `ui_click_test.cpp`, `econ_test.cpp` | Headless harnesses driven by `make soak`, `make shots`, `make uiclick`, `make econ`. |
+| `soak_test.cpp`, `shot_test.cpp`, `ui_click_test.cpp`, `econ_test.cpp`, `balance_test.cpp` | Headless harnesses driven by `make soak`, `make shots`, `make uiclick`, `make econ`, `make balance`. |
 | `master_prompt.md` | Canonical handoff document: constraints, code map, methodology, roadmap, changelog. Read it first. |
 | `architecture.md` | High-level architecture and data-oriented rules. |
 | `lore.md` | Physical/economic canon and setting constraints. |
@@ -492,6 +492,19 @@ Important rules from the project documents:
 - expensive world-wide work belongs in generation, slow ticks, caches, or
   bounded candidate searches;
 - rendering reads state and draws; gameplay decisions stay in simulation code.
+
+## Balance Regression
+
+`make balance` runs a headless economic regression. Memory is covered by ASan and the local
+flight invariants by the soak test, but the economy had no coverage at all - and that is where
+every serious bug turned out to be. Trades once executed with no slippage and returned 44x
+capital in a single run; the brokerage board once promised 7869 credits where actually running
+the trade returned 285; two seeds in five produced a starting system with no profitable route
+at all; and the first two purchasable hulls carried less cargo than the one the player starts
+with.
+
+Each of those is now a standing check. The thresholds are deliberately wide: the goal is to
+catch a mechanism breaking, not to freeze the balance in place.
 
 ## Known Gaps
 
