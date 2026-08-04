@@ -107,8 +107,8 @@ SDL_Rect defaultWindowRect(WindowKind kind, int screenW, int screenH, int cascad
         rect.x = std::max(380, (screenW - rect.w) / 2 + cascade * 18);
         rect.y = std::max(100, screenH - rect.h - 50 - cascade * 10);
     } else if (kind == WindowKind::Exchange) {
-        rect.w = std::min(720, std::max(560, screenW - 420));
-        rect.h = std::min(460, std::max(380, screenH - 240));
+        rect.w = std::min(880, std::max(680, screenW - 360));
+        rect.h = std::min(560, std::max(420, screenH - 200));
         rect.x = std::max(280, (screenW - rect.w) / 2 + cascade * 18);
         rect.y = std::max(80, screenH - rect.h - 60 - cascade * 10);
     } else if (kind == WindowKind::ShipFit) {
@@ -117,8 +117,10 @@ SDL_Rect defaultWindowRect(WindowKind kind, int screenW, int screenH, int cascad
         rect.x = std::max(400, (screenW - rect.w) / 2 + cascade * 18);
         rect.y = std::max(120, screenH - rect.h - 50 - cascade * 10);
     } else {
-        rect.w = 440;
-        rect.h = 286;
+        // 440 не хватало: ряд действий доходит до 525 px (последняя кнопка —
+        // EXCHANGE), и он лез за край окна поверх текста.
+        rect.w = 550;
+        rect.h = 300;
         rect.x = std::max(252, std::min(screenW - rect.w - 280, 272 + cascade * 22));
         rect.y = 82 + cascade * 22;
     }
@@ -148,9 +150,9 @@ SystemLayout systemLayout(const Window& window) {
     layout.colony = {window.rect.x + WINDOW_PAD + 195, y, 80, 24};
     layout.cargo = {window.rect.x + WINDOW_PAD + 280, y, 60, 24};
     layout.shipyard = {window.rect.x + WINDOW_PAD + 345, y, 80, 24};
-    // Биржа — второй ряд: в первом уже нет места, а прятать её в хоткей нельзя,
-    // это единственная точка входа к лицензиям и сводке маршрутов.
-    layout.exchange = {window.rect.x + WINDOW_PAD, y - 28, 90, 24};
+    // Биржа — в тот же ряд. Вторым этажом кнопка легла поверх текста системы;
+    // окно расширено (см. defaultWindowRect), чтобы ряд поместился целиком.
+    layout.exchange = {window.rect.x + WINDOW_PAD + 430, y, 95, 24};
     return layout;
 }
 

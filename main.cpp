@@ -1142,14 +1142,14 @@ int main(int argc, char** argv) {
                     downgradeAgentToEscapePod(pa);
                     pa.ship.hullHP = pa.ship.maxHullHP; // escape pod is intact
                 }
-                game.lastEvent = "ship destroyed — using escape pod";
+                game.lastEvent = "ship destroyed - using escape pod";
                 game.pushNews("Ship destroyed! Cargo lost, using escape pod.", 3);
 
             } else if (dockStar >= 0) {
                 localScene.active = false;
                 selectedStar = dockStar;
                 UI::openTradeWindow(ui, dockStar, winW, winH);
-                game.lastEvent = "docked — market open";
+                game.lastEvent = "docked - market open";
             }
         } else if (!paused) {
             advanceGame(game, realDt * simYearsPerSecond);

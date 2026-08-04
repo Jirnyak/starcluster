@@ -3737,12 +3737,12 @@ void Game::init(size_t num_stars) {
     // радиусе двух прыжков — первые пять минут превращались в лотерею. Здесь мы
     // не подкручиваем цены, а лишь выбираем точку входа в уже сгенерированный мир.
     const int playerStart = pickStarterSystem(*this);
-    // У фракции игрока `homeStar` оставался -1, поэтому посев знаний (ниже) её
-    // молча пропускал: игрок знал ТОЛЬКО свою систему, а 298 соседей в радиусе
-    // 25 ly были для него белым пятном. Биржевая сводка при этом пуста —
-    // показывать нечего, хотя прибыльные маршруты рядом гарантированы
-    // (`pickStarterSystem`). Даём фракции игрока дом, как у всех остальных.
-    if (validFaction(*this, playerFaction)) factions[playerFaction].homeStar = playerStart;
+    // `homeStar` фракции игрока НАМЕРЕННО остаётся -1: посев знаний (ниже) её
+    // пропускает, и игрок начинает, зная ровно одну систему — свою. Биржевая
+    // сводка (§10.9) поначалу пуста и наполняется ТОЛЬКО тем, что игрок
+    // облетел сам. В этом весь смысл: карта цен — не выданная таблица, а то,
+    // что ты добыл ногами. Была попытка выдать стартовую разведку ради
+    // непустой сводки — она убивала главную петлю мотивации и откачена.
     const ClusterStar& playerHome = cluster.stars[playerStart];
     Ship playerShip("Player", playerHome.x, playerHome.y, playerHome.z, 0.28, playerFaction);
     playerShip.cargoCapacity = 110.0;
@@ -4512,7 +4512,7 @@ bool Game::buyAdditionalShip(int agentIndex, int starIndex, int classId) {
     // отдельной лицензии, и купить её надо заранее на бирже (§10.4). Расширение
     // флота = осознанно поднятая себе квота, а не стена из миллиона кредитов.
     if (agents[agentIndex].playerControlled && playerFreeLicences() <= 0) {
-        lastEvent = "no free licence — buy one at the exchange (E)";
+        lastEvent = "no free licence - buy one at the exchange (E)";
         return false;
     }
 
@@ -5148,7 +5148,7 @@ void Game::updateLicence(double dt) {
         licenceBuyback = std::max(LICENCE_BUYBACK_MIN, shortfall * LICENCE_BUYBACK_K);
         pushNews("LICENCE REVOKED: quota short by " + std::to_string(int(std::ceil(shortfall))) +
                  " Cr. Trading frozen until bought back (" + std::to_string(int(licenceBuyback)) + " Cr).", 2);
-        lastEvent = "licence revoked — trading frozen";
+        lastEvent = "licence revoked - trading frozen";
     }
     // Планка ползёт вверх независимо от исхода: скопление богатеет, и вечно жить
     // на одном отработанном маршруте не выйдет — геймплей обязан двигаться.
@@ -5294,7 +5294,7 @@ bool Game::playerBuyLicence() {
     licenceCount += 1;
     pushNews("Trading licence #" + std::to_string(licenceCount) + " acquired. Quota is now " +
              std::to_string(int(licenceQuotaTarget())) + " Cr per period.", 4);
-    lastEvent = "licence acquired — one more hull permitted";
+    lastEvent = "licence acquired - one more hull permitted";
     return true;
 }
 

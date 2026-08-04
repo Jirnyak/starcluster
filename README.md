@@ -277,7 +277,9 @@ year per real second this is roughly seventeen minutes of play at `1x`.
 It does two things.
 
 **Route board.** It lists concrete deals - buy element X here, sell it at system Y - built
-only from markets the player has actually surveyed, within 25 light years. Each row carries
+only from markets the player has actually surveyed, within 25 light years. The board starts
+empty - the player begins knowing one system, their own - and fills in with every system
+visited. The price map is not issued; it is earned. Each row carries
 the age of that survey and a confidence value, and rows are tinted by confidence, so stale
 intelligence is visible at a glance. Unsurveyed systems do not appear at all: knowing where
 the money is *is* the resource.
@@ -290,7 +292,9 @@ while a forty-year-old one can be off by half - which is exactly what its confid
 reports.
 
 **Licences.** Buying a licence raises the quota and permits one more hull; each is priced
-above the last, so expanding the fleet is a deliberate bet rather than a free upgrade. Buying
+above the last, so expanding the fleet is a deliberate bet rather than a free upgrade. The
+second licence costs a million credits: a second hull is a change of scale, not an upgrade,
+and is meant to be a goal measured in hundreds of runs. Buying
 an additional ship requires a free licence. The quota's remainder can also be settled directly
 in cash at a premium, for players who would rather pay than wait for tariffs to accumulate.
 
