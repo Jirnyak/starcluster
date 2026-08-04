@@ -9,8 +9,6 @@ namespace {
 
 const double EPSV = 1e-9;
 const double KAPPA = 0.34;        // скорость релаксации цены
-const double PRICE_FLOOR_K = 0.04;
-const double PRICE_CEIL_K = 220.0;
 
 double clamp(double v, double lo, double hi) { return std::max(lo, std::min(hi, v)); }
 double clamp01(double v) { return clamp(v, 0.0, 1.0); }
@@ -281,18 +279,47 @@ void Market::update(double dt) {
     }
 }
 
+// Насколько сильно единица оборота двигает цену. Общий для мгновенной реакции
+// (applyTrade) и для интегрирования цены по ходу сделки (executionPrice).
+const double IMPACT_K = 0.35;
+
+double Market::depthOf(int elementIndex) const {
+    if (elementIndex < 0 || elementIndex >= int(prices.size())) return 1e-6;
+    // Глубина рынка — годовой оборот за срок целевого запаса. Сделка размером
+    // с этот оборот двигает цену в разы; мелкая — почти не двигает.
+    const double flow = std::max(1e-6, demandRate[elementIndex] + productionRate[elementIndex]);
+    return flow * ECON_TARGET_COVERAGE;
+}
+
 void Market::applyTrade(int elementIndex, double deltaUnits) {
     if (elementIndex < 0 || elementIndex >= int(prices.size())) return;
     if (deltaUnits == 0.0) return;
     supply[elementIndex].amount = std::max(0.0, supply[elementIndex].amount + deltaUnits);
 
-    // Глубина рынка — годовой оборот за срок целевого запаса. Сделка размером
-    // с этот оборот двигает цену в разы; мелкая — почти не двигает.
-    const double flow = std::max(1e-6, demandRate[elementIndex] + productionRate[elementIndex]);
-    const double depth = flow * ECON_TARGET_COVERAGE;
-    const double impact = clamp(-deltaUnits / depth, -3.0, 3.0);
-    const double factor = clamp(std::exp(0.35 * impact), 0.5, 2.2);
+    const double impact = clamp(-deltaUnits / depthOf(elementIndex), -3.0, 3.0);
+    const double factor = clamp(std::exp(IMPACT_K * impact), 0.5, 2.2);
     prices[elementIndex] = clamp(prices[elementIndex] * factor, priceFloor(size_t(elementIndex)), priceCeiling(size_t(elementIndex)));
+}
+
+double Market::executionPrice(int elementIndex, double units, bool selling) const {
+    if (elementIndex < 0 || elementIndex >= int(prices.size())) return 0.0;
+    const double p0 = prices[elementIndex];
+    if (units <= 0.0 || p0 <= 0.0) return p0;
+
+    // z = kN/depth — сделка в долях глубины рынка. Малое z ⇒ средняя ≈ p0.
+    const double z = IMPACT_K * units / depthOf(elementIndex);
+    if (z < 1e-6) return p0;
+
+    // Продажа кэпа не требует: avg = p0·(1−e^−z)/z монотонно убывает к нулю, то
+    // есть «вывалил вдесятеро больше, чем рынок съедает» само собой обесценивает
+    // груз. Именно это и должно ограничивать сверхприбыль с одного рейса.
+    if (selling) {
+        return std::max(priceFloor(size_t(elementIndex)), p0 * (1.0 - std::exp(-z)) / z);
+    }
+    // Покупка растёт экспоненциально; ограничиваем лишь ЧИСЛЕННО (e^40 ещё
+    // конечно), объём и так упирается в деньги покупателя.
+    const double zc = std::min(z, 40.0);
+    return std::max(priceFloor(size_t(elementIndex)), p0 * (std::exp(zc) - 1.0) / zc);
 }
 
 double Market::pricePressure() const {
@@ -424,4 +451,9 @@ double marketReferencePrice(int elementIndex) {
     static const std::vector<double> reference = buildReferencePrices();
     if (elementIndex < 0 || elementIndex >= int(reference.size())) return 0.0;
     return reference[size_t(elementIndex)];
+}
+
+double marketClusterLevel() {
+    if (gClusterServiceCost <= 0.0) return 1.0;
+    return gClusterServiceCost / ECON_CREDITS_PER_SERVICE;
 }

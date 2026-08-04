@@ -12,7 +12,6 @@ namespace {
 // Добавляет `amount` единиц элемента `idx` в трюм. Что не влезает по массе —
 // конвертируется в кредиты по базовой цене и падает в `money`.
 void addLootOrCredits(Ship& ship, double& money, int idx, double amount) {
-    const std::vector<ElementDefinition>& elems = elementDefinitions();
     const int ecount = int(elementCount());
     if (idx < 0 || idx >= ecount || amount <= 0.0) return;
 
@@ -21,6 +20,7 @@ void addLootOrCredits(Ship& ship, double& money, int idx, double amount) {
     const double fitUnits = freeMass > 0.0 ? freeMass / unit : 0.0;
     const double take = std::min(amount, fitUnits);
     const double overflow = amount - take;
+    const std::vector<ElementDefinition>& elems = elementDefinitions();
 
     if (take > 0.0) {
         const std::string sym(elems[idx].symbol);
@@ -42,7 +42,6 @@ void placeAnomaly(Game& g) {
     if (s >= scount) s = scount - 1;
     const ClusterStar& st = g.cluster.stars[s];
 
-    const std::vector<ElementDefinition>& elems = elementDefinitions();
     const int ecount = int(elementCount());
 
     Anomaly a;

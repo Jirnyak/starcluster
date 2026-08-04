@@ -22,6 +22,38 @@ const int STAR_COUNT = 10000;
 const int CIV_COUNT = 100;
 const int RESOURCE_TYPES = 118;
 
+// Целевое население скопления в STAR_COUNT звёзд (для меньших миров — доля).
+// Миры меньшего размера получают пропорционально меньше бортов, поэтому
+// тестовые сцены остаются лёгкими.
+const int AGENT_TARGET_FULL = 1024;
+// Открытых контрактов на скопление той же полноты: доска заданий в 24 записи на
+// 10 000 систем означала, что игрок не видит ни одного задания нигде, кроме дома.
+const int CONTRACT_TARGET_FULL = 320;
+
+// --- Лицензионная квота оборота ------------------------------------------
+// Лицензия торговца не бесплатна: с каждой продажи удерживается тариф, и за
+// отчётный период игрок обязан наторговать столько, чтобы уплаченных тарифов
+// набралось не меньше квоты. Не набрал — лицензию отзывают, торговля
+// замораживается до выкупа.
+//
+// Период — ТЫСЯЧЕЛЕТИЕ, и это не произвол: скопление ~100 световых лет в
+// поперечнике, поэтому цены в разных его концах расходятся на века, и сверить
+// их можно лишь релятивистской корректировкой раз в тысячу лет. Тогда же
+// пересматривают и квоты. При «1 игровой год = 1 реальная секунда» это около
+// 17 минут игры на скорости x1 — дедлайн ощутим, но не гонит.
+//
+// Квота растёт на 1% за период: скопление богатеет, планка ползёт вверх, и
+// сидеть на одном отработанном маршруте вечно не выйдет.
+const double LICENCE_PERIOD_YEARS = 1000.0;      // релятивистская корректировка рынка
+const double LICENCE_QUOTA_BASE = 1000.0;        // квота первого тысячелетия
+const double LICENCE_QUOTA_GROWTH = 1.01;        // +1% за каждый прожитый период
+const double LICENCE_QUOTA_PER_EXTRA = 0.8;      // доля квоты за каждую лицензию сверх первой
+const double LICENCE_TARIFF_BASE = 0.08;         // базовая ставка тарифа с продажи
+const double LICENCE_TARIFF_MIN = 0.05;
+const double LICENCE_TARIFF_MAX = 0.14;
+const double LICENCE_BUYBACK_K = 2.0;            // выкуп = столько недобора
+const double LICENCE_BUYBACK_MIN = 400.0;
+
 extern std::mt19937 rng;
 int randomer(std::mt19937& rng, int max);
 
@@ -168,10 +200,15 @@ public:
     unsigned int seed = 42;
     std::string lastEvent;
     
-    // --- Tariff mechanics ---
-    bool pendingTariff = false;
-    int tariffFee = 0;
-    int tariffFaction = -1;
+    // --- Лицензионная квота оборота (см. константы LICENCE_* выше) ---
+    double licenceQuotaPaid = 0.0;                   // уплачено тарифов в текущем периоде
+    double licenceQuotaBase = LICENCE_QUOTA_BASE;    // планка на одну лицензию, растёт на 1% за период
+    double licencePeriodEnd = LICENCE_PERIOD_YEARS;  // game.time окончания периода
+    double licenceTariffRate = LICENCE_TARIFF_BASE;  // ставка, медленно плывёт от оборота скопления
+    double licenceBuyback = 0.0;                     // цена выкупа после отзыва
+    int licenceCount = 1;                            // сколько лицензий у игрока
+    bool licenceRevoked = false;                     // торговля заморожена
+    int licencePeriodsMet = 0;                       // сколько периодов закрыто успешно
 
 
     // --- Расширения геймплея (вертикальный срез) ---
@@ -188,6 +225,7 @@ public:
 
     std::vector<Transaction> transactions;
     double lastPlayerMoney = -1.0;
+    bool everEnteredLocal = false;      // заходил ли игрок в локальный полёт (для панели целей)
 
     Game();
     void init(size_t num_stars);
@@ -231,6 +269,11 @@ public:
     bool agentAutoTrade(int agentIndex);
     bool playerFoundColony();
     bool playerHireShip();
+    // --- Лицензионная квота ---
+    double licenceQuotaTarget() const;   // сколько тарифов нужно за период
+    void updateLicence(double dt);       // начисление ставки и смена периода
+    bool playerBuybackLicence();         // выкупить отозванную лицензию
+    bool playerTradingBlocked();         // общий гейт BUY/SELL + объяснение в lastEvent
     int playerColonyCount() const;
     bool playerCanOpenContractsAt(int starIndex) const;
     std::vector<Contract> playerVisibleContractsAt(int starIndex) const;

@@ -167,18 +167,6 @@ TradeLayout tradeLayoutForWindow(const Window& window) {
     return layout;
 }
 
-std::string fmt(const char* format, double value) {
-    char text[64];
-    std::snprintf(text, sizeof(text), format, value);
-    return text;
-}
-
-std::string fmtInt(const char* label, int value) {
-    char text[64];
-    std::snprintf(text, sizeof(text), "%s %d", label, value);
-    return text;
-}
-
 double clamp01(double v) {
     return std::max(0.0, std::min(1.0, v));
 }
@@ -298,12 +286,6 @@ SDL_Color factionColor(const Faction& faction, Uint8 alpha = 255) {
 
 void header(SDL_Renderer* renderer, int x, int y, const std::string& title) {
     drawText(renderer, x, y, title, P.cyan, 2);
-}
-
-int cargoAmount(const Agent& agent) {
-    int total = 0;
-    for (size_t i = 0; i < agent.ship.cargo.size(); ++i) total += int(agent.ship.cargo[i].amount);
-    return total;
 }
 
 double speedOf(const Agent& agent) {
@@ -682,6 +664,9 @@ void drawFactionPanel(SDL_Renderer* renderer, const Game& game, int x, int y, in
 
 void drawControlHints(SDL_Renderer* renderer, int screenW, int screenH) {
     const char* hints[] = {
+        "L ENTER SYSTEM",
+        "F1 HIDE HELP",
+        "F2 BUY LICENCE",
         "LMB SELECT",
         "RMB ROUTE",
         "G GO",
@@ -857,8 +842,9 @@ bool handleSystemWindowMouseDown(WindowState& state, Game& game, const Window& w
     if (contains(layout.route, mouseX, mouseY)) {
         // Explicitly matched with GO implementation
         if (window.star >= 0) {
-            bool success = game.commandAgentToStar(game.playerAgent, window.star);
-            printf("DEBUG UI: GO button clicked. Target star: %d. Success: %s\n", window.star, success ? "true" : "false");
+            // Отказ (нет топлива / уже в пути / перегруз) объясняется через
+            // game.lastEvent, который HUD показывает строкой событий.
+            const bool success = game.commandAgentToStar(game.playerAgent, window.star);
             if (success) {
                 selection.star = window.star;
                 selection.agent = game.playerAgent;
@@ -1136,15 +1122,32 @@ bool handleMouseDown(WindowState& state, Game& game, HudSelection& selection, in
         return true;
     }
 
-    for (Window& w : state.windows) {
-        if (contains(w.rect, mouseX, mouseY)) {
-            if (w.kind == WindowKind::SystemInfo && handleSystemWindowMouseDown(state, game, w, selection, screenW, screenH, mouseX, mouseY)) return true;
-            if (w.kind == WindowKind::Trade && handleTradeWindowMouseDown(state, game, w, selection, mouseX, mouseY, button, screenW, screenH)) return true;
-            if (w.kind == WindowKind::Contracts && handleContractsWindowMouseDown(game, w, selection, mouseX, mouseY)) return true;
-            if (w.kind == WindowKind::Shipyard && handleShipyardWindowMouseDown(state, game, w, mouseX, mouseY, button)) return true;
-            if (w.kind == WindowKind::Cargo && handleCargoWindowMouseDown(game, w, mouseX, mouseY)) return true;
-            if (w.kind == WindowKind::ShipFit && handleShipFitWindowMouseDown(state, game, w, mouseX, mouseY)) return true;
-        }
+    // Клик получает только верхнее окно под курсором — то самое, которое мы
+    // сейчас подняли на передний план. Раньше цикл шёл с нижнего окна и отдавал
+    // клик первому попавшемуся: каскадом перекрытые окна съедали чужие GO/TRADE.
+    // Копия окна нужна потому, что обработчик может закрыть окно и сдвинуть вектор.
+    const Window w = *active;
+    switch (w.kind) {
+        case WindowKind::SystemInfo:
+            handleSystemWindowMouseDown(state, game, w, selection, screenW, screenH, mouseX, mouseY);
+            break;
+        case WindowKind::Trade:
+            handleTradeWindowMouseDown(state, game, w, selection, mouseX, mouseY, button, screenW, screenH);
+            break;
+        case WindowKind::Contracts:
+            handleContractsWindowMouseDown(game, w, selection, mouseX, mouseY);
+            break;
+        case WindowKind::Shipyard:
+            handleShipyardWindowMouseDown(state, game, w, mouseX, mouseY, button);
+            break;
+        case WindowKind::Cargo:
+            handleCargoWindowMouseDown(game, w, mouseX, mouseY);
+            break;
+        case WindowKind::ShipFit:
+            handleShipFitWindowMouseDown(state, game, w, mouseX, mouseY);
+            break;
+        case WindowKind::Transactions:
+            break;
     }
     return true;
 }
@@ -1212,7 +1215,7 @@ void openShipFitWindow(WindowState& state, int starIndex, int screenW, int scree
     int cascade = 0;
     for (auto& w : state.windows) {
         if (w.kind == WindowKind::ShipFit) {
-            state.activeId = w.id;
+            bringWindowToFront(state, w.id);
             return;
         }
         if (w.kind == WindowKind::Cargo || w.kind == WindowKind::ShipFit) cascade++;
@@ -1229,7 +1232,7 @@ void openShipFitWindow(WindowState& state, int starIndex, int screenW, int scree
 void openShipyardWindow(WindowState& state, int starIndex, int screenW, int screenH) {
     for (auto& w : state.windows) {
         if (w.kind == WindowKind::Shipyard && w.star == starIndex) {
-            state.activeId = w.id;
+            bringWindowToFront(state, w.id);
             return;
         }
     }
@@ -1248,7 +1251,7 @@ void openTransactionsWindow(WindowState& state, int screenW, int screenH) {
     int cascade = 0;
     for (auto& w : state.windows) {
         if (w.kind == WindowKind::Transactions) {
-            state.activeId = w.id;
+            bringWindowToFront(state, w.id);
             return;
         }
         if (w.kind != WindowKind::Transactions) cascade++;
@@ -1858,7 +1861,6 @@ void drawTransactionsWindow(SDL_Renderer* renderer, const Game& game, const Wind
     }
     
     // Draw in reverse order (newest first)
-    int count = 0;
     for (auto it = game.transactions.rbegin(); it != game.transactions.rend(); ++it) {
         const auto& t = *it;
         if (y + 12 > window.rect.y + window.rect.h - 10) break;
@@ -1874,7 +1876,6 @@ void drawTransactionsWindow(SDL_Renderer* renderer, const Game& game, const Wind
         
         drawText(renderer, x, y, buf, t.amount >= 0 ? P.green : P.red, 1);
         y += 16;
-        count++;
     }
 }
 
@@ -2058,6 +2059,9 @@ static void drawObjectivesPanel(SDL_Renderer* renderer, const Game& game, int x,
         const Agent& p = game.agents[game.playerAgent];
         const Ship& sh = p.ship;
         objs.push_back({"TRADE: BUY (B) / SELL (V)", p.trades > 0});
+        // Локальный полёт — самая зрелищная часть игры и при этом дальше всего
+        // от глаз новичка: без явной цели о клавише L никто не узнаёт.
+        objs.push_back({"FLY THE SYSTEM: PRESS L", game.everEnteredLocal});
         objs.push_back({"MINE ORE: DOCK + PRESS M", game.miningYieldAccum > 0.0 || game.playerMining});
         objs.push_back({"UPGRADE: SHIPYARD (U)", !sh.modules.empty()});
         objs.push_back({"RESEARCH A CHROMOCORE", game.tech.cores > 0});
@@ -2129,7 +2133,7 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
         for (const Contract& contract : game.contracts) {
             if (!contract.completed && !contract.failed && contract.acceptedByAgent == game.playerAgent) activeContracts += 1;
         }
-        panel(renderer, 12, y, leftW, 44);
+        panel(renderer, 12, y, leftW, 62);
         drawText(renderer, 22, y + 10, "PLAYER STATUS", P.amber, 1);
         char buf1[32], buf2[32], buf3[32], buf4[32];
         std::snprintf(buf1, sizeof(buf1), "%.0F", player.money);
@@ -2141,7 +2145,29 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
         cx = drawStat(renderer, cx, y + 27, "TRADES ", buf2);
         cx = drawStat(renderer, cx, y + 27, "COLONIES ", buf3);
         cx = drawStat(renderer, cx, y + 27, "JOBS ", buf4);
-        y += 54;
+
+        // Лицензионная квота — главный таймер игры, поэтому живёт рядом с кредитами
+        // и всегда на виду. Цвет = насколько всё плохо: зелёный (норма выполнена),
+        // янтарный (успеваешь), красный (не успеваешь или лицензия отозвана).
+        char quota[96];
+        if (game.licenceRevoked) {
+            std::snprintf(quota, sizeof(quota), "LICENCE REVOKED - BUY BACK %d CR (F2)",
+                          int(std::ceil(game.licenceBuyback)));
+            drawText(renderer, 22, y + 45, quota, P.red, 1);
+        } else {
+            const double target = game.licenceQuotaTarget();
+            const double left = std::max(0.0, game.licencePeriodEnd - game.time);
+            const bool met = game.licenceQuotaPaid + 1e-6 >= target;
+            // «Успеваю ли» = хватит ли оставшихся лет при текущем темпе уплаты.
+            const double elapsed = std::max(1.0, LICENCE_PERIOD_YEARS - left);
+            const double pace = game.licenceQuotaPaid / elapsed;
+            const bool onTrack = met || pace * LICENCE_PERIOD_YEARS >= target;
+            std::snprintf(quota, sizeof(quota), "QUOTA %d/%d CR  %dY LEFT  TARIFF %.0F%%",
+                          int(game.licenceQuotaPaid), int(target), int(std::ceil(left)),
+                          game.licenceTariffRate * 100.0);
+            drawText(renderer, 22, y + 45, quota, met ? P.green : (onTrack ? P.amber : P.red), 1);
+        }
+        y += 72;
     }
 
     drawShipTechPanel(renderer, game, 12, y, leftW);
@@ -2156,7 +2182,13 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
         const int facH = 44 + std::min(6, int(game.factions.size())) * 19;
         drawObjectivesPanel(renderer, game, screenW - 260, 12 + facH + 10, 248);
     }
-    // drawControlHints(renderer, screenW, screenH);
+    // Легенда хоткеев. Долго стояла закомментированной — игрок не мог узнать ни
+    // об одном из 29 действий, включая вход в локальный полёт (L).
+    if (selection.showHelp) {
+        drawControlHints(renderer, screenW, screenH);
+    } else {
+        drawText(renderer, screenW - 78, screenH - 22, "F1 HELP", P.dim, 1);
+    }
 
     {
         const int newsLines = screenH < 780 ? 8 : 14;
@@ -2184,7 +2216,7 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
     outOpenTrade = false;
     switch (step) {
         case 0: return "Master, I am Timertia - your AI core Agent.";
-        case 1: return "Congratulations with obtaining your trading Licence!";
+        case 1: return "Congratulations on obtaining your trading licence!";
         case 2: outArrowTarget = 1; return "You can view your balance here.";
         case 3: return "You own 1 space ship unit for now.";
         case 4: outArrowTarget = 2; return "My subagents will monitor its system states here.";
@@ -2204,7 +2236,7 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
         }
         case 6: outArrowTarget = 0; outOpenTrade = true; return "With your trading licence you can perform HIGH-FREQUENCY BROKERAGE on local market.";
         case 7: return "A periodic table based on standard supersymmetrical model is common CONVENTION of interstellar market.";
-        case 8: return "NASH EQUILIBRIUM proofs that it is the best to buy on suply and sell on demand.";
+        case 8: return "NASH EQUILIBRIUM proves it is best to buy on supply and sell on demand.";
         case 9: {
             std::string element = "isotopes";
             if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
@@ -2226,7 +2258,7 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
                 }
             }
             char buf[256];
-            std::snprintf(buf, sizeof(buf), "Local model suggest you to buy %s.", element.c_str());
+            std::snprintf(buf, sizeof(buf), "The local model suggests you buy %s.", element.c_str());
             return buf;
         }
         case 10: {
@@ -2268,13 +2300,13 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
                 }
             }
             char buf[256];
-            std::snprintf(buf, sizeof(buf), "We also have insight that the best place to sell it right now is %s. I want to accentuate your attention to %s!", starName.c_str(), starName.c_str());
+            std::snprintf(buf, sizeof(buf), "We also have insight that the best place to sell it right now is %s. Remember that name, Master: %s!", starName.c_str(), starName.c_str());
             return buf;
         }
         case 11: return "By the way, you can also upgrade your vessel and purchase more trading licenses.";
-        case 12: return "Finally, new technology of applied color supercondctivity has developed novel AI cores.";
-        case 13: outArrowTarget = 0; return "They are still prototypes and very rare. Be sure to privatise all you finde.";
-        case 14: return "I am at your service with more insignts at any time Master [V].";
+        case 12: return "Finally, the new technology of applied color superconductivity has produced novel AI cores.";
+        case 13: outArrowTarget = 0; return "They are still prototypes and very rare. Be sure to privatise every one you find.";
+        case 14: return "I am at your service with more insights at any time, Master. [V]";
         case 100: {
             std::string supplyStr = "none";
             std::string demandStr = "none";
@@ -2409,7 +2441,7 @@ std::string wrapText(const std::string& text, int maxChars) {
     
     for (char c : text) {
         if (c == ' ' || c == '\n') {
-            if (lineLen + word.length() > maxChars) {
+            if (lineLen + int(word.length()) > maxChars) {
                 result += "\n";
                 lineLen = 0;
             } else if (!result.empty() && result.back() != '\n') {
@@ -2428,7 +2460,7 @@ std::string wrapText(const std::string& text, int maxChars) {
         }
     }
     if (!word.empty()) {
-        if (lineLen + word.length() > maxChars && !result.empty() && result.back() != '\n') {
+        if (lineLen + int(word.length()) > maxChars && !result.empty() && result.back() != '\n') {
             result += "\n";
         } else if (!result.empty() && result.back() != '\n') {
             result += " ";
@@ -2574,61 +2606,6 @@ void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int scree
             drawText(renderer, ax, ay, "<-- TARGET", {255, 100, 100, 255}, 2);
         }
     }
-}
-
-void drawTariffModal(SDL_Renderer* renderer, const Game& game, int screenW, int screenH) {
-    if (!game.pendingTariff) return;
-
-    int boxW = 500;
-    int boxH = 150;
-    int boxX = (screenW - boxW) / 2;
-    int boxY = (screenH - boxH) / 2;
-
-    // Semi-transparent background
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 240);
-    SDL_Rect boxRect = {boxX, boxY, boxW, boxH};
-    SDL_RenderFillRect(renderer, &boxRect);
-
-    // Border
-    SDL_SetRenderDrawColor(renderer, 255, 100, 100, 255);
-    SDL_RenderDrawRect(renderer, &boxRect);
-
-    // Text
-    drawText(renderer, boxX + 20, boxY + 20, "SYSTEM ACCESS FEE / TARIFF", {255, 100, 100, 255}, 2);
-    
-    std::string factionName = "UNKNOWN FACTION";
-    if (game.tariffFaction >= 0 && game.tariffFaction < int(game.factions.size())) {
-        factionName = game.factions[game.tariffFaction].name;
-    }
-    std::string msg = factionName + " demands a tariff to enter their system.";
-    drawText(renderer, boxX + 20, boxY + 60, msg, {214, 228, 238, 255}, 1);
-
-    char feeStr[64];
-    std::snprintf(feeStr, sizeof(feeStr), "FEE: %d CR", game.tariffFee);
-    drawText(renderer, boxX + 20, boxY + 80, feeStr, P.amber, 2);
-
-    // Buttons
-    int btnY = boxY + boxH - 40;
-    
-    // PAY button
-    int payX = boxX + 40;
-    int payW = 150;
-    SDL_Rect payRect = {payX, btnY, payW, 24};
-    SDL_SetRenderDrawColor(renderer, 0, 100, 0, 255);
-    SDL_RenderFillRect(renderer, &payRect);
-    SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-    SDL_RenderDrawRect(renderer, &payRect);
-    drawText(renderer, payX + 50, btnY + 4, "PAY", {0, 255, 0, 255}, 1);
-
-    // REFUSE button
-    int refuseX = boxX + boxW - 150 - 40;
-    int refuseW = 150;
-    SDL_Rect refuseRect = {refuseX, btnY, refuseW, 24};
-    SDL_SetRenderDrawColor(renderer, 100, 0, 0, 255);
-    SDL_RenderFillRect(renderer, &refuseRect);
-    SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
-    SDL_RenderDrawRect(renderer, &refuseRect);
-    drawText(renderer, refuseX + 40, btnY + 4, "REFUSE", {255, 0, 0, 255}, 1);
 }
 
 }

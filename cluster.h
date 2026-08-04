@@ -12,7 +12,7 @@ class Cluster {
 public:
     std::vector<ClusterStar> stars;
     // Генерация кластера
-    void generate(size_t num_stars);
+    void generate(size_t num_stars, unsigned int seed);
 };
 
 // Класс звезды (для кластера)

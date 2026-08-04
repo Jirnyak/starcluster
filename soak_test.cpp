@@ -348,6 +348,13 @@ int main() {
     //   цел). Игрок далеко и не стреляет — бой чисто патруль-против-пиратов. Пиратам даём огромный корпус
     //   (не гибнут за пробу ⇒ индексы стабильны), щит=0 (урон сразу в корпус, измерим); патруль пиньним
     //   здоровым каждый кадр (никогда не бежит ⇒ aiState=1, стреляет с первого кадра, цель — в WEAPON_RANGE).
+    //   ВАЖНО (почему сцена смещена по +Z): раньше тройка стояла в 0/60/120 LU от НАЧАЛА КООРДИНАТ, то есть
+    //   ВНУТРИ звезды (§5.13.2 задаёт starRadius 260..360 LU). Урон от столкновения с телом (1200·h ⇒ ровно
+    //   60 HP за кадр при dtReal=0.05) жёг ОБОИХ пиратов независимо от патруля, поэтому условие «ближний НЕ
+    //   тронут» не могло выполниться НИКОГДА и пробник валился при исправной игре (отладка показала
+    //   aiTarget=1, то есть выбор цели §5.13.28 работает). Уносим сцену на 6 радиусов звезды по +Z: внешняя
+    //   орбита ≤ R·3.4 (§5.13.2), значит там пусто и ничего не горит. Геометрия проверки не меняется —
+    //   смещаются все три борта разом, взаимные дистанции те же 60/120 LU.
     bool patrolHuntsWantedOk = false;
     {
         Game g5; g5.init(1200);
@@ -379,13 +386,14 @@ int main() {
                 nearP.maxShield = 0.0; nearP.shield = 0.0; nearP.shieldRegenTimer = 999.0;
             }
             sa.px = 100000.0; sa.py = 0.0; sa.pz = 0.0; sa.pvx = sa.pvy = sa.pvz = 0.0;
+            const double ZA = sa.starRadius * 6.0;             // пустой космос над эклиптикой
             for (int f = 0; f < 400 && !aOk; ++f) {
                 LocalCraft& p0 = sa.craft[0]; LocalCraft& w1 = sa.craft[1]; LocalCraft& n2 = sa.craft[2];
-                p0.x = p0.y = p0.z = 0.0; p0.vx = p0.vy = p0.vz = 0.0;
+                p0.x = p0.y = 0.0; p0.z = ZA; p0.vx = p0.vy = p0.vz = 0.0;
                 p0.hullHP = p0.maxHullHP; p0.shield = 0.0;     // держим патруль здоровым
-                w1.x = 120.0; w1.y = 0.0; w1.z = 0.0; w1.vx = w1.vy = w1.vz = 0.0;  // розыскной ДАЛЬШЕ
+                w1.x = 120.0; w1.y = 0.0; w1.z = ZA; w1.vx = w1.vy = w1.vz = 0.0;  // розыскной ДАЛЬШЕ
                 w1.shield = 0.0; w1.shieldRegenTimer = 999.0;
-                n2.x =  60.0; n2.y = 0.0; n2.z = 0.0; n2.vx = n2.vy = n2.vz = 0.0;  // простой БЛИЖЕ
+                n2.x =  60.0; n2.y = 0.0; n2.z = ZA; n2.vx = n2.vy = n2.vz = 0.0;  // простой БЛИЖЕ
                 n2.shield = 0.0; n2.shieldRegenTimer = 999.0;
                 LocalInput in;
                 updateLocalScene(g5, sa, in, dtReal);
@@ -415,13 +423,14 @@ int main() {
                 }
             }
             sb.px = 100000.0; sb.py = 0.0; sb.pz = 0.0; sb.pvx = sb.pvy = sb.pvz = 0.0;
+            const double ZB = sb.starRadius * 6.0;
             for (int f = 0; f < 400 && !bOk; ++f) {
                 LocalCraft& p0 = sb.craft[0]; LocalCraft& far1 = sb.craft[1]; LocalCraft& near2 = sb.craft[2];
-                p0.x = p0.y = p0.z = 0.0; p0.vx = p0.vy = p0.vz = 0.0;
+                p0.x = p0.y = 0.0; p0.z = ZB; p0.vx = p0.vy = p0.vz = 0.0;
                 p0.hullHP = p0.maxHullHP; p0.shield = 0.0;
-                far1.x = 120.0; far1.y = 0.0; far1.z = 0.0; far1.vx = far1.vy = far1.vz = 0.0;  // ДАЛЬНИЙ
+                far1.x = 120.0; far1.y = 0.0; far1.z = ZB; far1.vx = far1.vy = far1.vz = 0.0;  // ДАЛЬНИЙ
                 far1.shield = 0.0; far1.shieldRegenTimer = 999.0;
-                near2.x = 60.0; near2.y = 0.0; near2.z = 0.0; near2.vx = near2.vy = near2.vz = 0.0; // БЛИЖНИЙ
+                near2.x = 60.0; near2.y = 0.0; near2.z = ZB; near2.vx = near2.vy = near2.vz = 0.0; // БЛИЖНИЙ
                 near2.shield = 0.0; near2.shieldRegenTimer = 999.0;
                 LocalInput in;
                 updateLocalScene(g5, sb, in, dtReal);

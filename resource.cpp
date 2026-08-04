@@ -158,7 +158,6 @@ ElementDefinition deriveElement(const RawElement& item) {
     // Прочность: связь d-электронов (пик у полузаполненной d), ковалентный
     // каркас у лёгких неметаллов, металлическая связь главных групп —
     // всё поделено на массу (удельная прочность).
-    const double bondingCapacity = clamp01(std::min(shell.outerElectrons, shell.outerCapacity - shell.outerElectrons) / 4.0);
     // Каркас требует НЕ МЕНЕЕ двух связей на атом: одна связь даёт молекулу газа,
     // а не решётку. Поэтому водород прочным материалом не становится.
     const double networkCapacity = clamp01((std::min(shell.outerElectrons, shell.outerCapacity - shell.outerElectrons) - 1.0) / 3.0);

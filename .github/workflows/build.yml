@@ -28,12 +28,19 @@ jobs:
         run: |
           mkdir -p Starcluster.app/Contents/MacOS
           mkdir -p Starcluster.app/Contents/Frameworks
+          mkdir -p Starcluster.app/Contents/Resources
           cp game Starcluster.app/Contents/MacOS/Starcluster
-          
+
+          # Ассеты игры. Без них релиз запускался немым и без портрета Тимертии
+          # в интро — SDL_GetBasePath() указывает как раз в Contents/Resources.
+          cp timertia.png Starcluster.app/Contents/Resources/
+          mkdir -p Starcluster.app/Contents/Resources/music
+          cp -R music/processed Starcluster.app/Contents/Resources/music/
+
           # Bundle the official SDL2.framework
           cp -R /Library/Frameworks/SDL2.framework Starcluster.app/Contents/Frameworks/
           cp -R /Library/Frameworks/SDL2_mixer.framework Starcluster.app/Contents/Frameworks/
-          
+
           chmod +x Starcluster.app/Contents/MacOS/Starcluster
           
           # Basic Info.plist
@@ -89,6 +96,10 @@ jobs:
           cp /mingw64/bin/SDL2.dll dist/
           cp /mingw64/bin/SDL2_mixer.dll dist/
           cp /mingw64/bin/libwinpthread-1.dll dist/
+          # Ассеты игры: без них нет ни музыки, ни портрета Тимертии в интро.
+          cp timertia.png dist/
+          mkdir -p dist/music
+          cp -R music/processed dist/music/
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -104,12 +115,17 @@ jobs:
       - name: Build
         run: |
           make game
-          mv game starcluster-linux
+          mkdir -p dist
+          mv game dist/starcluster-linux
+          # Ассеты игры рядом с бинарём: SDL_GetBasePath() смотрит именно туда.
+          cp timertia.png dist/
+          mkdir -p dist/music
+          cp -R music/processed dist/music/
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Starcluster-Linux
-          path: starcluster-linux
+          path: dist/
 
   package-multiplatform:
     needs: [build-mac, build-windows, build-linux]
@@ -123,12 +139,12 @@ jobs:
       - name: Create Multiplatform Directory
         run: |
           mkdir Starcluster-Multiplatform
+          # Windows и Linux кладём целиком: там теперь не только бинарь, но и
+          # ассеты (timertia.png, music/processed) — они у обеих платформ общие.
+          cp -R all-builds/Starcluster-Windows/. Starcluster-Multiplatform/
+          cp -R all-builds/Starcluster-Linux/. Starcluster-Multiplatform/
+          # macOS самодостаточен: ассеты уже внутри .app.
           mv all-builds/Starcluster-macOS/Starcluster.dmg Starcluster-Multiplatform/
-          mv all-builds/Starcluster-Windows/starcluster.exe Starcluster-Multiplatform/
-          mv all-builds/Starcluster-Windows/SDL2.dll Starcluster-Multiplatform/
-          mv all-builds/Starcluster-Windows/SDL2_mixer.dll Starcluster-Multiplatform/
-          mv all-builds/Starcluster-Windows/libwinpthread-1.dll Starcluster-Multiplatform/
-          mv all-builds/Starcluster-Linux/starcluster-linux Starcluster-Multiplatform/
       - name: Upload Multiplatform Artifact
         uses: actions/upload-artifact@v4
         with:

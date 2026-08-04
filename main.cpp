@@ -45,7 +45,49 @@ const double MAX_CAMERA_DT_SECONDS = 0.05;
 const double MAX_SIM_STEP_YEARS = 0.01;
 const double CAMERA_YAW_RADIANS_PER_SECOND = 1.8;
 const double CAMERA_PITCH_RADIANS_PER_SECOND = 1.35;
-const char* SAVE_FILE = "starcluster.save";
+const char* SAVE_FILE_NAME = "starcluster.save";
+
+// --- Пути к ресурсам и сейву ---------------------------------------------
+// Игра запускается двумя способами: из каталога исходников (`./game`, CWD = репо)
+// и из упакованного бандла (двойной клик по .app — CWD там вообще `/`). Поэтому
+// ассеты ищем СНАЧАЛА рядом с исполняемым файлом (в .app это Contents/Resources),
+// и только потом в CWD — так одна сборка работает в обоих случаях.
+std::string assetPath(const std::string& relative) {
+    static std::string base;
+    static bool baseResolved = false;
+    if (!baseResolved) {
+        baseResolved = true;
+        if (char* p = SDL_GetBasePath()) {
+            base = p;
+            SDL_free(p);
+        }
+    }
+    if (!base.empty()) {
+        const std::string candidate = base + relative;
+        if (FILE* f = std::fopen(candidate.c_str(), "rb")) {
+            std::fclose(f);
+            return candidate;
+        }
+    }
+    return relative;
+}
+
+// Сейв в бандле нельзя класть в CWD (`/` — нет прав). Пишем в пользовательский
+// каталог настроек ОС; если его нет — откатываемся на CWD (dev-запуск).
+std::string savePath() {
+    static std::string path;
+    static bool resolved = false;
+    if (!resolved) {
+        resolved = true;
+        if (char* p = SDL_GetPrefPath("starcluster", "Starcluster")) {
+            path = std::string(p) + SAVE_FILE_NAME;
+            SDL_free(p);
+        } else {
+            path = SAVE_FILE_NAME;
+        }
+    }
+    return path;
+}
 
 double clampDouble(double value, double lo, double hi) {
     return std::max(lo, std::min(hi, value));
@@ -68,11 +110,17 @@ double shipSpeed(const Ship& ship) {
     return std::sqrt(ship.vx * ship.vx + ship.vy * ship.vy + ship.vz * ship.vz);
 }
 
+// Потолок подшагов за кадр. Без него просадка кадра на скорости x10 давала
+// realDt=0.25 c ⇒ 2.5 года ⇒ 250 вызовов update подряд (~0.7 с полного фриза),
+// причём чем длиннее фриз, тем больше realDt следующего кадра — спираль. Лучше
+// «недосчитать» время, чем повесить окно: симуляция просто чуть отстанет.
+const int MAX_SIM_STEPS_PER_FRAME = 32;
+
 void advanceGame(Game& game, double years) {
-    while (years > 0.0) {
-        const double step = std::min(years, MAX_SIM_STEP_YEARS);
-        game.update(step);
-        years -= step;
+    for (int step = 0; step < MAX_SIM_STEPS_PER_FRAME && years > 0.0; ++step) {
+        const double dt = std::min(years, MAX_SIM_STEP_YEARS);
+        game.update(dt);
+        years -= dt;
     }
 }
 
@@ -389,11 +437,20 @@ int runEconReport() {
 int main(int argc, char** argv) {
     bool smoke = false;
     bool localSmoke = false;
+    // Seed мира. По умолчанию новый на каждый запуск (партии не повторяются), но
+    // теперь он ЗАПИСАН в Game::seed и уходит в сейв, поэтому мир воспроизводим:
+    // `--seed N` повторяет чужую партию по номеру из бага.
+    unsigned int worldSeed = std::random_device{}();
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--smoke") == 0) smoke = true;
         if (std::strcmp(argv[i], "--localsmoke") == 0) { smoke = true; localSmoke = true; }
         if (std::strcmp(argv[i], "--econreport") == 0) return runEconReport();
+        if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+            worldSeed = (unsigned int)std::strtoul(argv[++i], NULL, 10);
+        }
     }
+    // Smoke-прогоны должны быть повторимы: падение в CI обязано воспроизводиться.
+    if (smoke) worldSeed = 42u;
     const char* smokeEnv = std::getenv("STARCLUSTER_SMOKE");
     if (smokeEnv && std::strcmp(smokeEnv, "0") != 0) smoke = true;
 
@@ -425,7 +482,7 @@ int main(int argc, char** argv) {
     
     SDL_Texture* timertiaTex = nullptr;
     int timertiaW, timertiaH, timertiaChannels;
-    unsigned char* timertiaData = stbi_load("timertia.png", &timertiaW, &timertiaH, &timertiaChannels, 4);
+    unsigned char* timertiaData = stbi_load(assetPath("timertia.png").c_str(), &timertiaW, &timertiaH, &timertiaChannels, 4);
     if (timertiaData) {
         SDL_Surface* surface = SDL_CreateRGBSurfaceFrom((void*)timertiaData, timertiaW, timertiaH, 32, timertiaW * 4,
 #if SDL_BYTEORDER == SDL_BIG_ENDIAN
@@ -444,27 +501,46 @@ int main(int argc, char** argv) {
     }
 
     Game game;
+    game.seed = worldSeed;
     game.init(STAR_COUNT);
+    std::printf("world seed: %u\n", game.seed);
 
     std::vector<Mix_Music*> playlist;
     if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 2048) < 0) {
         std::cerr << "SDL_mixer could not initialize! Error: " << Mix_GetError() << "\n";
     } else {
-        DIR* dir = opendir("music/processed");
+        // Каталог с музыкой ищем там же, где и прочие ассеты (рядом с бинарём,
+        // затем в CWD): в бандле CWD не указывает на ресурсы игры.
+        std::string musicDir = assetPath("music/processed");
+        DIR* dir = opendir(musicDir.c_str());
+        if (!dir && musicDir != "music/processed") {
+            musicDir = "music/processed";
+            dir = opendir(musicDir.c_str());
+        }
         if (dir) {
+            // Порядок readdir зависит от файловой системы. Сортируем, чтобы плейлист
+            // был одинаков на всех машинах (иначе один seed даёт разную музыку).
+            std::vector<std::string> names;
             struct dirent* ent;
             while ((ent = readdir(dir)) != NULL) {
                 std::string filename = ent->d_name;
                 if (filename.length() > 4 && filename.substr(filename.length() - 4) == ".mp3") {
-                    Mix_Music* music = Mix_LoadMUS(("music/processed/" + filename).c_str());
-                    if (music) {
-                        playlist.push_back(music);
-                    }
+                    names.push_back(filename);
                 }
             }
             closedir(dir);
+            std::sort(names.begin(), names.end());
+            for (const std::string& filename : names) {
+                if (Mix_Music* music = Mix_LoadMUS((musicDir + "/" + filename).c_str())) {
+                    playlist.push_back(music);
+                }
+            }
         }
     }
+    // Своё зерно для музыки. Раньше выбор трека тянул из глобального `rng`
+    // симуляции — момент окончания трека зависит от звуковой карты, поэтому один
+    // и тот же seed давал РАЗНЫЕ миры. Аудио не должно двигать симуляцию.
+    std::mt19937 musicRng(0x51A7C0DE);
 
     bool quit = false;
     bool paused = false;
@@ -482,6 +558,7 @@ int main(int argc, char** argv) {
     int selectedElement = elementIndex("Fe");
     if (selectedElement < 0) selectedElement = 0;
     bool followAgent = selectedAgent >= 0;
+    bool showHelp = true;   // легенда хоткеев видна с первого кадра, F1 — свернуть
     double simSpeed = 1.0;
     UI::WindowState ui;
     ui.vnState.active = true; // Start introductory tutorial
@@ -716,7 +793,7 @@ int main(int argc, char** argv) {
         realDt = std::min(realDt, MAX_REAL_DT_SECONDS);
 
         if (!playlist.empty() && !Mix_PlayingMusic()) {
-            int idx = randomer(rng, int(playlist.size()) - 1);
+            const int idx = randomer(musicRng, int(playlist.size()) - 1);
             Mix_PlayMusic(playlist[idx], 1);
         }
         while (SDL_PollEvent(&e)) {
@@ -733,45 +810,6 @@ int main(int argc, char** argv) {
                 }
             }
             
-            // Intercept clicks if tariff is pending
-            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT && game.pendingTariff) {
-                int boxW = 500;
-                int boxH = 150;
-                int boxX = (winW - boxW) / 2;
-                int boxY = (winH - boxH) / 2;
-                int btnY = boxY + boxH - 40;
-                
-                int payX = boxX + 40;
-                int payW = 150;
-                int refuseX = boxX + boxW - 150 - 40;
-                int refuseW = 150;
-                
-                if (e.button.y >= btnY && e.button.y <= btnY + 24) {
-                    if (e.button.x >= payX && e.button.x <= payX + payW) {
-                        if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
-                            Agent& pa = game.agents[game.playerAgent];
-                            if (pa.money >= game.tariffFee) {
-                                pa.money -= game.tariffFee;
-                                game.pendingTariff = false;
-                                game.lastEvent = "paid system access fee";
-                                game.pushNews("Paid system access fee.", 1);
-                            } else {
-                                game.pushNews("Not enough credits to pay tariff!", 0);
-                            }
-                        }
-                    } else if (e.button.x >= refuseX && e.button.x <= refuseX + refuseW) {
-                        game.pendingTariff = false;
-                        game.lastEvent = "refused tariff — hostile encounter!";
-                        game.pushNews("Tariff refused! Hostile intercept!", 3);
-                        if (game.tariffFaction >= 0) {
-                            game.adjustFactionRelation(game.playerFaction, game.tariffFaction, -30);
-                        }
-                        localScene.active = true;
-                        // Forcing local hostiles: just rely on the relation drop and existing local combat.
-                    }
-                }
-                continue; // Block all other UI interactions
-            }
 
             if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
                 UI::handleMouseUp(ui);
@@ -843,11 +881,8 @@ int main(int argc, char** argv) {
                     if (star >= 0) {
                         selectedStar = star;
                         UI::openSystemWindow(ui, selectedStar, winW, winH);
-                        bool success = game.commandAgentToStar(game.playerAgent, star);
-                        printf("DEBUG MOUSE: Right-click GO. Target star: %d. Success: %s\n", star, success ? "true" : "false");
-                        if (!success) {
-                            printf("DEBUG MOUSE: Reason: %s\n", game.lastEvent.c_str());
-                        } else {
+                        // Причина отказа уходит в game.lastEvent и видна в строке событий HUD.
+                        if (game.commandAgentToStar(game.playerAgent, star)) {
                             selectedAgent = game.playerAgent;
                             followAgent = true;
                         }
@@ -863,14 +898,26 @@ int main(int argc, char** argv) {
                 UI::handleTextInput(ui, e.text.text);
             }
             if (e.type == SDL_KEYDOWN) {
+                if (e.key.keysym.sym == SDLK_F1) {
+                    showHelp = !showHelp;
+                    continue;
+                }
+                if (e.key.keysym.sym == SDLK_F2) {
+                    game.playerBuybackLicence();
+                    titleTick = 11;
+                    continue;
+                }
                 if (e.key.keysym.sym == SDLK_F5) {
-                    const bool saved = game.saveToFile(SAVE_FILE);
+                    const bool saved = game.saveToFile(savePath());
                     game.lastEvent = saved ? "saved starcluster.save" : "save failed";
                     titleTick = 11;
                     continue;
                 }
                 if (e.key.keysym.sym == SDLK_F9) {
-                    const bool loaded = game.loadFromFile(SAVE_FILE);
+                    // Сначала пользовательский каталог, затем CWD — чтобы старые
+                    // сейвы, лежащие рядом с бинарём, продолжали открываться.
+                    bool loaded = game.loadFromFile(savePath());
+                    if (!loaded) loaded = game.loadFromFile(SAVE_FILE_NAME);
                     game.lastEvent = loaded ? "loaded starcluster.save" : "load failed";
                     if (loaded) {
                         resetSelectionAfterLoad(game, view, ui, winW, winH, selectedStar, selectedAgent, followAgent);
@@ -893,6 +940,7 @@ int main(int argc, char** argv) {
                     } else {
                         buildLocalScene(game, localAnchorStar(), localScene);
                         localScene.active = true;
+                        game.everEnteredLocal = true;
                         game.lastEvent = "entered local flight";
                     }
                     titleTick = 11;
@@ -1097,7 +1145,7 @@ int main(int argc, char** argv) {
                 UI::openTradeWindow(ui, dockStar, winW, winH);
                 game.lastEvent = "docked — market open";
             }
-        } else if (!paused && !game.pendingTariff) {
+        } else if (!paused) {
             advanceGame(game, realDt * simYearsPerSecond);
         }
         localMineEdge = localDockEdge = localTargetEdge = localFireClick = false;
@@ -1371,6 +1419,7 @@ int main(int argc, char** argv) {
         hud.element = selectedElement;
         hud.paused = paused;
         hud.followAgent = followAgent;
+        hud.showHelp = showHelp;
         hud.simSpeed = simSpeed;
         hud.simYearsPerSecond = simYearsPerSecond;
         UI::updateVisualNovel(ui, game, realDt, winW, winH);
@@ -1379,7 +1428,6 @@ int main(int argc, char** argv) {
         { std::vector<ActionButton> bar; buildBar(bar); drawBar(bar); }
         
         UI::drawVisualNovel(renderer, ui, winW, winH, timertiaTex);
-        UI::drawTariffModal(renderer, game, winW, winH);
 
         SDL_RenderPresent(renderer);
         if (smoke && ++frames >= 12) quit = true;

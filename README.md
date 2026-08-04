@@ -89,9 +89,19 @@ The current executable prototype contains:
 - delivery, courier, scout, bounty, escort, raid, and colony supply contracts;
 - player colony founding, reinforcement, construction queues, and ship hiring;
 - faction relation drift, strategic orders, budgets, and influence overlay;
-- save/load to `starcluster.save`;
+- a trading licence with a millennial turnover quota (see below);
+- a first-person local flight mode inside any star system (`L`);
+- save/load to the OS user data directory;
 - SDL2 map rendering, HUD panels, draggable system/trade/contract windows, and
   a smoke mode for short launch checks.
+
+The cluster is populated with roughly 1000 NPC ships and 320 open contracts,
+scaled from world size (`AGENT_TARGET_FULL`, `CONTRACT_TARGET_FULL` in `game.h`).
+
+**World seed.** Every new game picks a random seed, prints it as `world seed: N`
+on startup, and stores it in the save. Passing `--seed N` reproduces that exact
+world, which is how player bug reports are reproduced. The same seed always
+yields a bit-identical world.
 
 The prototype is still early. Some documents describe target systems that are
 only partially implemented, especially full combat modules, ship upgrades,
@@ -161,6 +171,7 @@ still reference `uni.cpp`; they are not the current project build path.
 - `0`: reset view.
 - `Space`: pause or resume.
 - `1`, `2`, `3`, `4`: set simulation speed to `1x`, `2x`, `5x`, `10x`.
+- `F1`: toggle the hotkey legend (shown by default).
 - `Esc`: quit.
 
 ### Player Ship And Map
@@ -170,6 +181,7 @@ still reference `uni.cpp`; they are not the current project build path.
 - `F`: follow selected agent.
 - `I`: toggle faction influence overlay.
 - `G`: route the player ship to the selected star.
+- `L`: enter or leave local flight mode (first-person flight inside the system).
 - `[` / `]`: change selected element.
 
 ### Trade, Contracts, Colonies
@@ -179,8 +191,10 @@ still reference `uni.cpp`; they are not the current project build path.
 - `T`: run auto-trade for the player ship.
 - `C`: found a colony at the current system, or reinforce an owned local colony.
 - `H`: hire/build a ship at an owned local colony.
-- `F5`: save to `starcluster.save`.
-- `F9`: load `starcluster.save`.
+- `M`: mine ore at the current system.
+- `J`: repair hull. `K`: scan a local anomaly.
+- `F2`: buy back a revoked trading licence.
+- `F5`: save. `F9`: load.
 
 System windows expose route, trade, and contract actions through mouse buttons.
 The trade window uses the periodic table layout for element selection and an
@@ -234,6 +248,38 @@ There is no global market. Every star has one local `Market`:
 Price is derived from local supply/demand pressure against each element's base
 price. Trader scoring uses known or remembered destination markets, fuel cost,
 route risk, stale information penalties, and cargo capacity.
+
+### Trading Licence And Quota
+
+The player holds a trading licence. Every sale withholds a tariff, and each
+reporting period the player must have paid at least the quota in tariffs or the
+licence is revoked.
+
+The period is a **millennium** (`LICENCE_PERIOD_YEARS`). That is not arbitrary:
+the cluster is about 100 light years across, so prices at opposite ends drift
+apart for centuries and can only be reconciled by a relativistic correction once
+every thousand years. Quotas are revised at the same moment. At one simulated
+year per real second this is roughly seventeen minutes of play at `1x`.
+
+- the first period's quota is 1000 Cr and grows by 1% every period, so a single
+  worked-out route cannot support the player forever;
+- the tariff rate tracks the cluster-wide money level (`marketClusterLevel()`,
+  a slow average with a ~250 year time constant), clamped to 5%..14%;
+- missing the quota freezes buying and selling until the licence is bought back
+  with `F2` for twice the shortfall; mining, contracts, and local flight keep
+  working, so the player always has a way out;
+- the HUD shows `QUOTA n/N CR  nY LEFT  TARIFF n%` in the player status panel.
+
+### Price Slippage
+
+Trades execute at the **average price across the trade**, not at the pre-trade
+price. Selling a large cargo into a thin market pushes the price down while the
+sale is happening, exactly as `Market::applyTrade` already moved it afterwards;
+`Market::executionPrice` integrates that same exponential response over volume
+and introduces no new constants.
+
+This makes market **depth** matter alongside the price spread. Dumping a full
+hold into a small colony is a loss; sizing the trade to the market is the skill.
 
 ### Ships
 
@@ -364,6 +410,15 @@ the active code path draws text with its own bitmap glyphs and links only SDL2.
 | `colony.h`, `colony.cpp` | Colony state, construction effects, damage, shipyard capacity. |
 | `contract.h` | Contract types and storage. |
 | `ui.h`, `ui.cpp` | HUD, custom text, panels, trade window, contract window, mouse/keyboard UI handling. |
+| `econ.h`, `econ.cpp` | Capability matrix: which elements can serve which system needs, and at what quality. |
+| `mining.cpp`, `combat.cpp`, `spaceevents.cpp`, `anomaly.cpp`, `modules.cpp`, `chromo.cpp` | Macro-layer gameplay systems: ore extraction, piracy resolution, market events, anomalies, ship modules, chromocore research. |
+| `camera.h`, `render2d.h`, `render2d.cpp` | Projection helpers and the custom 5x7 bitmap text renderer. |
+| `local.h` | Local flight mode data model and tuning constants (`namespace LocalCfg`). |
+| `localgen.cpp` | Procedural generation of a star system for local flight (bodies, belt, traffic). |
+| `localsim.cpp` | Local flight simulation: flight model, NPC AI, combat, mining, docking, write-back to the macro world. |
+| `localdraw.cpp` | Local flight rendering: ray-sphere star plasma, lit planets, rings, asteroids, nebula, HUD. |
+| `soak_test.cpp`, `shot_test.cpp`, `ui_click_test.cpp`, `econ_test.cpp` | Headless harnesses driven by `make soak`, `make shots`, `make uiclick`, `make econ`. |
+| `master_prompt.md` | Canonical handoff document: constraints, code map, methodology, roadmap, changelog. Read it first. |
 | `architecture.md` | High-level architecture and data-oriented rules. |
 | `lore.md` | Physical/economic canon and setting constraints. |
 | `agents.md`, `merge_plan.md` | Early project identity and migration notes. |
@@ -374,15 +429,23 @@ the active code path draws text with its own bitmap glyphs and links only SDL2.
 
 ## Save Files
 
-`F5` writes `starcluster.save` in a text format beginning with:
+`F5` writes `starcluster.save` into the OS user data directory reported by
+`SDL_GetPrefPath` (on macOS, `~/Library/Application Support/starcluster/Starcluster/`).
+It is not written next to the executable: a packaged `.app` runs with `/` as its
+working directory and cannot write there. `F9` reads that path first and falls
+back to the working directory so older saves still open.
+
+The file is text and begins with:
 
 ```text
-STARCLUSTER_SAVE 5
+STARCLUSTER_SAVE 8
 ```
 
-The save stores RNG state, time, stars, markets, factions, relations, colonies,
-contracts, agents, faction knowledge, player knowledge, pending signals, and
-signal memory. `F9` loads the same file and rebuilds runtime caches.
+The save stores the world seed, RNG state, time, stars, markets, factions,
+relations, colonies, contracts, agents, faction knowledge, player knowledge,
+pending signals, signal memory, and trading licence state. `F9` loads the same
+file and rebuilds runtime caches. Versions 6 and 7 still load; a version 7 save
+simply starts a fresh licence period.
 
 ## Design Constraints
 
@@ -406,6 +469,12 @@ Important rules from the project documents:
 - Non-player faction memory overlays are not exposed through a debug selector.
 - The active build is POSIX/SDL2 via `sdl2-config`; the old platform makefiles
   are not synchronized with the current source list.
+- Startup generates 10,000 systems and takes several seconds with no loading
+  screen.
+- Additional trading licences (each granting another ship and raising the quota)
+  are modelled in `Game::licenceCount` but cannot be purchased yet.
+- There is no arbitrage screen: the player must remember price spreads manually
+  even though market age and confidence are already tracked per faction.
 
 
 ---

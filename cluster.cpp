@@ -9,10 +9,12 @@ ClusterStar::ClusterStar(double x_, double y_, double z_, const std::string& nam
     : x(x_), y(y_), z(z_), name(name_) {}
 
 // Генерация звёзд для симуляции
-void Cluster::generate(size_t num_stars) {
+void Cluster::generate(size_t num_stars, unsigned int seed) {
     stars.clear();
     stars.reserve(num_stars);
-    std::mt19937 rng(42);
+    // Раньше здесь стояла константа 42, поэтому карта звёзд была ОДНА И ТА ЖЕ во
+    // всех партиях, каким бы ни был seed мира. Теперь скопление тоже зависит от seed.
+    std::mt19937 rng(seed);
     std::uniform_real_distribution<double> unit(0.0, 1.0);
     const double pi = 3.14159265358979323846;
     const double clusterRadius = 100.0;

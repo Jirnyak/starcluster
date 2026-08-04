@@ -4,6 +4,7 @@
 /game
 /game_asan
 /soak_asan
+/ui_click_test
 /shot_test
 /shot_test_asan
 shot_*.bmp
@@ -30,3 +31,27 @@ SDL2-*.dmg
 
 # Unused local font asset in the current SDL2 renderer.
 /Roboto-Black.ttf
+
+# Готовые релизные сборки. Их место — GitHub Releases, а не история git:
+# раньше репозиторий тащил ~60 МБ артефактов, которые качал каждый клонирующий.
+# Всё это собирает .github/workflows/build.yml.
+*.zip
+*.dmg
+*.dll
+/econ_test
+/Starcluster-Linux/
+/Starcluster-Windows/
+/Starcluster-macOS/
+/Starcluster-Multiplatform/
+/starcluster_crossplatform/
+/final_release/
+/final_release_build/
+/latest_release_archive/
+/downloaded_artifact/
+/starcluster-linux
+/test_rng
+
+# Одноразовые скрипты правки исходников из прошлых сессий (уже применены).
+/patch_*.py
+/fix_*.py
+/patch_*.patch

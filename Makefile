@@ -9,16 +9,26 @@ LIBSOURCES = $(filter-out main.cpp,$(SOURCES))
 
 SANFLAGS = -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
 
+# Предупреждения были выключены, поэтому «сборка без предупреждений» ничего не
+# значила: с -Wall их обнаруживалось 18. Держим их включёнными постоянно.
+WARNFLAGS = -Wall -Wextra -Wno-unused-parameter
+
 all: game
 
 game: $(SOURCES)
-	$(CXX) $(SOURCES) -O3 -std=c++11 $(SDL_CFLAGS) $(SDL_LIBS) -o game
+	$(CXX) $(SOURCES) -O3 -std=c++11 $(WARNFLAGS) $(SDL_CFLAGS) $(SDL_LIBS) -o game
 
 # Балансовый стенд экономики: матрица способностей, опорные цены, волна
 # замещения, пространственный разброс цен. Без SDL — только числа.
 econ: econ_test.cpp econ.cpp market.cpp resource.cpp
 	$(CXX) econ_test.cpp econ.cpp market.cpp resource.cpp -O2 -std=c++11 -o econ_test
 	./econ_test
+
+# Регрессия на маршрутизацию кликов между перекрывающимися окнами (GO/TRADE/CARGO
+# верхнего окна не должны съедаться нижним). Без окна — только логика попаданий.
+uiclick: ui_click_test.cpp $(LIBSOURCES)
+	$(CXX) ui_click_test.cpp $(LIBSOURCES) $(SANFLAGS) -std=c++11 $(SDL_CFLAGS) $(SDL_LIBS) -o ui_click_test
+	SDL_VIDEODRIVER=dummy ASAN_OPTIONS=detect_leaks=0 ./ui_click_test
 
 # Санитайзер-сборка игры. Проверка: `make asan && ./game_asan --smoke && ./game_asan --localsmoke`.
 asan: $(SOURCES)
@@ -46,4 +56,4 @@ shot_asan: shot_test.cpp $(LIBSOURCES)
 	SDL_VIDEODRIVER=dummy ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 ./shot_test_asan
 
 clean:
-	rm -rf game game_asan soak_asan shot_test shot_test_asan *.dSYM shot_*.bmp shot_*.png
+	rm -rf game game_asan soak_asan ui_click_test shot_test shot_test_asan *.dSYM shot_*.bmp shot_*.png
