@@ -11,6 +11,22 @@
 #include <vector>
 #include <unordered_map>
 
+// Одна строка биржевой сводки: «купить здесь — продать там». Считается ТОЛЬКО по
+// тем рынкам, которые игрок уже знает (§ система знаний/сигналов), поэтому данные
+// бывают устаревшими — возраст и уверенность идут в той же строке. Разведка чужих
+// систем становится источником дохода, а не декоративным флагом на карте.
+struct ArbitrageDeal {
+    int element = -1;
+    int targetStar = -1;
+    double buyPrice = 0.0;     // цена в системе отправления (живая — мы в ней стоим)
+    double sellPrice = 0.0;    // известная цена назначения (может быть устаревшей)
+    double units = 0.0;        // сколько влезает в трюм и по карману
+    double profit = 0.0;       // ожидаемая прибыль с учётом проскальзывания и тарифов
+    double distanceLy = 0.0;
+    double ageYears = -1.0;    // сколько лет сведениям о рынке назначения
+    double confidence = 0.0;   // 0..1 — насколько им можно верить
+};
+
 struct RouteEdge {
     int star = 0;
     double distance = 0.0;
@@ -53,6 +69,14 @@ const double LICENCE_TARIFF_MIN = 0.05;
 const double LICENCE_TARIFF_MAX = 0.14;
 const double LICENCE_BUYBACK_K = 2.0;            // выкуп = столько недобора
 const double LICENCE_BUYBACK_MIN = 400.0;
+// Цена НОВОЙ лицензии — кратно текущей квоте, и каждая следующая дороже: лицензия
+// разрешает ещё один борт, но и поднимает планку, так что расширение всегда
+// сознательная ставка, а не автоматический апгрейд.
+const double LICENCE_PRICE_K = 5.0;
+// Досрочное погашение квоты кредитами (для тех, кто не хочет ждать тарифов с
+// продаж). С наценкой: иначе богатый игрок просто откупался бы каждое
+// тысячелетие и торговля — смысл квоты — перестала бы быть нужна.
+const double LICENCE_SETTLE_K = 1.5;
 
 extern std::mt19937 rng;
 int randomer(std::mt19937& rng, int max);
@@ -274,6 +298,13 @@ public:
     void updateLicence(double dt);       // начисление ставки и смена периода
     bool playerBuybackLicence();         // выкупить отозванную лицензию
     bool playerTradingBlocked();         // общий гейт BUY/SELL + объяснение в lastEvent
+    double licencePrice() const;         // цена следующей лицензии
+    double licenceSettleCost() const;    // цена досрочного погашения остатка квоты
+    int playerShipCount() const;         // сколько бортов у игрока (= занятых лицензий)
+    int playerFreeLicences() const;      // лицензий сверх имеющихся бортов
+    bool playerBuyLicence();             // купить лицензию (+1 борт разрешён, +квота)
+    bool playerSettleQuota();            // закрыть остаток квоты кредитами
+    std::vector<ArbitrageDeal> playerArbitrageBoard(int originStar, int maxDeals) const;
     int playerColonyCount() const;
     bool playerCanOpenContractsAt(int starIndex) const;
     std::vector<Contract> playerVisibleContractsAt(int starIndex) const;

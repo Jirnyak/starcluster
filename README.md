@@ -182,6 +182,7 @@ still reference `uni.cpp`; they are not the current project build path.
 - `I`: toggle faction influence overlay.
 - `G`: route the player ship to the selected star.
 - `L`: enter or leave local flight mode (first-person flight inside the system).
+- `E`: open the exchange (route board and trading licences).
 - `[` / `]`: change selected element.
 
 ### Trade, Contracts, Colonies
@@ -269,6 +270,29 @@ year per real second this is roughly seventeen minutes of play at `1x`.
   with `F2` for twice the shortfall; mining, contracts, and local flight keep
   working, so the player always has a way out;
 - the HUD shows `QUOTA n/N CR  nY LEFT  TARIFF n%` in the player status panel.
+
+### The Exchange
+
+`E`, or the `EXCHANGE` button on a system window, opens the exchange for the current system.
+It does two things.
+
+**Route board.** It lists concrete deals - buy element X here, sell it at system Y - built
+only from markets the player has actually surveyed, within 25 light years. Each row carries
+the age of that survey and a confidence value, and rows are tinted by confidence, so stale
+intelligence is visible at a glance. Unsurveyed systems do not appear at all: knowing where
+the money is *is* the resource.
+
+The board estimates realistically. It accounts for slippage on both ends and searches for the
+profit-maximising volume, so it tells you how much to carry, not just where to go. Carrying a
+full hold into a market that only turns over a fraction of it is a loss, and the board says so.
+Measured against actually executing the top deal, a fresh survey predicts within roughly 20%,
+while a forty-year-old one can be off by half - which is exactly what its confidence value
+reports.
+
+**Licences.** Buying a licence raises the quota and permits one more hull; each is priced
+above the last, so expanding the fleet is a deliberate bet rather than a free upgrade. Buying
+an additional ship requires a free licence. The quota's remainder can also be settled directly
+in cash at a premium, for players who would rather pay than wait for tariffs to accumulate.
 
 ### Price Slippage
 

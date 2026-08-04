@@ -902,6 +902,12 @@ int main(int argc, char** argv) {
                     showHelp = !showHelp;
                     continue;
                 }
+                // E — биржа: сводка маршрутов по разведанным рынкам + лицензии.
+                if (e.key.keysym.sym == SDLK_e) {
+                    const int anchor = playerDocked() >= 0 ? playerDocked() : selectedStar;
+                    if (anchor >= 0) UI::openExchangeWindow(ui, anchor, winW, winH);
+                    continue;
+                }
                 if (e.key.keysym.sym == SDLK_F2) {
                     game.playerBuybackLicence();
                     titleTick = 11;

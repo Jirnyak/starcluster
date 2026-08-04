@@ -305,21 +305,8 @@ double Market::executionPrice(int elementIndex, double units, bool selling) cons
     if (elementIndex < 0 || elementIndex >= int(prices.size())) return 0.0;
     const double p0 = prices[elementIndex];
     if (units <= 0.0 || p0 <= 0.0) return p0;
-
-    // z = kN/depth — сделка в долях глубины рынка. Малое z ⇒ средняя ≈ p0.
-    const double z = IMPACT_K * units / depthOf(elementIndex);
-    if (z < 1e-6) return p0;
-
-    // Продажа кэпа не требует: avg = p0·(1−e^−z)/z монотонно убывает к нулю, то
-    // есть «вывалил вдесятеро больше, чем рынок съедает» само собой обесценивает
-    // груз. Именно это и должно ограничивать сверхприбыль с одного рейса.
-    if (selling) {
-        return std::max(priceFloor(size_t(elementIndex)), p0 * (1.0 - std::exp(-z)) / z);
-    }
-    // Покупка растёт экспоненциально; ограничиваем лишь ЧИСЛЕННО (e^40 ещё
-    // конечно), объём и так упирается в деньги покупателя.
-    const double zc = std::min(z, 40.0);
-    return std::max(priceFloor(size_t(elementIndex)), p0 * (std::exp(zc) - 1.0) / zc);
+    const double avg = p0 * marketExecutionFactor(units, depthOf(elementIndex), selling);
+    return std::max(priceFloor(size_t(elementIndex)), avg);
 }
 
 double Market::pricePressure() const {
@@ -451,6 +438,21 @@ double marketReferencePrice(int elementIndex) {
     static const std::vector<double> reference = buildReferencePrices();
     if (elementIndex < 0 || elementIndex >= int(reference.size())) return 0.0;
     return reference[size_t(elementIndex)];
+}
+
+double marketExecutionFactor(double units, double depth, bool selling) {
+    if (units <= 0.0 || depth <= 0.0) return 1.0;
+    // z = kN/depth — сделка в долях глубины рынка. Малое z ⇒ средняя ≈ котировка.
+    const double z = IMPACT_K * units / depth;
+    if (z < 1e-6) return 1.0;
+    // Продажа кэпа не требует: (1−e^−z)/z монотонно убывает к нулю, то есть
+    // «вывалил вдесятеро больше, чем рынок съедает» само обесценивает груз.
+    // Именно это ограничивает сверхприбыль с одного рейса.
+    if (selling) return (1.0 - std::exp(-z)) / z;
+    // Покупка растёт экспоненциально; ограничиваем лишь ЧИСЛЕННО (e^40 конечно),
+    // объём и так упирается в деньги покупателя.
+    const double zc = std::min(z, 40.0);
+    return (std::exp(zc) - 1.0) / zc;
 }
 
 double marketClusterLevel() {

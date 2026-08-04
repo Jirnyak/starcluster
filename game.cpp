@@ -3737,6 +3737,12 @@ void Game::init(size_t num_stars) {
     // радиусе двух прыжков — первые пять минут превращались в лотерею. Здесь мы
     // не подкручиваем цены, а лишь выбираем точку входа в уже сгенерированный мир.
     const int playerStart = pickStarterSystem(*this);
+    // У фракции игрока `homeStar` оставался -1, поэтому посев знаний (ниже) её
+    // молча пропускал: игрок знал ТОЛЬКО свою систему, а 298 соседей в радиусе
+    // 25 ly были для него белым пятном. Биржевая сводка при этом пуста —
+    // показывать нечего, хотя прибыльные маршруты рядом гарантированы
+    // (`pickStarterSystem`). Даём фракции игрока дом, как у всех остальных.
+    if (validFaction(*this, playerFaction)) factions[playerFaction].homeStar = playerStart;
     const ClusterStar& playerHome = cluster.stars[playerStart];
     Ship playerShip("Player", playerHome.x, playerHome.y, playerHome.z, 0.28, playerFaction);
     playerShip.cargoCapacity = 110.0;
@@ -4500,10 +4506,19 @@ bool Game::buyAdditionalShip(int agentIndex, int starIndex, int classId) {
     const auto& classes = shipClasses();
     if (classId < 0 || classId >= int(classes.size())) return false;
     const ShipClass& sc = classes[classId];
-    
-    double totalPrice = sc.price + 1000000.0;
+
+    // Второй борт стоил `price + 1000000` — заградительная константа, которая просто
+    // отключала механику. Теперь ограничение содержательное: КАЖДЫЙ борт летает по
+    // отдельной лицензии, и купить её надо заранее на бирже (§10.4). Расширение
+    // флота = осознанно поднятая себе квота, а не стена из миллиона кредитов.
+    if (agents[agentIndex].playerControlled && playerFreeLicences() <= 0) {
+        lastEvent = "no free licence — buy one at the exchange (E)";
+        return false;
+    }
+
+    const double totalPrice = sc.price;
     if (agents[agentIndex].money < totalPrice) return false;
-    
+
     agents[agentIndex].money -= totalPrice;
     
     Ship newShip(sc.name, 0, 0, 0, 0, agents[agentIndex].ship.ownerFaction);
@@ -5162,6 +5177,145 @@ bool Game::playerBuybackLicence() {
     licencePeriodEnd = time + LICENCE_PERIOD_YEARS;
     pushNews("Licence bought back. Trading resumed.", 4);
     lastEvent = "licence bought back";
+    return true;
+}
+
+// Биржевая сводка: чем торговать прямо сейчас. Считается по ЖИВОМУ рынку системы,
+// где игрок стоит (цена покупки честная, с проскальзыванием §10.3), и по ИЗВЕСТНЫМ
+// ценам соседей — то есть по данным, которые могут быть старыми. Возраст и
+// уверенность возвращаются вместе со сделкой, чтобы UI показал их игроку: сводка
+// это подсказка разведки, а не гарантия. Ничего не мутирует, RNG не трогает.
+std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDeals) const {
+    std::vector<ArbitrageDeal> deals;
+    if (!validStar(*this, originStar) || originStar >= int(markets.size())) return deals;
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return deals;
+
+    const Agent& player = agents[playerAgent];
+    const Market& home = markets[originStar];
+    const ClusterStar& hs = cluster.stars[originStar];
+    const double freeMass = std::max(0.0, player.ship.cargoCapacity - shipCargoMass(player.ship));
+    if (freeMass <= 0.0 || player.money <= 0.0) return deals;
+
+    const double SCAN_LY = 25.0;                 // дальше сводка бесполезна: топливо и время съедят маржу
+    const double sellTariff = licenceTariffRate; // лицензионный тариф удержат с продажи
+
+    for (int target = 0; target < int(cluster.stars.size()) && target < int(markets.size()); ++target) {
+        if (target == originStar) continue;
+        const double distance = distanceBetween(hs, cluster.stars[target]);
+        if (distance > SCAN_LY) continue;
+        if (!playerKnowsMarket(target)) continue;      // неразведанное не показываем — знание и есть ресурс
+
+        const double age = playerKnownMarketAge(target);
+        for (int e = 0; e < int(elementCount()) && e < int(home.prices.size()); ++e) {
+            const double buyBase = home.prices[e];
+            if (buyBase <= 0.001 || home.supply[e].amount < 1.0) continue;
+            const double sellPrice = playerKnownPrice(target, e);
+            if (sellPrice <= buyBase) continue;        // ниже закупки — не сделка
+
+            const double unitMass = resourceUnitMassByIndex(e);
+            if (unitMass <= 0.0) continue;
+            double maxUnits = std::min(freeMass / unitMass, home.supply[e].amount);
+            if (maxUnits <= 0.01) continue;
+            // Верхняя граница по деньгам — по ФАКТИЧЕСКОЙ цене исполнения (она выше
+            // котировки: покупка сама разгоняет рынок, §10.3).
+            for (int pass = 0; pass < 2 && maxUnits > 0.0; ++pass) {
+                const double avg = home.executionPrice(e, maxUnits, false);
+                maxUnits = std::min(maxUnits, player.money / std::max(1e-9, avg));
+            }
+            if (maxUnits <= 0.01) continue;
+
+            // «Полный трюм» больше не оптимум: при тонком рынке назначения прибыль
+            // по объёму имеет МАКСИМУМ (покупка дорожает, продажа дешевеет). Ищем его
+            // перебором — сводка должна подсказывать не только КУДА, но и СКОЛЬКО.
+            double units = 0.0, cost = 0.0, revenue = 0.0, profit = 0.0;
+            const double targetDepth = markets[target].depthOf(e);
+            for (int step = 1; step <= 10; ++step) {
+                const double u = maxUnits * double(step) / 10.0;
+                const double c = u * home.executionPrice(e, u, false);
+                const double r = u * sellPrice * marketExecutionFactor(u, targetDepth, true) * (1.0 - sellTariff);
+                if (r - c > profit) { profit = r - c; units = u; cost = c; revenue = r; }
+            }
+            if (units <= 0.01) continue;
+            (void)revenue;
+            if (profit <= 0.0) continue;
+
+            ArbitrageDeal deal;
+            deal.element = e;
+            deal.targetStar = target;
+            deal.buyPrice = cost / units;
+            deal.sellPrice = sellPrice;
+            deal.units = units;
+            deal.profit = profit;
+            deal.distanceLy = distance;
+            deal.ageYears = age;
+            deal.confidence = playerKnownMarketConfidence(target, e);
+            deals.push_back(deal);
+        }
+    }
+
+    std::sort(deals.begin(), deals.end(), [](const ArbitrageDeal& a, const ArbitrageDeal& b) {
+        return a.profit > b.profit;
+    });
+    if (maxDeals > 0 && int(deals.size()) > maxDeals) deals.resize(size_t(maxDeals));
+    return deals;
+}
+
+double Game::licencePrice() const {
+    return licenceQuotaBase * LICENCE_PRICE_K * double(std::max(1, licenceCount));
+}
+
+double Game::licenceSettleCost() const {
+    const double remaining = std::max(0.0, licenceQuotaTarget() - licenceQuotaPaid);
+    return remaining * LICENCE_SETTLE_K;
+}
+
+int Game::playerShipCount() const {
+    int ships = 0;
+    for (const Agent& a : agents) {
+        if (a.playerControlled) ships += 1;
+    }
+    return std::max(1, ships);
+}
+
+int Game::playerFreeLicences() const {
+    return std::max(0, licenceCount - playerShipCount());
+}
+
+bool Game::playerBuyLicence() {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return false;
+    Agent& player = agents[playerAgent];
+    const double price = licencePrice();
+    if (player.money < price) {
+        lastEvent = "licence needs " + std::to_string(int(std::ceil(price))) + " Cr";
+        return false;
+    }
+    player.money -= price;
+    if (validFaction(*this, playerFaction)) factions[playerFaction].treasury += price;
+    licenceCount += 1;
+    pushNews("Trading licence #" + std::to_string(licenceCount) + " acquired. Quota is now " +
+             std::to_string(int(licenceQuotaTarget())) + " Cr per period.", 4);
+    lastEvent = "licence acquired — one more hull permitted";
+    return true;
+}
+
+bool Game::playerSettleQuota() {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return false;
+    const double remaining = std::max(0.0, licenceQuotaTarget() - licenceQuotaPaid);
+    if (remaining <= 0.0) {
+        lastEvent = "quota already met";
+        return false;
+    }
+    Agent& player = agents[playerAgent];
+    const double cost = licenceSettleCost();
+    if (player.money < cost) {
+        lastEvent = "settlement needs " + std::to_string(int(std::ceil(cost))) + " Cr";
+        return false;
+    }
+    player.money -= cost;
+    if (validFaction(*this, playerFaction)) factions[playerFaction].treasury += cost;
+    licenceQuotaPaid += remaining;
+    pushNews("Quota settled in cash for " + std::to_string(int(std::ceil(cost))) + " Cr.", 4);
+    lastEvent = "quota settled";
     return true;
 }
 
