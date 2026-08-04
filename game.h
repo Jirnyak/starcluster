@@ -319,7 +319,9 @@ public:
     int playerFreeLicences() const;      // лицензий сверх имеющихся бортов
     bool playerBuyLicence();             // купить лицензию (+1 борт разрешён, +квота)
     bool playerSettleQuota();            // закрыть остаток квоты кредитами
-    std::vector<ArbitrageDeal> playerArbitrageBoard(int originStar, int maxDeals) const;
+    // elementFilter >= 0 — только этот элемент (тогда список = все разведанные
+    // системы по нему), -1 — все элементы разом.
+    std::vector<ArbitrageDeal> playerArbitrageBoard(int originStar, int maxDeals, int elementFilter = -1) const;
     // МОДЕЛЬ цены на СЕЙЧАС по устаревшему наблюдению (см. ArbitrageDeal).
     double playerProjectedPrice(int starIndex, int elementIndex) const;
     int playerSurveyedMarketCount() const;   // сколько рынков игрок обследовал

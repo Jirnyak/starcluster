@@ -1292,8 +1292,11 @@ struct ExchangeLayout {
     SDL_Rect settleQuota = {0, 0, 0, 0};
     SDL_Rect scrollUp = {0, 0, 0, 0};
     SDL_Rect scrollDown = {0, 0, 0, 0};
+    SDL_Rect elementsBtn = {0, 0, 0, 0};
     int rowH = 14;
     int rows = 0;
+    // Сетка таблицы Менделеева (режим выбора элемента)
+    int tableX = 0, tableY = 0, cellW = 0, cellH = 0;
 };
 
 ExchangeLayout exchangeLayout(const Window& window) {
@@ -1309,6 +1312,12 @@ ExchangeLayout exchangeLayout(const Window& window) {
     layout.settleQuota = {x + 178, by, 190, 24};
     layout.scrollUp    = {window.rect.x + window.rect.w - 46, top - 18, 36, 16};
     layout.scrollDown  = {window.rect.x + window.rect.w - 46, by, 36, 24};
+    layout.elementsBtn = {x + 376, by, 150, 24};
+    // Таблица Менделеева: 18 столбцов, вписываем в ширину доски.
+    layout.cellW = std::max(18, std::min(34, (layout.board.w - 20) / 18));
+    layout.cellH = std::max(16, layout.cellW - 6);
+    layout.tableX = x;
+    layout.tableY = top + 4;
     return layout;
 }
 
@@ -1336,16 +1345,30 @@ void openExchangeWindow(WindowState& state, int starIndex, int screenW, int scre
 // а повторное посещение системы обновляет её запись в базе знаний, и сводка обязана
 // это подхватить). Два года игрового времени = две секунды на скорости x1.
 void updateExchangeBoard(WindowState& state, const Game& game) {
-    const Window* exchange = nullptr;
-    for (const Window& w : state.windows) {
+    Window* exchange = nullptr;
+    for (Window& w : state.windows) {
         if (w.kind == WindowKind::Exchange) { exchange = &w; break; }
     }
     if (!exchange) return;                      // окно закрыто — не тратим время
+
+    // Биржа СЛЕДУЕТ за игроком. Раньше `star` фиксировался в момент открытия, и
+    // после перелёта окно продолжало показывать прежнюю систему: котировки покупки
+    // считались чужими, список пропадал, а снимок текущей системы (который игра
+    // обновляет каждый тик, пока корабль стоит) в сводку не попадал.
+    const int docked = playerMarketStar(game);
+    if (docked >= 0 && exchange->star != docked) {
+        exchange->star = docked;
+        exchange->scrollOffset = 0;
+    }
+
     const int star = exchange->star;
     const double REFRESH_YEARS = 2.0;
-    if (star == state.exchangeStar && game.time - state.exchangeBuiltAt < REFRESH_YEARS) return;
-    state.exchangeBoard = game.playerArbitrageBoard(star, 0);
+    const bool sameQuery = star == state.exchangeStar &&
+                           state.exchangeElement == state.exchangeBoardElement;
+    if (sameQuery && game.time - state.exchangeBuiltAt < REFRESH_YEARS) return;
+    state.exchangeBoard = game.playerArbitrageBoard(star, 0, state.exchangeElement);
     state.exchangeStar = star;
+    state.exchangeBoardElement = state.exchangeElement;
     state.exchangeBuiltAt = game.time;
 }
 
@@ -1379,6 +1402,34 @@ bool handleExchangeWindowMouseDown(WindowState& state, Game& game, const Window&
             w->scrollOffset = std::min(std::max(0, total - layout.rows), w->scrollOffset + layout.rows);
             return true;
         }
+    }
+    if (contains(layout.elementsBtn, mouseX, mouseY)) {
+        // Один тумблер: показать таблицу для выбора элемента, а если фильтр уже
+        // стоит — снять его и вернуться ко всему списку.
+        if (state.exchangeElement >= 0) {
+            state.exchangeElement = -1;
+            state.exchangeTable = false;
+        } else {
+            state.exchangeTable = !state.exchangeTable;
+        }
+        if (w) w->scrollOffset = 0;
+        return true;
+    }
+    if (state.exchangeTable) {
+        const std::vector<ElementDefinition>& elements = elementDefinitions();
+        for (size_t i = 0; i < elements.size(); ++i) {
+            int col = 0, row = 0;
+            if (!periodicCell(elements[i].atomicNumber, col, row)) continue;
+            const SDL_Rect cell = {layout.tableX + col * layout.cellW, layout.tableY + row * layout.cellH,
+                                   layout.cellW - 2, layout.cellH - 2};
+            if (contains(cell, mouseX, mouseY)) {
+                state.exchangeElement = int(i);
+                state.exchangeTable = false;
+                if (w) w->scrollOffset = 0;
+                return true;
+            }
+        }
+        return true;                       // в режиме таблицы прочие клики глушим
     }
     if (contains(layout.buyLicence, mouseX, mouseY)) {
         game.playerBuyLicence();
@@ -1426,10 +1477,40 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
     if (!live) {
         drawText(renderer, x, y, "DOCK IN THIS SYSTEM FOR LIVE QUOTES", P.red, 1);
     } else {
-        char sub[128];
-        std::snprintf(sub, sizeof(sub), "MODELLED FROM %d SURVEYED MARKETS - NOT A LIVE FEED",
-                      game.playerSurveyedMarketCount());
+        char sub[160];
+        if (state.exchangeElement >= 0) {
+            std::snprintf(sub, sizeof(sub), "EVERY SURVEYED MARKET FOR %s - %d MARKETS KNOWN",
+                          elementDefinitions()[state.exchangeElement].symbol,
+                          game.playerSurveyedMarketCount());
+        } else {
+            std::snprintf(sub, sizeof(sub), "BEST ACROSS %d SURVEYED MARKETS - NOT A LIVE FEED",
+                          game.playerSurveyedMarketCount());
+        }
         drawText(renderer, x, y, sub, P.dim, 1);
+    }
+
+    // --- Режим выбора элемента: таблица Менделеева вместо списка.
+    if (state.exchangeTable) {
+        drawText(renderer, x, layout.board.y, "PICK AN ELEMENT TO LIST EVERY SURVEYED MARKET FOR IT", P.cyan, 1);
+        const std::vector<ElementDefinition>& elements = elementDefinitions();
+        for (size_t i = 0; i < elements.size(); ++i) {
+            int col = 0, row = 0;
+            if (!periodicCell(elements[i].atomicNumber, col, row)) continue;
+            const SDL_Rect cell = {layout.tableX + col * layout.cellW, layout.tableY + row * layout.cellH,
+                                   layout.cellW - 2, layout.cellH - 2};
+            // Живой рынок раскрашивает клетки так же, как в окне торговли —
+            // игрок узнаёт привычную картину дефицита и избытка.
+            SDL_Color fill = {34, 44, 62, 190};
+            if (live && window.star >= 0 && window.star < int(game.markets.size())) {
+                fill = marketCellColor(game.markets[window.star], int(i));
+            }
+            fillRect(renderer, cell.x, cell.y, cell.w, cell.h, fill);
+            strokeRect(renderer, cell.x, cell.y, cell.w, cell.h,
+                       int(i) == state.exchangeElement ? P.amber : SDL_Color{52, 68, 92, 220});
+            drawText(renderer, cell.x + 2, cell.y + 2, elements[i].symbol, P.text, 1);
+        }
+        drawButton(renderer, layout.elementsBtn, "BACK TO LIST", P.cyan, true);
+        return;
     }
 
     // --- Сводка сделок. Данные из кэша (updateExchangeBoard), список листается.
@@ -1486,6 +1567,13 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
         std::snprintf(btn, sizeof(btn), "QUOTA MET");
     }
     drawButton(renderer, layout.settleQuota, btn, P.green, canSettle);
+    if (state.exchangeElement >= 0) {
+        std::snprintf(btn, sizeof(btn), "ALL ELEMENTS (%s)",
+                      elementDefinitions()[state.exchangeElement].symbol);
+    } else {
+        std::snprintf(btn, sizeof(btn), "FILTER BY ELEMENT");
+    }
+    drawButton(renderer, layout.elementsBtn, btn, P.cyan, true);
 }
 
 bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window& window, int mouseX, int mouseY, int button) {

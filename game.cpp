@@ -5216,7 +5216,7 @@ double Game::playerProjectedPrice(int starIndex, int elementIndex) const {
     return playerKnownPrice(starIndex, elementIndex);
 }
 
-std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDeals) const {
+std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDeals, int elementFilter) const {
     std::vector<ArbitrageDeal> deals;
     if (!validStar(*this, originStar) || originStar >= int(markets.size())) return deals;
     if (playerAgent < 0 || playerAgent >= int(agents.size())) return deals;
@@ -5229,7 +5229,13 @@ std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDea
 
     const double sellTariff = licenceTariffRate;    // лицензионный тариф удержат с продажи
     const int elems = std::min(int(elementCount()), int(home.prices.size()));
-    const int keep = maxDeals > 0 ? maxDeals : 200; // храним лучшие, а не все 390k строк
+    // При фильтре по одному элементу список короткий по построению (не больше числа
+    // разведанных систем), поэтому режем его гораздо мягче — иначе фильтр «покажи всё
+    // по железу» упирался бы в тот же потолок, что и общий список.
+    const int keep = maxDeals > 0 ? maxDeals : (elementFilter >= 0 ? 2000 : 200);
+    const int firstElem = elementFilter >= 0 ? elementFilter : 0;
+    const int lastElem = elementFilter >= 0 ? elementFilter + 1 : elems;
+    if (firstElem < 0 || firstElem >= elems) return deals;
 
     // Сколько чего можно увезти — зависит ТОЛЬКО от элемента и кошелька, а не от
     // пункта назначения. Считаем один раз на элемент, а не заново для каждой из
@@ -5270,7 +5276,7 @@ std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDea
         const double distance = distanceBetween(hs, cluster.stars[target]);
         const double age = playerKnownMarketAge(target);
         const Market& tm = markets[target];
-        for (int e = 0; e < elems; ++e) {
+        for (int e = firstElem; e < lastElem; ++e) {
             const Leg& leg = legs[size_t(e)];
             if (!leg.usable) continue;
             // Цена назначения — МОДЕЛЬ на сейчас, а не снимок: живого канала с чужой

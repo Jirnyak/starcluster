@@ -60,6 +60,9 @@ struct WindowState {
     std::vector<ArbitrageDeal> exchangeBoard;
     int exchangeStar = -1;
     double exchangeBuiltAt = -1.0e18;
+    int exchangeElement = -1;      // фильтр: -1 = все элементы, иначе индекс элемента
+    int exchangeBoardElement = -1; // с каким фильтром собран кэш
+    bool exchangeTable = false;    // показывать таблицу Менделеева вместо списка
     int nextId = 1;
     int activeId = -1;
     int draggingId = -1;
