@@ -6,9 +6,9 @@ class Ship;
 
 // Слот модуля — для группировки в окне апгрейдов.
 enum class ModuleSlot {
-    Drive = 0,    // двигатель: скорость/ускорение
+    Drive = 0,    // двигатель: САМ движок, слот эксклюзивный (см. driveIndex)
     Cargo = 1,    // трюм: грузоподъёмность
-    Fuel = 2,     // баки: запас топлива
+    Fuel = 2,     // баки: объём под топливо и рабочее тело
     Weapon = 3,   // вооружение: тяжёлое/лёгкое
     Defense = 4,  // защита: броня/корпус
     Sensor = 5,   // сенсоры: дальность обнаружения (utility)
@@ -22,7 +22,8 @@ struct ModuleDef {
     double price;
     double mass;          // прибавка к dryMass
     double cargoBonus;
-    double fuelBonus;
+    double propellantVolumeBonus; // объём бака рабочего тела
+    double fuelVolumeBonus;       // объём топливного бункера
     double speedBonus;
     double accelBonus;
     double heavyBonus;
@@ -30,9 +31,13 @@ struct ModuleDef {
     double armorBonus;
     double hullBonus;
     double utilityBonus;
+    int driveIndex;       // для слота Drive: какой движок ставится; иначе -1
     int minShipyard;      // требуемый уровень верфи для установки
     std::string blurb;
 };
+
+// Слот Drive эксклюзивен: движок ровно один, новый заменяет старый.
+bool moduleSlotIsExclusive(ModuleSlot slot);
 
 const std::vector<ModuleDef>& moduleDefs();
 

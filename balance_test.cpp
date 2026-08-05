@@ -16,6 +16,7 @@
 #include "market.h"
 #include "ship.h"
 #include "modules.h"
+#include "drive.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -317,6 +318,272 @@ void testQuotaReachable() {
     check(tariff > 0.0 && runs > 1.0 && runs < 60.0, "квота закрывается за разумное число рейсов", buf);
 }
 
+
+// --- ДВИГАТЕЛЬНАЯ УСТАНОВКА -------------------------------------------------
+// Топливо перестало быть абстрактным счётчиком: это ЭЛЕМЕНТ, который покупается
+// в трюм и переливается в бункер. Проверки ловят обрыв любого звена цепочки.
+
+// Полный цикл, ради которого всё затевалось: купил элемент -> он в трюме ->
+// перелил в бак -> улетел. Если ломается любое звено, ломается вся игра.
+void testCargoToTankLoop() {
+    Game g;
+    buildWorld(g, 42, 40);
+    Ship& ship = g.agents[g.playerAgent].ship;
+    const int propellant = shipDominantPropellantElement(ship);
+
+    // Опустошаем бак и покупаем рабочее тело как ОБЫЧНЫЙ груз.
+    ship.propellant.clear();
+    const double cargoBefore = shipCargoMass(ship);
+    const bool bought = g.agentBuyElementAmount(g.playerAgent, propellant, 40.0);
+    const double cargoAfterBuy = shipCargoMass(ship);
+
+    const double moved = g.agentLoadPropellantFromCargo(g.playerAgent, propellant, 40.0);
+    const double cargoAfterMove = shipCargoMass(ship);
+
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "куплено в трюм %+.1f массы, перелито %.1f ед., трюм освободился на %+.1f",
+        cargoAfterBuy - cargoBefore, moved, cargoAfterMove - cargoAfterBuy);
+    check(bought && moved > 0.0 && cargoAfterBuy > cargoBefore + 1e-6 &&
+          cargoAfterMove < cargoAfterBuy - 1e-6 && shipPropellantMix(ship).mass > 0.0,
+          "цикл трюм -> бак работает", buf);
+}
+
+// Любой элемент грузится в любую ёмкость: запретов нет вообще. Раньше кнопки
+// были серыми, потому что ёмкость держала один сорт — это и чиним.
+void testAnyElementLoads() {
+    Game g;
+    buildWorld(g, 42, 10);
+    const int pa = g.playerAgent;
+    Ship& ship = g.agents[pa].ship;
+    ship.fuel.clear();
+    ship.propellant.clear();
+    ship.cargoCapacity = 1e6;
+
+    const char* probe[] = {"H", "He", "Fe", "Xe", "U", "Pb"};
+    int loadedFuel = 0;
+    int loadedTank = 0;
+    for (size_t k = 0; k < sizeof(probe) / sizeof(probe[0]); ++k) {
+        const int e = elementIndex(probe[k]);
+        if (e < 0) continue;
+        ship.cargo.push_back(Resource(probe[k], 4.0));
+        if (g.agentLoadFuelFromCargo(pa, e, 1.0) > 0.0) ++loadedFuel;
+        if (g.agentLoadPropellantFromCargo(pa, e, 1.0) > 0.0) ++loadedTank;
+    }
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "из %d сортов в бункер легло %d, в бак %d (смесь из %zu и %zu)",
+        int(sizeof(probe) / sizeof(probe[0])), loadedFuel, loadedTank,
+        ship.fuel.size(), ship.propellant.size());
+    check(loadedFuel == 6 && loadedTank == 6 && ship.fuel.size() > 1 && ship.propellant.size() > 1,
+          "любой элемент грузится в любую ёмкость", buf);
+}
+
+// Мёртвый балласт: железо зажечь нельзя, поэтому смесь с ним слабеет.
+// Но это ГРАДИЕНТ, а не запрет — залить его никто не мешает.
+void testBallastWeakensMix() {
+    Game g;
+    buildWorld(g, 42, 10);
+    Ship& ship = g.agents[g.playerAgent].ship;
+    const int th = elementIndex("Th");
+    const int fe = elementIndex("Fe");
+
+    ship.fuel.clear();
+    ship.fuel.push_back(Resource("Th", 10.0));
+    const double pure = shipFuelMix(ship).specificEnergy;
+
+    // Доливаем железа столько же по МАССЕ, сколько тория.
+    const double thMass = 10.0 * elementUnitMass(th);
+    ship.fuel.push_back(Resource("Fe", thMass / elementUnitMass(fe)));
+    const double diluted = shipFuelMix(ship).specificEnergy;
+
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "чистый торий %.3f -> пополам с железом %.3f МэВ/нуклон",
+        pure, diluted);
+    check(pure > 0.0 && diluted < pure * 0.75 && diluted > 0.0,
+          "балласт в смеси снижает энергию", buf);
+}
+
+// Сгоревшее топливо не исчезает: оно перегорает в золу и падает обратно в трюм.
+// Лёгкие ядра сливаются вверх к железу, тяжёлые делятся вниз к нему же.
+void testBurnedFuelBecomesAsh() {
+    Game g;
+    buildWorld(g, 42, 20);
+    Ship& ship = g.agents[g.playerAgent].ship;
+    ship.cargo.clear();
+
+    const int fuelElem = shipDominantFuelElement(ship);
+    const int ash = elementAshProduct(fuelElem);
+    const int fuelZ = elementDefinitions()[fuelElem].atomicNumber;
+    const int ashZ = ash >= 0 ? elementDefinitions()[ash].atomicNumber : -1;
+
+    std::vector<Resource> produced;
+    const double fuelBefore = shipFuelMix(ship).mass;
+    shipConsumeForDeltaV(ship, 0.05, &produced);
+    const double fuelAfter = shipFuelMix(ship).mass;
+
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "%s(Z=%d) -> %s(Z=%d), сожжено %.2f массы, золы %zu",
+        elementDefinitions()[fuelElem].symbol, fuelZ,
+        ash >= 0 ? elementDefinitions()[ash].symbol : "-", ashZ,
+        fuelBefore - fuelAfter, produced.size());
+    // Зола обязана лежать БЛИЖЕ к железу, чем топливо: это и есть источник энергии.
+    const bool towardIron = ash >= 0 && std::abs(ashZ - 26) < std::abs(fuelZ - 26);
+    check(fuelAfter < fuelBefore && !produced.empty() && towardIron,
+          "сгоревшее топливо возвращается золой", buf);
+}
+
+// Размен, ради которого введён объём: по МАССЕ синтез бьёт деление, по ОБЪЁМУ
+// наоборот. Если оба выиграет один и тот же элемент, выбора топлива нет.
+void testFusionFissionTradeoff() {
+    const int h = elementIndex("H");
+    const int u = elementIndex("U");
+    const std::vector<ElementDefinition>& e = elementDefinitions();
+    const double hPerMass = e[h].specificEnergy;
+    const double uPerMass = e[u].specificEnergy;
+    const double hPerVolume = e[h].specificEnergy * e[h].density;
+    const double uPerVolume = e[u].specificEnergy * e[u].density;
+
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "на массу H/U = %.1fx, на объём U/H = %.1fx",
+        hPerMass / uPerMass, uPerVolume / hPerVolume);
+    check(hPerMass > uPerMass * 2.0 && uPerVolume > hPerVolume * 2.0,
+          "синтез силён на массу, деление на объём", buf);
+}
+
+// Железо — дно кривой связи: жечь там нечего. Проверяем, что континуум не
+// выродился в «любой элемент — топливо»: доля поджига у железа должна быть 0.
+void testIronIsDead() {
+    const int fe = elementIndex("Fe");
+    const std::vector<ElementDefinition>& e = elementDefinitions();
+    double worstIgnition = 0.0;
+    for (size_t d = 0; d < driveDefs().size(); ++d) {
+        worstIgnition = std::max(worstIgnition, driveIgnitionFraction(int(d), fe));
+    }
+    const double h = e[elementIndex("H")].specificEnergy;
+    const double u = e[elementIndex("U")].specificEnergy;
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "Fe %.3f = %.1f%% от H и %.1f%% от U, лучшая доля поджига %.3f",
+        e[fe].specificEnergy, e[fe].specificEnergy / h * 100.0, e[fe].specificEnergy / u * 100.0,
+        worstIgnition);
+    check(e[fe].specificEnergy < h * 0.05 && e[fe].specificEnergy < u * 0.25 && worstIgnition < 0.01,
+          "железо не топливо", buf);
+}
+
+// Своё топливо должно быть заметно выгоднее станционного, иначе весь смысл
+// возить элементы самому пропадает и игрок просто жмёт одну кнопку.
+void testSelfFuelBeatsStation() {
+    Game g;
+    buildWorld(g, 42, 20);
+    const int pa = g.playerAgent;
+    Ship& ship = g.agents[pa].ship;
+    const int fuel = shipDominantFuelElement(ship);
+    const int star = g.agents[pa].currentStar;
+    if (fuel >= int(g.markets[star].prices.size())) { check(false, "своё топливо выгоднее станционного", "нет цены"); return; }
+
+    const double raw = g.markets[star].prices[fuel] / elementUnitMass(fuel);
+
+    // Станционная заправка: сколько кредитов ушло за единицу МАССЫ в бункере.
+    ship.fuel.clear();
+    const double moneyBefore = g.agents[pa].money;
+    g.agentBuyFuel(pa);
+    const double gotMass = shipFuelMix(ship).mass;
+    const double stationPerMass = gotMass > 0.0 ? (moneyBefore - g.agents[pa].money) / gotMass : 0.0;
+
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "сырьё %.2f/масса, станция %.2f/масса (наценка %.0f%%)",
+        raw, stationPerMass, stationPerMass > 0.0 ? (stationPerMass / raw - 1.0) * 100.0 : 0.0);
+    check(gotMass > 0.0 && stationPerMass > raw * 1.5, "своё топливо выгоднее станционного", buf);
+}
+
+void testDriveSlotExclusive() {
+    Game g;
+    buildWorld(g, 42, 10);
+    const int pa = g.playerAgent;
+    Ship& ship = g.agents[pa].ship;
+    ship.maxModules = 8;
+    g.agents[pa].money = 1e9;
+    // Верфь высшего уровня, иначе движки просто не поставятся и тест пройдёт
+    // вхолостую, ничего не проверив.
+    const int star = g.agents[pa].currentStar;
+    // Верфь высшего уровня даёт роль системы (shipyardLevelAtStar ищет колонию
+    // по полю starIndex, а не по индексу массива).
+    if (star >= 0 && star < int(g.cluster.stars.size())) g.cluster.stars[star].economyRole = "shipyard";
+
+    const std::vector<ModuleDef>& defs = moduleDefs();
+    int installed = 0;
+    int attempted = 0;
+    for (size_t i = 0; i < defs.size(); ++i) {
+        if (defs[i].slot != ModuleSlot::Drive) continue;
+        ++attempted;
+        ship.cargo.push_back(Resource("Module: " + defs[i].name, 1.0));
+        g.equipModule(pa, int(i));
+    }
+    for (size_t i = 0; i < ship.modules.size(); ++i) {
+        if (defs[ship.modules[i]].slot == ModuleSlot::Drive) ++installed;
+    }
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "поставлено %d движков подряд, на борту осталось %d",
+        attempted, installed);
+    // installed == 1, а не <= 1: иначе тест проходит и когда НИЧЕГО не встало.
+    check(attempted > 1 && installed == 1, "слот двигателя эксклюзивен", buf);
+}
+
+// Перегруз РАЗРЕШЁН: cargoCapacity — паспортная норма, а не физическая стена.
+// Залить в трюм можно что угодно и сколько угодно; цена — невозможность взлёта.
+// Без этого игрок не мог вылить бак, чтобы сменить топливную схему, и застревал.
+void testOverloadAllowedButGrounds() {
+    Game g;
+    buildWorld(g, 42, 20);
+    const int pa = g.playerAgent;
+    Ship& ship = g.agents[pa].ship;
+    ship.cargoCapacity = 5.0;
+    ship.cargo.clear();
+
+    // Сливаем весь бак в заведомо маленький трюм.
+    const int prop = shipDominantPropellantElement(ship);
+    const double drained = g.agentDrainPropellantToCargo(pa, prop, 1.0e9);
+    const double loaded = shipCargoMass(ship);
+    const double over = shipCargoOverload(ship);
+
+    // Взлёт при перегрузе запрещён.
+    int target = -1;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        if (int(i) != g.agents[pa].currentStar) { target = int(i); break; }
+    }
+    const bool blocked = !g.commandAgentToStar(pa, target);
+
+    // Выброс за борт снимает перегруз и возвращает возможность лететь.
+    g.agentJettisonCargo(pa, prop, 1.0e9);
+    const double afterJettison = shipCargoOverload(ship);
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "слито %.0f ед. => трюм %.0f/%.0f (перегруз +%.0f), взлёт %s, после сброса %.0f",
+        drained, loaded, ship.cargoCapacity, over,
+        blocked ? "заблокирован" : "РАЗРЕШЁН", afterJettison);
+    check(drained > 0.0 && over > 0.0 && blocked && afterJettison <= 0.001,
+          "перегруз разрешён, но не даёт взлететь", buf);
+}
+
+// Зола ложится в трюм ЦЕЛИКОМ, даже сверх нормы: она заменяет сгоревшее
+// топливо, поэтому масса корабля не растёт и перегруз в полёте не запирает.
+void testAshIgnoresHoldLimit() {
+    Game g;
+    buildWorld(g, 42, 10);
+    Ship& ship = g.agents[g.playerAgent].ship;
+    ship.cargo.clear();
+    ship.cargoCapacity = 0.5;   // трюм заведомо меньше будущей золы
+
+    std::vector<Resource> ash;
+    const double burned = shipFuelMix(ship).mass;
+    shipConsumeForDeltaV(ship, 0.05, &ash);
+    double landed = 0.0;
+    for (size_t i = 0; i < ash.size(); ++i) landed += ash[i].amount * resourceUnitMass(ash[i].element);
+
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "трюм %.1f, сожжено %.1f массы, золы получено %.1f",
+        ship.cargoCapacity, burned - shipFuelMix(ship).mass, landed);
+    check(landed > ship.cargoCapacity, "зола не режется вместимостью трюма", buf);
+}
+
 } // namespace
 
 int main() {
@@ -330,6 +597,16 @@ int main() {
     testPriceLadderContinuous();
     testStarterHullIsAClass();
     testQuotaReachable();
+    testCargoToTankLoop();
+    testAnyElementLoads();
+    testBallastWeakensMix();
+    testBurnedFuelBecomesAsh();
+    testFusionFissionTradeoff();
+    testIronIsDead();
+    testSelfFuelBeatsStation();
+    testOverloadAllowedButGrounds();
+    testAshIgnoresHoldLimit();
+    testDriveSlotExclusive();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;
 }

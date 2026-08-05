@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "drive.h"
 #include "econ.h"
 #include "modules.h"
 #include "render2d.h"
@@ -27,7 +28,7 @@ struct TradeLayout {
     SDL_Rect sell = {0, 0, 0, 0};
     SDL_Rect autoTrade = {0, 0, 0, 0};
     SDL_Rect refuel = {0, 0, 0, 0};
-    SDL_Rect upgrade = {0, 0, 0, 0};
+    SDL_Rect hold = {0, 0, 0, 0};
 };
 
 struct SystemLayout {
@@ -102,8 +103,8 @@ SDL_Rect defaultWindowRect(WindowKind kind, int screenW, int screenH, int cascad
         rect.x = std::max(344, (screenW - rect.w) / 2 + cascade * 18);
         rect.y = std::max(96, screenH - rect.h - 46 - cascade * 10);
     } else if (kind == WindowKind::Cargo) {
-        rect.w = 340;
-        rect.h = 400;
+        rect.w = 720;
+        rect.h = 430;
         rect.x = std::max(380, (screenW - rect.w) / 2 + cascade * 18);
         rect.y = std::max(100, screenH - rect.h - 50 - cascade * 10);
     } else if (kind == WindowKind::Exchange) {
@@ -174,7 +175,8 @@ TradeLayout tradeLayoutForWindow(const Window& window) {
     layout.sell = {bx, layout.tableY + 36, buttonW, 28};
     layout.autoTrade = {bx, layout.tableY + 72, buttonW, 28};
     layout.refuel = {bx, layout.tableY + 108, buttonW, 28};
-    layout.upgrade = {bx, layout.tableY + 144, buttonW, 28};
+    // Ручной перелив живёт в окне HOLD: там видны обе ёмкости и их состав.
+    layout.hold = {bx, layout.tableY + 144, buttonW, 28};
     return layout;
 }
 
@@ -632,10 +634,12 @@ void drawAgentPanel(SDL_Renderer* renderer, const Game& game, int agentIndex, in
 
     char buf1[32], buf2[32], buf3[32];
     std::snprintf(buf1, sizeof(buf1), "%.0F", shipTotalMass(agent.ship));
-    std::snprintf(buf2, sizeof(buf2), "%.0F%%", shipFuelFraction(agent.ship) * 100.0);
+    std::snprintf(buf2, sizeof(buf2), "%.0F%%", shipFuelFill(agent.ship) * 100.0);
+    std::snprintf(buf3, sizeof(buf3), "%.0F%%", shipPropellantFill(agent.ship) * 100.0);
     int cx = x + 10;
     cx = drawStat(renderer, cx, y + 90, "MASS ", buf1);
     cx = drawStat(renderer, cx, y + 90, "FUEL ", buf2);
+    cx = drawStat(renderer, cx, y + 90, "PROP ", buf3);
 
     std::snprintf(buf1, sizeof(buf1), "%.0F", agent.money);
     std::snprintf(buf2, sizeof(buf2), "%.2FC", speedOf(agent));
@@ -1014,29 +1018,111 @@ bool handleShipFitWindowMouseDown(WindowState& state, Game& game, const Window& 
     return true;
 }
 
-bool handleCargoWindowMouseDown(Game& game, const Window& window, int mouseX, int mouseY) {
+namespace {
+
+// Геометрия окна HOLD. Порядок колонок: БУНКЕР | КАРГО | БАК — трюм в центре,
+// потому что перелив всегда идёт через него, и стрелки расходятся от центра
+// наружу («залить») либо к центру («слить»).
+const int HOLD_BUNKER = 0;
+const int HOLD_CARGO = 1;
+const int HOLD_TANK = 2;
+const int HOLD_COL_W = 232;
+const int HOLD_ROW_H = 18;
+const int HOLD_ARROW_W = 18;
+const int HOLD_MAX_ROWS = 16;
+
+int holdColumnX(const Window& window, int column) {
+    return window.rect.x + 12 + column * HOLD_COL_W;
+}
+
+int holdRowY(const Window& window, int row) {
+    return window.rect.y + TITLE_H + 74 + row * HOLD_ROW_H;
+}
+
+// Поле «шаг перелива». Намеренно ТО ЖЕ значение, что AMOUNT окна торговли:
+// одно число на все операции с веществом, отдельного состояния не заводим.
+SDL_Rect holdStepRect(const Window& window) {
+    SDL_Rect r;
+    r.x = window.rect.x + window.rect.w - 122;
+    r.y = window.rect.y + window.rect.h - 32;
+    r.w = 104;
+    r.h = 22;
+    return r;
+}
+
+// Кнопка «за борт»: единственный выход, если перегрузился вдали от рынка.
+SDL_Rect holdJettisonRect(const Window& window, int row) {
+    SDL_Rect r;
+    r.x = holdColumnX(window, HOLD_CARGO) + HOLD_COL_W - 32 - HOLD_ARROW_W - 22;
+    r.y = holdRowY(window, row) - 2;
+    r.w = 20;
+    r.h = HOLD_ROW_H - 3;
+    return r;
+}
+
+// Кнопка-стрелка строки. left=true — стрелка у левого края колонки.
+SDL_Rect holdArrowRect(const Window& window, int column, int row, bool left) {
+    SDL_Rect r;
+    r.x = left ? holdColumnX(window, column)
+               : holdColumnX(window, column) + HOLD_COL_W - 32 - HOLD_ARROW_W;
+    r.y = holdRowY(window, row) - 2;
+    r.w = HOLD_ARROW_W;
+    r.h = HOLD_ROW_H - 3;
+    return r;
+}
+
+}
+
+// Клик по стрелке в окне HOLD переливает вещество между ёмкостями.
+// Колонка CARGO: строка уезжает в бункер (LMB) или в бак (RMB).
+// Колонки BUNKER/TANK: строка сливается обратно в трюм.
+bool handleCargoWindowMouseDown(WindowState& state, Game& game, const Window& window,
+                                int mouseX, int mouseY, int button, double amount) {
+    (void)button;
+    if (contains(holdStepRect(window), mouseX, mouseY)) {
+        state.tradeAmountEditing = true;
+        SDL_StartTextInput();
+        return true;
+    }
     if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) return true;
-    
-    Agent& player = game.agents[game.playerAgent];
-    Ship& ship = player.ship;
-    
-    int y = window.rect.y + TITLE_H + 12 + 24 + 18;
-    int x = window.rect.x + 12;
-    
-    for (auto it = ship.cargo.begin(); it != ship.cargo.end(); ) {
-        if (it->amount <= 0.0) {
-            ++it;
-            continue;
+    const Ship& ship = game.agents[game.playerAgent].ship;
+
+    const std::vector<Resource>* columns[3];
+    columns[HOLD_BUNKER] = &ship.fuel;
+    columns[HOLD_CARGO] = &ship.cargo;
+    columns[HOLD_TANK] = &ship.propellant;
+
+    for (int column = 0; column < 3; ++column) {
+        int row = 0;
+        for (size_t i = 0; i < columns[column]->size(); ++i) {
+            const Resource& item = (*columns[column])[i];
+            if (item.amount <= 0.0) continue;
+            if (row >= HOLD_MAX_ROWS) break;
+
+            const int element = elementIndex(item.element);
+            // Пустое поле AMOUNT означает «всё, что есть в этой строке».
+            const double units = amount > 0.0 ? amount : item.amount;
+            const bool leftHit = contains(holdArrowRect(window, column, row, true), mouseX, mouseY);
+            const bool rightHit = contains(holdArrowRect(window, column, row, false), mouseX, mouseY);
+            if (column == HOLD_CARGO && element >= 0 &&
+                contains(holdJettisonRect(window, row), mouseX, mouseY)) {
+                game.agentJettisonCargo(game.playerAgent, element, units);
+                return true;
+            }
+
+            if (element >= 0 && (leftHit || rightHit)) {
+                if (column == HOLD_CARGO) {
+                    if (leftHit) game.agentLoadFuelFromCargo(game.playerAgent, element, units);
+                    else game.agentLoadPropellantFromCargo(game.playerAgent, element, units);
+                } else if (column == HOLD_BUNKER) {
+                    if (rightHit) game.agentDrainFuelToCargo(game.playerAgent, element, units);
+                } else {
+                    if (leftHit) game.agentDrainPropellantToCargo(game.playerAgent, element, units);
+                }
+                return true;
+            }
+            ++row;
         }
-        
-        SDL_Rect dropBtn = {x + 270, y - 2, 44, 18};
-        if (contains(dropBtn, mouseX, mouseY)) {
-            it = ship.cargo.erase(it);
-            return true;
-        }
-        
-        ++it;
-        y += 24;
     }
     return true;
 }
@@ -1082,13 +1168,10 @@ bool handleTradeWindowMouseDown(WindowState& state, Game& game, const Window& wi
         }
         return true;
     }
-    if (contains(layout.upgrade, mouseX, mouseY)) {
-        if (liveMarket && (game.colonies[dockedStar].shipyardLevel > 0 || game.colonies[dockedStar].infrastructure >= 1.0)) {
-            openShipyardWindow(state, dockedStar, window.rect.x + 20, window.rect.y + 20);
-        }
+    if (contains(layout.hold, mouseX, mouseY)) {
+        openCargoWindow(state, window.star, screenW, screenH);
         return true;
     }
-
     const std::vector<ElementDefinition>& elements = elementDefinitions();
     for (size_t i = 0; i < elements.size(); ++i) {
         const SDL_Rect rect = elementRect(layout, int(i));
@@ -1165,7 +1248,7 @@ bool handleMouseDown(WindowState& state, Game& game, HudSelection& selection, in
             handleShipyardWindowMouseDown(state, game, w, mouseX, mouseY, button);
             break;
         case WindowKind::Cargo:
-            handleCargoWindowMouseDown(game, w, mouseX, mouseY);
+            handleCargoWindowMouseDown(state, game, w, mouseX, mouseY, button, tradeRequestedAmount(state));
             break;
         case WindowKind::ShipFit:
             handleShipFitWindowMouseDown(state, game, w, mouseX, mouseY);
@@ -1731,9 +1814,11 @@ void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& 
                 const Ship& mine = game.agents[game.playerAgent].ship;
                 if (sc.name != mine.name) {
                     const double dCargo = sc.cargoCapacity - mine.cargoCapacity;
-                    const double dFuel = sc.fuelCapacity - mine.fuelCapacity;
-                    char delta[96];
-                    std::snprintf(delta, sizeof(delta), "VS YOURS  CARGO %+.0F  FUEL %+.0F", dCargo, dFuel);
+                    const double dProp = sc.propellantVolume - mine.propellantVolume;
+                    const double dBunker = sc.fuelVolume - mine.fuelVolume;
+                    char delta[128];
+                    std::snprintf(delta, sizeof(delta), "VS YOURS  CARGO %+.0F  TANK %+.0F  BUNKER %+.0F",
+                        dCargo, dProp, dBunker);
                     drawText(renderer, topX + 300, rowY + 28, delta, dCargo < 0.0 ? P.red : P.green, 1);
                 }
             }
@@ -2063,11 +2148,12 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         char buf1[32], buf2[32], buf3[32];
         std::snprintf(buf1, sizeof(buf1), "%.0F", player.money);
         std::snprintf(buf2, sizeof(buf2), "%.0F/%.0F", shipCargoMass(player.ship), player.ship.cargoCapacity);
-        std::snprintf(buf3, sizeof(buf3), "%.0F%%", shipFuelFraction(player.ship) * 100.0);
+        std::snprintf(buf3, sizeof(buf3), "%.0F%%/%.0F%%",
+            shipFuelFill(player.ship) * 100.0, shipPropellantFill(player.ship) * 100.0);
         int cx = topX;
         cx = drawStat(renderer, cx, topY + 16, "CREDITS ", buf1, P.green);
         cx = drawStat(renderer, cx, topY + 16, "CARGO ", buf2);
-        cx = drawStat(renderer, cx, topY + 16, "FUEL ", buf3);
+        cx = drawStat(renderer, cx, topY + 16, "FUEL/PROP ", buf3);
     }
 
     const std::vector<ElementDefinition>& elements = elementDefinitions();
@@ -2124,16 +2210,12 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     drawButton(renderer, layout.buy, "BUY", P.green, liveMarket);
     drawButton(renderer, layout.sell, "SELL", P.amber, liveMarket);
     drawButton(renderer, layout.autoTrade, "AUTO", P.cyan, liveMarket);
-    drawButton(renderer, layout.refuel, "FUEL", P.amber, liveMarket);
-    
-    bool canUpgrade = false;
-    if (liveMarket && star && window.star >= 0 && window.star < int(game.colonies.size())) {
-        if (game.colonies[window.star].shipyardLevel > 0 || game.colonies[window.star].infrastructure >= 1.0) canUpgrade = true;
-    }
-    drawButton(renderer, layout.upgrade, "SHIPYARD", P.cyan, canUpgrade);
+    drawButton(renderer, layout.refuel, "BUY FUEL+PROP", P.amber, liveMarket);
+    drawButton(renderer, layout.hold, "HOLD / TANKS", P.cyan, true);
+
 
     const int infoX = layout.buy.x;
-    const int infoY = layout.upgrade.y + 42;
+    const int infoY = layout.hold.y + 42;
     if (selection.element >= 0 && selection.element < int(elements.size())) {
         const ElementDefinition& element = elements[selection.element];
         drawText(renderer, infoX, infoY, std::string(element.symbol) + " " + element.name, P.text, 1);
@@ -2280,52 +2362,124 @@ void drawShipFitWindow(SDL_Renderer* renderer, const Game& game, const Window& w
     }
 }
 
-void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& window, bool active) {
-    drawWindowFrame(renderer, window, "PLAYER CARGO", active);
-    
+// Окно HOLD: три ёмкости корабля рядом и перелив между ними.
+//
+// Раньше загрузка жила двумя кнопками в окне торговли и постоянно была серой:
+// ёмкость держала один элемент, а слить его было нечем. Теперь бункер и бак —
+// такие же смеси, как трюм, грузить можно что угодно, и всё видно разом.
+namespace {
+
+void drawHoldColumn(SDL_Renderer* renderer, const Window& window, int column,
+                    const std::string& title, const std::vector<Resource>& items,
+                    double used, double capacity, const std::string& unitLabel,
+                    SDL_Color accent, bool enabled) {
+    const int x = holdColumnX(window, column);
     int y = window.rect.y + TITLE_H + 12;
-    int x = window.rect.x + 12;
-    
-    if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) {
-        drawText(renderer, x, y, "NO PLAYER", P.red, 1);
+    drawText(renderer, x, y, title, accent, 1);
+    y += 16;
+
+    char line[96];
+    const bool over = used > capacity + 0.001;
+    if (over) {
+        std::snprintf(line, sizeof(line), "%.0F / %.0F %s  OVERLOAD +%.0F",
+            used, capacity, unitLabel.c_str(), used - capacity);
+    } else {
+        std::snprintf(line, sizeof(line), "%.0F / %.0F %s", used, capacity, unitLabel.c_str());
+    }
+    drawText(renderer, x, y, line, over ? P.red : P.text, 1);
+    y += 12;
+    bar(renderer, x, y, HOLD_COL_W - 24, 6, capacity > 0.0 ? used / capacity : 0.0, over ? P.red : accent);
+    y += 16;
+
+    const int textX = x + HOLD_ARROW_W + 4;
+    drawText(renderer, textX, y, "EL", P.dim, 1);
+    drawText(renderer, textX + 30, y, "AMOUNT", P.dim, 1);
+    drawText(renderer, textX + 96, y, "MASS", P.dim, 1);
+
+    if (items.empty()) {
+        drawText(renderer, textX, holdRowY(window, 0), "EMPTY", P.dim, 1);
         return;
     }
-    
-    const Agent& player = game.agents[game.playerAgent];
-    const Ship& ship = player.ship;
-    
-    char line[128];
-    std::snprintf(line, sizeof(line), "TOTAL MASS: %.0F / %.0F", shipCargoMass(ship), ship.cargoCapacity);
-    drawText(renderer, x, y, line, P.amber, 1);
-    y += 24;
-    
-    if (ship.cargo.empty()) {
-        drawText(renderer, x, y, "CARGO HOLD IS EMPTY", P.dim, 1);
-        return;
-    }
-    
-    drawText(renderer, x, y, "ELEMENT", P.dim, 1);
-    drawText(renderer, x + 100, y, "AMOUNT", P.dim, 1);
-    drawText(renderer, x + 200, y, "MASS", P.dim, 1);
-    y += 18;
-    
-    for (const auto& item : ship.cargo) {
-        if (item.amount <= 0.0) continue;
-        double mass = item.amount * resourceUnitMass(item.element);
-        std::snprintf(line, sizeof(line), "%s", item.element.c_str());
-        drawText(renderer, x, y, line, P.text, 1);
-        
-        std::snprintf(line, sizeof(line), "%.1F", item.amount);
-        drawText(renderer, x + 100, y, line, P.text, 1);
-        
+
+    int row = 0;
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i].amount <= 0.0) continue;
+        if (row >= HOLD_MAX_ROWS) break;
+        const int ry = holdRowY(window, row);
+        const double mass = items[i].amount * resourceUnitMass(items[i].element);
+        drawText(renderer, textX, ry, items[i].element, P.text, 1);
+        std::snprintf(line, sizeof(line), "%.1F", items[i].amount);
+        drawText(renderer, textX + 30, ry, line, P.text, 1);
         std::snprintf(line, sizeof(line), "%.1F", mass);
-        drawText(renderer, x + 200, y, line, P.amber, 1);
-        
-        SDL_Rect dropBtn = {x + 270, y - 2, 44, 18};
-        drawButton(renderer, dropBtn, "DROP", P.red, true);
-        
-        y += 24;
+        drawText(renderer, textX + 96, ry, line, accent, 1);
+
+        // Стрелки. Трюм в центре: из него грузим наружу в обе стороны,
+        // из ёмкостей — обратно к центру.
+        if (column == HOLD_CARGO) {
+            drawButton(renderer, holdArrowRect(window, column, row, true), "<", P.green, true);
+            drawButton(renderer, holdJettisonRect(window, row), "X", P.red, true);
+            drawButton(renderer, holdArrowRect(window, column, row, false), ">", P.cyan, enabled);
+        } else if (column == HOLD_BUNKER) {
+            drawButton(renderer, holdArrowRect(window, column, row, false), ">", P.amber, true);
+        } else {
+            drawButton(renderer, holdArrowRect(window, column, row, true), "<", P.amber, true);
+        }
+        ++row;
     }
+}
+
+}
+
+void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& window, bool active, const WindowState& state) {
+    drawWindowFrame(renderer, window, "HOLD / TANKS", active);
+
+    int x = window.rect.x + 12;
+    if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) {
+        drawText(renderer, x, window.rect.y + TITLE_H + 12, "NO PLAYER", P.red, 1);
+        return;
+    }
+
+    const Ship& ship = game.agents[game.playerAgent].ship;
+    const MixSummary fuelMix = shipFuelMix(ship);
+    const MixSummary propMix = shipPropellantMix(ship);
+    // У факела рабочего тела нет вовсе: топливо и есть выхлоп.
+    const bool torch = driveUsesFuelAsPropellant(ship.driveIndex);
+
+    drawHoldColumn(renderer, window, HOLD_BUNKER, "BUNKER (FUEL)", ship.fuel,
+                   fuelMix.volume, shipFuelTankVolume(ship), "VOL", P.green, true);
+    drawHoldColumn(renderer, window, HOLD_CARGO, "CARGO", ship.cargo,
+                   shipCargoMass(ship), ship.cargoCapacity, "MASS", P.amber, !torch);
+    drawHoldColumn(renderer, window, HOLD_TANK, torch ? "TANK (UNUSED BY TORCH)" : "TANK (PROPELLANT)",
+                   ship.propellant, propMix.volume, ship.propellantVolume, "VOL", P.cyan, !torch);
+
+    // Итог по двигательной установке: что реально даёт текущая заправка.
+    const int footY = window.rect.y + window.rect.h - 58;
+    strokeRect(renderer, window.rect.x + 8, footY - 6, window.rect.w - 16, 1, P.border);
+
+    const std::vector<DriveDef>& drives = driveDefs();
+    const std::string driveName = (ship.driveIndex >= 0 && ship.driveIndex < int(drives.size()))
+        ? drives[ship.driveIndex].name : "-";
+    char line[192];
+    std::snprintf(line, sizeof(line), "DRIVE %s (%s)", driveName.c_str(),
+        driveFamilyLabel(driveFamilyOf(ship.driveIndex)));
+    drawText(renderer, x, footY, line, P.text, 1);
+
+    // Энергия топлива УЖЕ с учётом доли поджига: балласт виден сразу.
+    std::snprintf(line, sizeof(line), "FUEL %.2F MEV/NUC   EXHAUST %.4FC   MEAN A %.0F",
+        fuelMix.specificEnergy, shipMaxExhaustVelocity(ship), shipExhaustMix(ship).meanAtomicMass);
+    drawText(renderer, x, footY + 14, line, P.dim, 1);
+
+    // Поле шага: сколько двигает ОДНО нажатие стрелки. То же число, что AMOUNT
+    // в окне торговли, — одно понятие на все операции с веществом.
+    const SDL_Rect step = holdStepRect(window);
+    drawText(renderer, step.x - 98, step.y + 7, "STEP/CLICK", P.dim, 1);
+    fillRect(renderer, step.x, step.y, step.w, step.h, {9, 14, 26, 245});
+    strokeRect(renderer, step.x, step.y, step.w, step.h,
+        state.tradeAmountEditing && active ? P.cyan : P.border);
+    drawText(renderer, step.x + 8, step.y + 7, tradeAmountLabel(state),
+        state.tradeAmount.empty() ? P.dim : P.text, 1);
+
+    drawText(renderer, x, footY + 28, "<  LOAD FUEL      X JETTISON      LOAD PROPELLANT  >", P.dim, 1);
 }
 
 void drawWindows(SDL_Renderer* renderer, const Game& game, int, int, const HudSelection& selection, const WindowState& state) {
@@ -2341,7 +2495,7 @@ void drawWindows(SDL_Renderer* renderer, const Game& game, int, int, const HudSe
         } else if (window.kind == WindowKind::ShipFit) {
             drawShipFitWindow(renderer, game, window, active);
         } else if (window.kind == WindowKind::Cargo) {
-            drawCargoWindow(renderer, game, window, active);
+            drawCargoWindow(renderer, game, window, active, state);
         } else if (window.kind == WindowKind::Transactions) {
             drawTransactionsWindow(renderer, game, window, active);
         } else if (window.kind == WindowKind::Exchange) {

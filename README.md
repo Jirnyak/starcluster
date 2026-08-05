@@ -220,6 +220,51 @@ The current economic roles are:
 habitat, refinery, shipyard, research, military, frontier
 ```
 
+### Propulsion: fuel, propellant, and the periodic table
+
+Ships are nuclear. That means two DIFFERENT substances, and the distinction
+drives everything:
+
+- **Fuel** is the energy source. It stays in the reactor core and *transmutes*,
+  so spent fuel drops back into your hold as a new element you can sell.
+- **Propellant** is reaction mass. It goes out the nozzle and is gone.
+
+Both are ordinary elements from the same 118-entry table as trade goods, kept
+in the same kind of container as cargo. Any element can go anywhere: there are
+no whitelists. Quality is a gradient, not a permission.
+
+Nuclear energy comes from one formula covering both branches — distance to the
+peak of the binding-energy curve, which is zero at iron and rises in both
+directions:
+
+```text
+specificEnergy(Z) = bindingPeak - bindingPerNucleon(Z)     // MeV per nucleon
+```
+
+That single line makes fusion of light nuclei and fission of heavy nuclei
+naturally profitable while the iron peak is dead. The trade-off that keeps the
+choice alive: **fusion wins per unit mass (H beats U 7.7x), fission wins per
+unit volume (U beats H 12.6x)** — and tanks are limited by volume. This is
+exactly why the starting ship is a thorium reactor heating hydrogen: compact
+fuel, light propellant. A real NERVA.
+
+Three drive families, each with different propellant preferences:
+
+| family | exhaust velocity | thrust | wants |
+|---|---|---|---|
+| Thermal (NTR) | `~sqrt(T/A)` | high | light: H, He, Li |
+| Ion (NEP) | set by voltage | tiny | dense, easily ionized: Xe, Cs, Hg |
+| Fusion Torch | from the reaction | high | fuel *is* the exhaust |
+
+Propellant is consumed by the real Tsiolkovsky equation, and exhaust velocity
+is a free parameter with a genuine cost optimum that depends on *local* fuel
+and propellant prices — so the best engine setting changes from system to
+system. Load iron as propellant and the reactor will happily melt it and throw
+it away at a terrible exhaust velocity. Nothing stops you.
+
+Mixtures average strictly by mass, so blending never beats its best component:
+there is no exploit hiding in there.
+
 ### Elements And Resources
 
 `resource.cpp` defines all 118 chemical elements. Element identity is atomic
@@ -322,13 +367,18 @@ hold into a small colony is a loss; sizing the trade to the market is the skill.
 - max speed as a fraction of light speed;
 - acceleration cap;
 - dry mass, thrust, drive efficiency;
-- fuel element, fuel amount, and fuel capacity;
+- drive index (thermal / ion / torch, see `drive.h`);
+- fuel bunker and propellant tank, each a `Resource` mixture with a VOLUME capacity;
+- throttle bias (manual skew off the cost-optimal exhaust velocity);
 - cargo vector and cargo capacity;
 - owner faction, route target, and en-route state.
 
-Cargo mass comes from resource amount and element atomic mass. Fuel is not cargo:
-it is a dedicated reserve of a fuel element selected from element traits.
-Acceleration depends on ship mass, and acceleration/braking burn fuel.
+Cargo mass comes from resource amount and element atomic mass. Fuel and
+propellant are the same kind of list as cargo and hold arbitrary mixtures;
+their properties are mass-weighted averages. Acceleration depends on total ship
+mass, and manoeuvring consumes propellant via Tsiolkovsky plus the fuel needed
+to fling it. Cargo capacity is a *rated* figure, not a wall: you can always
+overload, you simply cannot depart while overloaded.
 
 ### Agents
 
@@ -438,7 +488,8 @@ the active code path draws text with its own bitmap glyphs and links only SDL2.
 | `cluster.h`, `cluster.cpp` | Star data and procedural cluster generation. |
 | `resource.h`, `resource.cpp` | Element definitions, derived traits, resource ids. |
 | `market.h`, `market.cpp` | Local supply/demand/production/pricing. |
-| `ship.h`, `ship.cpp` | Ship mass, cargo mass, fuel, acceleration, route fuel estimates. |
+| `ship.h`, `ship.cpp` | Ship mass, cargo, fuel and propellant mixtures, Tsiolkovsky route costs, ash. |
+| `drive.h`, `drive.cpp` | Drive families, exhaust velocity ceilings, ignition fraction. |
 | `agent.h`, `agent.cpp` | Agent state and role-profile weights. |
 | `faction.h`, `faction.cpp` | Faction identity, budgets, relations, strategic fields and orders. |
 | `colony.h`, `colony.cpp` | Colony state, construction effects, damage, shipyard capacity. |
@@ -472,14 +523,15 @@ back to the working directory so older saves still open.
 The file is text and begins with:
 
 ```text
-STARCLUSTER_SAVE 8
+STARCLUSTER_SAVE 9
 ```
 
 The save stores the world seed, RNG state, time, stars, markets, factions,
 relations, colonies, contracts, agents, faction knowledge, player knowledge,
 pending signals, signal memory, and trading licence state. `F9` loads the same
-file and rebuilds runtime caches. Versions 6 and 7 still load; a version 7 save
-simply starts a fresh licence period.
+file and rebuilds runtime caches. Only version 9 loads: the propulsion rework
+changed the ship record beyond migrating, so older saves are rejected with a
+clear message rather than opening corrupt.
 
 ## Design Constraints
 
@@ -506,6 +558,15 @@ with.
 
 Each of those is now a standing check. The thresholds are deliberately wide: the goal is to
 catch a mechanism breaking, not to freeze the balance in place.
+
+The propulsion model carries its own checks in the same harness: that the
+cargo -> tank loop works end to end, that any element loads into any container,
+that ballast dilutes a mixture, that burned fuel comes back as ash nearer to
+iron, that fusion wins per mass while fission wins per volume, that iron ignites
+nowhere, that self-supplied fuel beats the station markup, that the drive slot
+stays exclusive, and that overloading the hold is possible but grounds the ship.
+`make uiclick` additionally pins the HOLD window transfer-arrow geometry, because
+that interface silently failed twice.
 
 ## Known Gaps
 

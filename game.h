@@ -286,19 +286,34 @@ public:
     double routeDistance(int originStar, int targetStar) const;
     double agentRouteDistance(int agentIndex, int targetStar) const;
     double agentRouteTravelTime(int agentIndex, int targetStar) const;
+    // Расход на маршрут: ОБА расходника сразу — топливо и рабочее тело.
+    // feasible=false означает, что связка движок/рабочее тело физически
+    // не тянет это плечо, сколько ни заливай.
+    RouteCost agentRouteCost(int agentIndex, int targetStar) const;
     double agentRouteFuelNeeded(int agentIndex, int targetStar) const;
     double agentRouteFuelShortfall(int agentIndex, int targetStar) const;
+    double agentRoutePropellantShortfall(int agentIndex, int targetStar) const;
     double agentRouteThreatRisk(int agentIndex, int targetStar) const;
     double playerRouteMarketConfidence(int targetStar, int elementIndex) const;
     double agentContractRouteDistance(int agentIndex, int contractId) const;
     double agentContractRouteTravelTime(int agentIndex, int contractId) const;
+    RouteCost agentContractRouteCost(int agentIndex, int contractId) const;
     double agentContractRouteFuelNeeded(int agentIndex, int contractId) const;
     double agentContractRouteFuelShortfall(int agentIndex, int contractId) const;
+    double agentContractRoutePropellantShortfall(int agentIndex, int contractId) const;
     double agentContractRouteThreatRisk(int agentIndex, int contractId) const;
     bool agentContractCargoFits(int agentIndex, int contractId) const;
     bool agentBuyElement(int agentIndex, int elementIndex);
     bool agentBuyElementAmount(int agentIndex, int elementIndex, double amount);
+    // Станционный макрос «купи и залей» с наценкой за очистку.
     bool agentBuyFuel(int agentIndex);
+    // Ручной перелив из трюма: бесплатно, но возить элемент надо самому.
+    double agentLoadFuelFromCargo(int agentIndex, int elementIdx, double units);
+    double agentLoadPropellantFromCargo(int agentIndex, int elementIdx, double units);
+    // Выбросить груз за борт: единственный выход, если перегрузился вдали от рынка.
+    double agentJettisonCargo(int agentIndex, int elementIdx, double units);
+    double agentDrainFuelToCargo(int agentIndex, int elementIdx, double units);
+    double agentDrainPropellantToCargo(int agentIndex, int elementIdx, double units);
     bool agentSellCargo(int agentIndex);
     bool agentSellCargoAmount(int agentIndex, double amount, int elementIndex = -1);
     bool agentAcceptContract(int agentIndex, int contractId);

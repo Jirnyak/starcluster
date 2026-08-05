@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include "resource.h"
+#include "drive.h"
 
 // Корабль
 class Ship {
@@ -16,9 +17,25 @@ public:
     double dryMass = 50.0;
     double driveThrust = 14.0;
     double driveEfficiency = 0.62;
-    int fuelElement = 0;
-    double fuel = 0.0;
-    double fuelCapacity = 3200.0;
+
+    // --- Двигательная установка (см. drive.h) ---
+    int driveIndex = 0;             // семейство и параметры движка
+    // Бункер и бак — такие же СМЕСИ, как трюм. Никаких «одна ёмкость — один
+    // элемент»: залить можно что угодно и сколько угодно, свойства считаются
+    // средневзвешенными по массе. Выбор топлива стал градиентом качества,
+    // а не набором запретов.
+    //
+    // Топливо: источник энергии. Остаётся в активной зоне и ПЕРЕГОРАЕТ,
+    // поэтому зола падает обратно в трюм.
+    std::vector<Resource> fuel;
+    double fuelVolume = 24.0;       // ёмкость бункера, в единицах ОБЪЁМА
+    // Рабочее тело: реактивная масса. Улетает в сопло безвозвратно.
+    std::vector<Resource> propellant;
+    double propellantVolume = 240.0; // ёмкость бака, в единицах ОБЪЁМА
+    // Ручной перекос скорости истечения относительно ценового оптимума.
+    // <1 — эконом (больше рабочего тела, меньше топлива), >1 — форсаж.
+    double throttleBias = 1.0;
+
     std::vector<Resource> cargo;
     double cargoCapacity = 100.0; // Максимальный груз (масса)
     double heavyWeapons = 10.0;
@@ -35,17 +52,87 @@ public:
     Ship(const std::string& name_, double x_, double y_, double z_, double speed_, int ownerFaction_);
 };
 
+// Насколько «сжимается» маршрутный delta-V перед подстановкой в Циолковского.
+// Формула остаётся настоящей (экспонента, оптимум, недостижимые маршруты), но
+// без этого множителя межзвёздные delta-V дают массовые числа в сотни.
+extern const double DELTAV_SCALE;
+
 double resourceUnitMassByIndex(int elementIndex);
 double resourceUnitMass(const std::string& element);
 double shipCargoMass(const Ship& ship);
 double shipFuelMass(const Ship& ship);
+double shipPropellantMass(const Ship& ship);
 double shipTotalMass(const Ship& ship);
-double shipFuelFraction(const Ship& ship);
+
+// Объём, реально доступный под топливо. У факела топливо и есть рабочее тело,
+// поэтому большой бак подключается к реактору и складывается с бункером.
+double shipFuelTankVolume(const Ship& ship);
+double shipFuelFill(const Ship& ship);        // 0..1 по объёму бункера
+double shipPropellantFill(const Ship& ship);  // 0..1 по объёму бака
 double shipCurrentAcceleration(const Ship& ship);
-double shipFuelNeededForDeltaV(const Ship& ship, double deltaV);
-double shipEstimateRouteFuel(const Ship& ship, double distance);
-double shipConsumeFuelForDeltaV(Ship& ship, double desiredDeltaV);
+
+// Средневзвешенные свойства смесей. У топлива энергия уже умножена на долю
+// поджига текущего движка, поэтому «мёртвый» балласт виден сразу.
+MixSummary shipFuelMix(const Ship& ship);
+MixSummary shipPropellantMix(const Ship& ship);
+// Что реально летит из сопла: у факела это топливо, у остальных — рабочее тело.
+MixSummary shipExhaustMix(const Ship& ship);
+
+// Потолок скорости истечения на текущей паре движок/рабочее тело.
+double shipMaxExhaustVelocity(const Ship& ship);
+
+// Во что обходится манёвр на deltaV. Скорость истечения выбирается так, чтобы
+// минимизировать суммарную стоимость по ЛОКАЛЬНЫМ ценам, затем сдвигается
+// ручкой throttleBias. Цены в кредитах за единицу МАССЫ; если они неизвестны,
+// передавайте 1.0 — тогда оптимум сводится к минимуму суммарной массы.
+struct RouteCost {
+    bool feasible = false;
+    double exhaustVelocity = 0.0;
+    double propellantMass = 0.0;
+    double fuelMass = 0.0;
+};
+RouteCost shipRouteCost(const Ship& ship, double deltaV, double propellantPrice, double fuelPrice);
+
+// Оценка расхода на перелёт заданной длины (разгон + торможение).
+RouteCost shipEstimateRoute(const Ship& ship, double distance, double propellantPrice, double fuelPrice);
+// Хватает ли залитого на такой перелёт.
+bool shipCanFlyDistance(const Ship& ship, double distance);
+
+// Тратит рабочее тело и топливо на манёвр, возвращает реально выданный deltaV.
+// Расход снимается со смеси ПРОПОРЦИОНАЛЬНО долям компонентов. Перегоревшее
+// топливо превращается в золу и дописывается в ashOut (если он задан): лёгкие
+// ядра сливаются вверх к железу, тяжёлые делятся вниз к нему же.
+double shipConsumeForDeltaV(Ship& ship, double desiredDeltaV, std::vector<Resource>* ashOut);
+
+// Элемент, в который перегорает данное топливо. -1, если золы не остаётся.
+int elementAshProduct(int fuelElement);
+
+// Перегруз трюма сверх паспортной нормы. Загрузить можно всегда — взлететь
+// с перегрузом нельзя. Возвращает избыток массы, 0 если нормы хватает.
+double shipCargoOverload(const Ship& ship);
+
+// Преобладающий по массе компонент смеси; если ёмкость пуста — разумный
+// дефолт для этой роли. Нужен для автозаправки и подписей в UI.
+int shipDominantFuelElement(const Ship& ship);
+int shipDominantPropellantElement(const Ship& ship);
+
+// Перелив трюм <-> ёмкости. Возвращают реально перелитое количество единиц.
+// Запретов по элементам нет: ограничивают только объём ёмкости и наличие.
+double shipLoadFuel(Ship& ship, int elementIdx, double units);
+double shipLoadPropellant(Ship& ship, int elementIdx, double units);
+double shipDrainFuel(Ship& ship, int elementIdx, double units);
+double shipDrainPropellant(Ship& ship, int elementIdx, double units);
+
+// Сливает за борт то, что перестало влезать после смены баков или движка.
+void shipTrimTanks(Ship& ship);
+
 void shipAutofit(Ship& ship);
+
+struct ShipClass;
+// Применяет табличный класс к корпусу и заливает баки под пробку. Раньше это
+// было размазано по трём местам в game.cpp, причём shipAutofit успевал затереть
+// табличные ёмкости производными от трюма — теперь порядок один и правильный.
+void shipApplyClass(Ship& ship, const ShipClass& sc);
 
 struct ShipClass {
     std::string name;
@@ -53,7 +140,8 @@ struct ShipClass {
     double driveThrust;
     double driveEfficiency;
     double cargoCapacity;
-    double fuelCapacity;
+    double propellantVolume;
+    double fuelVolume;
     double heavyWeapons;
     double lightWeapons;
     double armor;

@@ -200,6 +200,37 @@ ElementDefinition deriveElement(const RawElement& item) {
     // Химическая стойкость вообще: газ с замкнутой оболочкой ИЛИ благородный металл.
     const double inertnessTrait = clamp01(std::max(nobleStability, nobleMetalTrait));
 
+    // --- Плотность конденсированной фазы ---
+    // Плотность = масса / молярный объём. Молярный объём по таблице довольно
+    // ПЛОСКИЙ (5..70 см³/моль), поэтому разброс плотностей почти целиком делает
+    // атомная масса — водород рыхлый не потому, что атом большой, а потому что
+    // он весит единицу. Объём растёт с номером оболочки и стягивается
+    // металлической связью d-электронов (максимум у полузаполненной оболочки,
+    // поэтому осмий и вольфрам плотнее меди) и f-связью у лантаноидов.
+    // Замкнутая оболочка мешает стянуть решётку: благородные газы рыхлые.
+    // Коэффициенты подогнаны по 41 реальной плотности, типичная ошибка 1.5x.
+    const double dBondStrength = 0.4 * std::pow(shell.dFill, 0.6) + 0.6 * (4.0 * shell.dFill * (1.0 - shell.dFill));
+    const double fBondStrength = 4.0 * shell.fFill * (1.0 - shell.fFill);
+    const double latticeContraction = 1.0 + 2.8 * dBondStrength + 2.0 * fBondStrength;
+    const double molarVolume = std::max(0.8, std::pow(shell.period, 0.90) *
+                                             (1.0 + 1.6 * nobleStability) / latticeContraction);
+    const double density = 0.169 * atomicMass / molarVolume;
+
+    // --- Лёгкость ионизации (нужна электрическим двигателям) ---
+    // Внешний электрон тем дешевле оторвать, чем он дальше от ядра и чем слабее
+    // ядро его держит. Замкнутая оболочка держит намертво (благородные газы),
+    // заполняющиеся d/f-оболочки поднимают потенциал внутри периода. Наверх
+    // выходят тяжёлые щелочные металлы — цезий и франций, как в жизни.
+    const double ionizationEase = clamp01(0.10 + 0.55 * (1.0 - electronegativity) +
+                                          0.30 * clamp01((shell.period - 1.0) / 6.0) -
+                                          0.85 * nobleStability -
+                                          0.22 * shell.dFill - 0.30 * shell.fFill);
+
+    // --- Удельная ядерная энергия ---
+    // Расстояние до пика кривой связи: и синтез снизу, и деление сверху идут к
+    // железу, поэтому член ровно один. На железе ноль — там жечь нечего.
+    const double specificEnergy = std::max(0.0, bindingPeak - bindingPerNucleon);
+
     const double activationCost = 0.3 + nobleStability * 0.7 + nuclearStability * 1.2;
     const double handlingRisk = clamp01((1.0 - nuclearStability) * 0.75 + fissionFuelTrait * 0.35 + reactivity * 0.10);
     const double safeHandling = 1.0 - handlingRisk;
@@ -278,6 +309,9 @@ ElementDefinition deriveElement(const RawElement& item) {
     element.fissility = fissility;
     element.relativisticBoost = relativisticBoost;
     element.inertnessTrait = inertnessTrait;
+    element.density = density;
+    element.ionizationEase = ionizationEase;
+    element.specificEnergy = specificEnergy;
     return element;
 }
 
@@ -419,11 +453,24 @@ const std::vector<ElementDefinition>& elementDefinitions() {
 }
 
 const double RESOURCE_MASS_SCALE = 0.01;
+const double NUCLEON_REST_MEV = 931.5;
 
 double elementUnitMass(int elementIndex) {
     const std::vector<ElementDefinition>& elements = elementDefinitions();
     if (elementIndex < 0 || elementIndex >= int(elements.size())) return 1.0;
     return std::max(0.001, elements[elementIndex].atomicMass * RESOURCE_MASS_SCALE);
+}
+
+double elementSpecificEnergy(int elementIndex) {
+    const std::vector<ElementDefinition>& elements = elementDefinitions();
+    if (elementIndex < 0 || elementIndex >= int(elements.size())) return 0.0;
+    return elements[elementIndex].specificEnergy;
+}
+
+double elementUnitVolume(int elementIndex) {
+    const std::vector<ElementDefinition>& elements = elementDefinitions();
+    if (elementIndex < 0 || elementIndex >= int(elements.size())) return 1.0;
+    return std::max(0.0005, elementUnitMass(elementIndex) / std::max(0.02, elements[elementIndex].density));
 }
 
 size_t elementCount() {

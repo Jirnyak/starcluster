@@ -1381,7 +1381,7 @@ int main(int argc, char** argv) {
                 trades = agent.trades;
                 profit = agent.lastProfit;
                 mass = shipTotalMass(agent.ship);
-                fuel = shipFuelFraction(agent.ship) * 100.0;
+                fuel = shipFuelFill(agent.ship) * 100.0;
                 agentType = agent.type;
                 action = agent.lastAction;
                 if (agent.ship.ownerFaction >= 0 && agent.ship.ownerFaction < int(game.factions.size())) {

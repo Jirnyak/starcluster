@@ -1,6 +1,7 @@
 #include "modules.h"
 #include "game.h"
 #include "ship.h"
+#include "drive.h"
 #include "colony.h"
 #include <algorithm>
 #include <string>
@@ -9,28 +10,40 @@
 // установке; список ship.modules хранит индексы для отображения и сохранения.
 
 const std::vector<ModuleDef>& moduleDefs() {
-    //                 name                slot                price    mass  cargo  fuel  spd    acc   heavy light armor hull  util  SY  blurb
+    //                 name                slot               price    mass  cargo  propVol fuelVol  spd    acc  heavy light armor hull  util drive SY  blurb
     static const std::vector<ModuleDef> defs = {
-        {"Cargo Pod I",       ModuleSlot::Cargo,    900.0,   6.0,  40.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, 0, "+40 cargo capacity"},
-        {"Fuel Cell I",       ModuleSlot::Fuel,     700.0,   4.0,   0.0,1200.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, 0, "+1200 fuel"},
-        {"Tuned Injectors",   ModuleSlot::Drive,   1500.0,   2.0,   0.0,   0.0, 0.0,  0.05,  0.0,  0.0,  0.0,   0.0,  0.0, 0, "+accel"},
-        {"Point Defense",     ModuleSlot::Weapon,  1200.0,   3.0,   0.0,   0.0, 0.0,  0.0,   0.0,  8.0,  0.0,   0.0,  0.0, 0, "+8 light weapons"},
-        {"Ablative Plating I",ModuleSlot::Defense, 1100.0,   8.0,   0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  6.0,  40.0,  0.0, 0, "+6 armor, +40 hull"},
-        {"Survey Array",      ModuleSlot::Sensor,  1400.0,   2.0,   0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  6.0, 0, "+6 sensors (utility)"},
+        {"Cargo Pod I",       ModuleSlot::Cargo,    900.0,   6.0,  40.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 0, "+40 cargo capacity"},
+        {"Propellant Tank I", ModuleSlot::Fuel,     700.0,   4.0,   0.0,  140.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 0, "+140 propellant volume"},
+        {"Bunker Pod I",      ModuleSlot::Fuel,     900.0,   3.0,   0.0,    0.0,  22.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 0, "+22 fuel bunker volume"},
+        {"Point Defense",     ModuleSlot::Weapon,  1200.0,   3.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  8.0,  0.0,   0.0,  0.0, -1, 0, "+8 light weapons"},
+        {"Ablative Plating I",ModuleSlot::Defense, 1100.0,   8.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  6.0,  40.0,  0.0, -1, 0, "+6 armor, +40 hull"},
+        {"Survey Array",      ModuleSlot::Sensor,  1400.0,   2.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  6.0, -1, 0, "+6 sensors (utility)"},
 
-        {"Cargo Pod II",      ModuleSlot::Cargo,   3200.0,  12.0, 120.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, 1, "+120 cargo capacity"},
-        {"Fusion Tank",       ModuleSlot::Fuel,    2800.0,  10.0,   0.0,4000.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, 1, "+4000 fuel"},
-        {"Ion Thruster",      ModuleSlot::Drive,   4200.0,   4.0,   0.0,   0.0, 0.03, 0.06,  0.0,  0.0,  0.0,   0.0,  0.0, 1, "+speed, +accel"},
-        {"Railgun Battery",   ModuleSlot::Weapon,  5200.0,  10.0,   0.0,   0.0, 0.0,  0.0,  20.0,  0.0,  0.0,   0.0,  0.0, 1, "+20 heavy weapons"},
-        {"Composite Hull",    ModuleSlot::Defense, 4800.0,  16.0,   0.0,   0.0, 0.0,  0.0,   0.0,  0.0, 18.0, 140.0,  0.0, 1, "+18 armor, +140 hull"},
+        {"Cargo Pod II",      ModuleSlot::Cargo,   3200.0,  12.0, 120.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 1, "+120 cargo capacity"},
+        {"Propellant Tank II",ModuleSlot::Fuel,    2800.0,  10.0,   0.0,  480.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 1, "+480 propellant volume"},
+        {"Bunker Pod II",     ModuleSlot::Fuel,    3400.0,   8.0,   0.0,    0.0,  75.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 1, "+75 fuel bunker volume"},
+        {"Railgun Battery",   ModuleSlot::Weapon,  5200.0,  10.0,   0.0,    0.0,   0.0, 0.0,  0.0,  20.0,  0.0,  0.0,   0.0,  0.0, -1, 1, "+20 heavy weapons"},
+        {"Composite Hull",    ModuleSlot::Defense, 4800.0,  16.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0, 18.0, 140.0,  0.0, -1, 1, "+18 armor, +140 hull"},
 
-        {"Cargo Hold III",    ModuleSlot::Cargo,  12000.0,  30.0, 400.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, 2, "+400 cargo capacity"},
-        {"Deep-Field Scanner",ModuleSlot::Sensor,  9000.0,   4.0,   0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0, 24.0, 2, "+24 sensors (utility)"},
-        {"Aegis Bulwark",     ModuleSlot::Defense,18000.0,  40.0,   0.0,   0.0, 0.0,  0.0,   0.0,  0.0, 80.0, 600.0,  0.0, 2, "+80 armor, +600 hull"},
-        {"Antimatter Drive",  ModuleSlot::Drive,  16000.0,   8.0,   0.0,   0.0, 0.06, 0.08,  0.0,  0.0,  0.0,   0.0,  0.0, 3, "+speed, +accel"},
-        {"Spinal Lance",      ModuleSlot::Weapon, 22000.0,  24.0,   0.0,   0.0, 0.0,  0.0,  90.0, 20.0,  0.0,   0.0,  0.0, 3, "+90 heavy, +20 light"},
+        {"Cargo Hold III",    ModuleSlot::Cargo,  12000.0,  30.0, 400.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 2, "+400 cargo capacity"},
+        {"Deep-Field Scanner",ModuleSlot::Sensor,  9000.0,   4.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0, 24.0, -1, 2, "+24 sensors (utility)"},
+        {"Aegis Bulwark",     ModuleSlot::Defense,18000.0,  40.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0, 80.0, 600.0,  0.0, -1, 2, "+80 armor, +600 hull"},
+        {"Spinal Lance",      ModuleSlot::Weapon, 22000.0,  24.0,   0.0,    0.0,   0.0, 0.0,  0.0,  90.0, 20.0,  0.0,   0.0,  0.0, -1, 3, "+90 heavy, +20 light"},
+
+        // --- Двигатели. Слот эксклюзивный: движок ровно один. Дефолтный
+        // Thermal Core I стоит на корпусе бесплатно и слота НЕ занимает;
+        // всё, что ниже, его вытесняет и занимает один слот апгрейда.
+        {"Thermal Core II",   ModuleSlot::Drive,   6500.0,   6.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0,  1, 1, "hotter chamber: more exhaust speed"},
+        {"Ion Grid I",        ModuleSlot::Drive,  12000.0,   5.0,   0.0,    0.0,   0.0, 0.0, -0.06, 0.0,  0.0,  0.0,   0.0,  0.0,  3, 1, "electric: huge range, tiny thrust"},
+        {"Thermal Core III",  ModuleSlot::Drive,  34000.0,  14.0,   0.0,    0.0,   0.0, 0.0,  0.02,  0.0,  0.0,  0.0,   0.0,  0.0,  2, 2, "refractory chamber, wide fuel range"},
+        {"Ion Grid II",       ModuleSlot::Drive,  58000.0,  11.0,   0.0,    0.0,   0.0, 0.0, -0.05, 0.0,  0.0,  0.0,   0.0,  0.0,  4, 2, "high voltage: extreme range"},
+        {"Fusion Torch",      ModuleSlot::Drive, 260000.0,  26.0,   0.0,    0.0,   0.0, 0.05, 0.06,  0.0,  0.0,  0.0,   0.0,  0.0,  5, 3, "fuel is the exhaust; no propellant tank"},
     };
     return defs;
+}
+
+bool moduleSlotIsExclusive(ModuleSlot slot) {
+    return slot == ModuleSlot::Drive;
 }
 
 const char* moduleSlotLabel(ModuleSlot slot) {
@@ -48,8 +61,9 @@ const char* moduleSlotLabel(ModuleSlot slot) {
 void applyModuleToShip(Ship& ship, const ModuleDef& def) {
     ship.dryMass += def.mass;
     ship.cargoCapacity += def.cargoBonus;
-    ship.fuelCapacity += def.fuelBonus;
-    ship.fuel = std::min(ship.fuelCapacity, ship.fuel + def.fuelBonus);
+    ship.propellantVolume += def.propellantVolumeBonus;
+    ship.fuelVolume += def.fuelVolumeBonus;
+    if (def.slot == ModuleSlot::Drive && def.driveIndex >= 0) ship.driveIndex = def.driveIndex;
     ship.speed = std::min(0.5, ship.speed + def.speedBonus);
     ship.acceleration += def.accelBonus;
     ship.heavyWeapons += def.heavyBonus;
@@ -75,8 +89,12 @@ int Game::shipyardLevelAtStar(int starIndex) const {
 void removeModuleFromShip(Ship& ship, const ModuleDef& def) {
     ship.dryMass -= def.mass;
     ship.cargoCapacity -= def.cargoBonus;
-    ship.fuelCapacity -= def.fuelBonus;
-    ship.fuel = std::min(ship.fuelCapacity, ship.fuel);
+    ship.propellantVolume = std::max(1.0, ship.propellantVolume - def.propellantVolumeBonus);
+    ship.fuelVolume = std::max(1.0, ship.fuelVolume - def.fuelVolumeBonus);
+    // Снятый движок возвращает корпус на дефолтный, а лишнее из баков выливается.
+    if (def.slot == ModuleSlot::Drive) ship.driveIndex = defaultDriveIndex();
+    // Ёмкость упала — лишнее выливаем за борт пропорционально составу смеси.
+    shipTrimTanks(ship);
     ship.speed = std::max(0.1, ship.speed - def.speedBonus);
     ship.acceleration -= def.accelBonus;
     ship.heavyWeapons -= def.heavyBonus;
@@ -133,34 +151,73 @@ bool Game::equipModule(int agentIndex, int defIndex) {
     Agent& agent = agents[agentIndex];
     if (agent.ship.enRoute) { lastEvent = "cannot refit in transit"; return false; }
     
-    if (int(agent.ship.modules.size()) >= agent.ship.maxModules) {
+    const ModuleDef& def = defs[defIndex];
+
+    // Эксклюзивный слот (движок): новый вытесняет старый, а не суммируется с ним.
+    // Раньше проверялось только общее число модулей, поэтому на корабль можно
+    // было навесить три двигателя сразу и сложить их бонусы.
+    //
+    // ВСЕ проверки идут ДО снятия старого модуля. Иначе неудачная замена
+    // (не та верфь, модуля нет в трюме) снимала работающий движок и оставляла
+    // корабль вообще без двигателя.
+    int replaceListIndex = -1;
+    if (moduleSlotIsExclusive(def.slot)) {
+        for (size_t i = 0; i < agent.ship.modules.size(); ++i) {
+            const int existing = agent.ship.modules[i];
+            if (existing < 0 || existing >= int(defs.size())) continue;
+            if (defs[existing].slot != def.slot) continue;
+            if (existing == defIndex) {
+                lastEvent = def.name + " already installed";
+                return false;
+            }
+            replaceListIndex = int(i);
+            break;
+        }
+    }
+
+    // Замена освобождает слот, поэтому упираемся в лимит только при добавлении.
+    if (replaceListIndex < 0 && int(agent.ship.modules.size()) >= agent.ship.maxModules) {
         lastEvent = "no upgrade slots available";
         pushNews(lastEvent, 0);
         return false;
     }
-    
-    const ModuleDef& def = defs[defIndex];
+
     if (shipyardLevelAtStar(agent.currentStar) < def.minShipyard) {
         lastEvent = "need shipyard lvl " + std::to_string(def.minShipyard) + " for " + def.name;
         pushNews(lastEvent, 0);
         return false;
     }
-    
+
     std::string modName = "Module: " + def.name;
-    bool found = false;
+    int cargoSlot = -1;
     for (size_t i = 0; i < agent.ship.cargo.size(); ++i) {
         if (agent.ship.cargo[i].element == modName && agent.ship.cargo[i].amount > 0.0) {
-            agent.ship.cargo[i].amount -= 1.0;
-            if (agent.ship.cargo[i].amount <= 0.0) {
-                agent.ship.cargo.erase(agent.ship.cargo.begin() + i);
-            }
-            found = true;
+            cargoSlot = int(i);
             break;
         }
     }
-    
-    if (!found) return false;
-    
+    if (cargoSlot < 0) {
+        lastEvent = def.name + " not in cargo";
+        return false;
+    }
+
+    // Проверки пройдены — только теперь трогаем корабль.
+    if (replaceListIndex >= 0 && !unequipModule(agentIndex, replaceListIndex)) return false;
+
+    // unequipModule мог вернуть снятый модуль в трюм и сдвинуть индексы.
+    cargoSlot = -1;
+    for (size_t i = 0; i < agent.ship.cargo.size(); ++i) {
+        if (agent.ship.cargo[i].element == modName && agent.ship.cargo[i].amount > 0.0) {
+            cargoSlot = int(i);
+            break;
+        }
+    }
+    if (cargoSlot < 0) return false;
+    agent.ship.cargo[cargoSlot].amount -= 1.0;
+    if (agent.ship.cargo[cargoSlot].amount <= 0.0) {
+        agent.ship.cargo.erase(agent.ship.cargo.begin() + cargoSlot);
+    }
+
     agent.ship.modules.push_back(defIndex);
     applyModuleToShip(agent.ship, def);
     

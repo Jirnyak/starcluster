@@ -105,7 +105,16 @@ void testGoButtonGoesToTopWindow() {
     pickStars(game, starA, starB);
 
     // Убираем законные причины отказа (топливо), чтобы тест мерил только маршрутизацию клика.
-    game.agents[game.playerAgent].ship.fuel = 1.0e6;
+    // Баки под пробку: тест кликов не про дозаправку.
+    {
+        Ship& s = game.agents[game.playerAgent].ship;
+        s.fuelVolume = 1.0e9;
+        s.propellantVolume = 1.0e9;
+        s.fuel.clear();
+        s.fuel.push_back(Resource("Th", 1.0e6));
+        s.propellant.clear();
+        s.propellant.push_back(Resource("H", 1.0e6));
+    }
 
     UI::WindowState ui;
     UI::openSystemWindow(ui, starA, SCREEN_W, SCREEN_H);
@@ -142,7 +151,16 @@ void testUncoveredLowerWindowStillReceivesClicks() {
     UI::openSystemWindow(ui, starA, SCREEN_W, SCREEN_H);
     UI::openSystemWindow(ui, starB, SCREEN_W, SCREEN_H);
 
-    game.agents[game.playerAgent].ship.fuel = 1.0e6;
+    // Баки под пробку: тест кликов не про дозаправку.
+    {
+        Ship& s = game.agents[game.playerAgent].ship;
+        s.fuelVolume = 1.0e9;
+        s.propellantVolume = 1.0e9;
+        s.fuel.clear();
+        s.fuel.push_back(Resource("Th", 1.0e6));
+        s.propellant.clear();
+        s.propellant.push_back(Resource("H", 1.0e6));
+    }
 
     // Каскад сдвигает верхнее окно на +22,+22, поэтому у нижнего открыта левая
     // полоса. Берём GO нижнего окна в этой открытой части.
@@ -196,11 +214,100 @@ void testReopenRaisesExistingWindow() {
 
 }  // namespace
 
+
+// --- Окно HOLD: стрелки перелива ---------------------------------------------
+// Два круга правок подряд интерфейс перелива был нерабочим: сначала кнопки
+// всегда серые (ёмкость держала один сорт), потом кликабельные строки БЕЗ
+// единой видимой кнопки. Тест бьёт ровно по геометрии стрелок и проверяет,
+// что вещество поехало в нужную сторону.
+
+// Зеркалит UI::holdArrowRect() — если разъедется, тест это и поймает.
+SDL_Rect holdArrow(const SDL_Rect& win, int column, int row, bool left) {
+    const int TITLE = 22;
+    const int COL_W = 232, ROW_H = 18, ARROW_W = 18;
+    const int colX = win.x + 12 + column * COL_W;
+    SDL_Rect r;
+    r.x = left ? colX : colX + COL_W - 32 - ARROW_W;
+    r.y = win.y + TITLE + 74 + row * ROW_H - 2;
+    r.w = ARROW_W;
+    r.h = ROW_H - 3;
+    return r;
+}
+
+// Зеркалит UI::holdJettisonRect().
+SDL_Rect holdJettison(const SDL_Rect& win, int row) {
+    const int TITLE = 22;
+    const int COL_W = 232, ROW_H = 18, ARROW_W = 18;
+    const int colX = win.x + 12 + 1 * COL_W;
+    SDL_Rect r;
+    r.x = colX + COL_W - 32 - ARROW_W - 22;
+    r.y = win.y + TITLE + 74 + row * ROW_H - 2;
+    r.w = 20;
+    r.h = ROW_H - 3;
+    return r;
+}
+
+void clickHold(UI::WindowState& ui, Game& game, const SDL_Rect& win, int column, int row, bool left) {
+    UI::HudSelection sel;
+    const SDL_Rect a = holdArrow(win, column, row, left);
+    UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, a.x + a.w / 2, a.y + a.h / 2, SDL_BUTTON_LEFT);
+}
+
+double amountOf(const std::vector<Resource>& list, const char* symbol) {
+    for (size_t i = 0; i < list.size(); ++i) {
+        if (list[i].element == symbol) return list[i].amount;
+    }
+    return 0.0;
+}
+
+void testHoldArrowsMoveMatter() {
+    Game game;
+    game.init(200);
+    if (game.playerAgent < 0) { check(false, "player agent exists"); return; }
+
+    Ship& ship = game.agents[game.playerAgent].ship;
+    ship.cargoCapacity = 1.0e5;
+    ship.fuelVolume = 1.0e4;
+    ship.propellantVolume = 1.0e4;
+    ship.fuel.clear();
+    ship.propellant.clear();
+    ship.cargo.clear();
+    ship.cargo.push_back(Resource("Xe", 20.0));   // строка 0 трюма
+
+    UI::WindowState ui;
+    UI::openCargoWindow(ui, game.agents[game.playerAgent].currentStar, SCREEN_W, SCREEN_H);
+    const SDL_Rect win = ui.windows[0].rect;
+
+    // Колонки: 0 = бункер, 1 = трюм, 2 = бак.
+    clickHold(ui, game, win, 1, 0, true);    // трюм: стрелка влево -> в бункер
+    check(amountOf(ship.fuel, "Xe") > 0.0, "cargo LEFT arrow loads the bunker");
+
+    clickHold(ui, game, win, 0, 0, false);   // бункер: стрелка вправо -> обратно в трюм
+    check(amountOf(ship.fuel, "Xe") == 0.0 && amountOf(ship.cargo, "Xe") > 0.0,
+          "bunker RIGHT arrow drains back to cargo");
+
+    clickHold(ui, game, win, 1, 0, false);   // трюм: стрелка вправо -> в бак
+    check(amountOf(ship.propellant, "Xe") > 0.0, "cargo RIGHT arrow loads the tank");
+
+    clickHold(ui, game, win, 2, 0, true);    // бак: стрелка влево -> обратно в трюм
+    check(amountOf(ship.propellant, "Xe") == 0.0 && amountOf(ship.cargo, "Xe") > 0.0,
+          "tank LEFT arrow drains back to cargo");
+
+    // Сброс за борт — выход из перегруза вдали от рынка.
+    {
+        UI::HudSelection sel;
+        const SDL_Rect j = holdJettison(win, 0);
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, j.x + j.w / 2, j.y + j.h / 2, SDL_BUTTON_LEFT);
+    }
+    check(amountOf(ship.cargo, "Xe") == 0.0, "cargo X button jettisons the row");
+}
+
 int main() {
     testCargoButtonGoesToTopWindow();
     testGoButtonGoesToTopWindow();
     testUncoveredLowerWindowStillReceivesClicks();
     testReopenRaisesExistingWindow();
+    testHoldArrowsMoveMatter();
     std::printf("%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAILED", gFailures);
     return gFailures == 0 ? 0 : 1;
 }

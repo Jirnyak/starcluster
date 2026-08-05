@@ -1,4 +1,5 @@
 #include "game.h"
+#include "drive.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -538,26 +539,90 @@ double cachedRouteTravelTime(const Game& game, const Ship& ship, int originStar,
     return current == targetStar ? years : travelTimeEstimate(distanceBetween(game.cluster.stars[originStar], game.cluster.stars[targetStar]), ship);
 }
 
-double cachedRouteFuelNeeded(const Game& game, const Ship& ship, int originStar, int targetStar) {
-    if (!validStar(game, originStar) || !validStar(game, targetStar)) return -1.0;
-    if (originStar == targetStar) return 0.0;
+// Запас 8% сверх расчёта — на манёвры и неточность оценки скорости.
+const double ROUTE_MARGIN = 1.08;
 
-    double fuel = 0.0;
+// Плечо маршрута: расход считается по локальным ценам, чтобы движок выбирал
+// экономически осмысленную скорость истечения (см. shipRouteCost).
+RouteCost legCost(const Ship& ship, double distance, double propellantPrice, double fuelPrice) {
+    RouteCost leg = shipEstimateRoute(ship, distance, propellantPrice, fuelPrice);
+    leg.propellantMass *= ROUTE_MARGIN;
+    leg.fuelMass *= ROUTE_MARGIN;
+    return leg;
+}
+
+void addCost(RouteCost& total, const RouteCost& leg) {
+    total.feasible = total.feasible && leg.feasible;
+    total.propellantMass += leg.propellantMass;
+    total.fuelMass += leg.fuelMass;
+    total.exhaustVelocity = std::max(total.exhaustVelocity, leg.exhaustVelocity);
+}
+
+// Цены на топливо и рабочее тело корабля в конкретной системе, за единицу
+// МАССЫ (расход теперь считается в массе, а не в штуках). Для смеси берём
+// средневзвешенную цену её состава. Если система неизвестна — 1.0, тогда
+// оптимум скорости истечения сводится к минимуму суммарной массы.
+double mixPricePerMass(const Market& market, const std::vector<Resource>& mix, int fallbackElement) {
+    double mass = 0.0;
+    double cost = 0.0;
+    for (size_t i = 0; i < mix.size(); ++i) {
+        const int idx = elementIndex(mix[i].element);
+        if (idx < 0 || idx >= int(market.prices.size())) continue;
+        const double m = mix[i].amount * elementUnitMass(idx);
+        mass += m;
+        cost += mix[i].amount * market.prices[idx];
+    }
+    if (mass > 0.0) return std::max(0.01, cost / mass);
+    if (fallbackElement >= 0 && fallbackElement < int(market.prices.size())) {
+        return std::max(0.01, market.prices[fallbackElement] / std::max(1e-6, elementUnitMass(fallbackElement)));
+    }
+    return 1.0;
+}
+
+void routePrices(const Game& game, const Ship& ship, int starIndex,
+                 double& propellantPrice, double& fuelPrice) {
+    propellantPrice = 1.0;
+    fuelPrice = 1.0;
+    if (!validStar(game, starIndex)) return;
+    const Market& market = game.markets[starIndex];
+    propellantPrice = mixPricePerMass(market, ship.propellant, shipDominantPropellantElement(ship));
+    fuelPrice = mixPricePerMass(market, ship.fuel, shipDominantFuelElement(ship));
+}
+
+RouteCost cachedRouteCost(const Game& game, const Ship& ship, int originStar, int targetStar,
+                          double propellantPrice, double fuelPrice) {
+    RouteCost total;
+    total.feasible = true;
+    if (!validStar(game, originStar) || !validStar(game, targetStar)) {
+        total.feasible = false;
+        return total;
+    }
+    if (originStar == targetStar) return total;
+
+    const double directDistance = distanceBetween(game.cluster.stars[originStar], game.cluster.stars[targetStar]);
     int current = originStar;
     const int guardLimit = std::max(1, int(game.cluster.stars.size()));
     for (int guard = 0; guard < guardLimit && current != targetStar; ++guard) {
         const int next = game.routeNextStar(current, targetStar);
         if (!validStar(game, next) || next == current) {
-            return shipEstimateRouteFuel(ship, distanceBetween(game.cluster.stars[originStar], game.cluster.stars[targetStar])) * 1.08;
+            return legCost(ship, directDistance, propellantPrice, fuelPrice);
         }
-        fuel += shipEstimateRouteFuel(ship, distanceBetween(game.cluster.stars[current], game.cluster.stars[next])) * 1.08;
+        addCost(total, legCost(ship, distanceBetween(game.cluster.stars[current], game.cluster.stars[next]),
+                               propellantPrice, fuelPrice));
         current = next;
     }
-    return current == targetStar ? fuel : shipEstimateRouteFuel(ship, distanceBetween(game.cluster.stars[originStar], game.cluster.stars[targetStar])) * 1.08;
+    if (current != targetStar) return legCost(ship, directDistance, propellantPrice, fuelPrice);
+    return total;
 }
 
 bool shipCanFlyDirect(const Ship& ship, double distance) {
-    return distance >= 0.0 && ship.fuel + 0.001 >= shipEstimateRouteFuel(ship, distance) * 1.08;
+    if (distance < 0.0) return false;
+    const RouteCost leg = legCost(ship, distance, 1.0, 1.0);
+    if (!leg.feasible) return false;
+    if (shipFuelMix(ship).mass + 1e-6 < leg.fuelMass) return false;
+    if (!driveUsesFuelAsPropellant(ship.driveIndex) &&
+        shipPropellantMix(ship).mass + 1e-6 < leg.propellantMass) return false;
+    return true;
 }
 
 double plannedRouteDistance(const Game& game, const Ship& ship, int originStar, int targetStar) {
@@ -574,11 +639,29 @@ double plannedRouteTravelTime(const Game& game, const Ship& ship, int originStar
     return cachedRouteTravelTime(game, ship, originStar, targetStar);
 }
 
-double plannedRouteFuelNeeded(const Game& game, const Ship& ship, int originStar, int targetStar) {
-    if (!validStar(game, originStar) || !validStar(game, targetStar)) return -1.0;
+// Во сколько кредитов обойдётся долить недостающее в этой системе. Считает
+// ОБА расходника: и топливо, и рабочее тело, каждое по своей локальной цене.
+double refillCost(const Game& game, const Ship& ship, int starIndex, const RouteCost& need) {
+    if (!need.feasible || !validStar(game, starIndex)) return 0.0;
+    double propellantPrice = 1.0;
+    double fuelPrice = 1.0;
+    routePrices(game, ship, starIndex, propellantPrice, fuelPrice);
+    double cost = std::max(0.0, need.fuelMass - shipFuelMix(ship).mass) * fuelPrice;
+    if (!driveUsesFuelAsPropellant(ship.driveIndex)) {
+        cost += std::max(0.0, need.propellantMass - shipPropellantMix(ship).mass) * propellantPrice;
+    }
+    return cost;
+}
+
+RouteCost plannedRouteCost(const Game& game, const Ship& ship, int originStar, int targetStar) {
+    RouteCost bad;
+    if (!validStar(game, originStar) || !validStar(game, targetStar)) return bad;
+    double propellantPrice = 1.0;
+    double fuelPrice = 1.0;
+    routePrices(game, ship, originStar, propellantPrice, fuelPrice);
     const double direct = distanceBetween(game.cluster.stars[originStar], game.cluster.stars[targetStar]);
-    if (shipCanFlyDirect(ship, direct)) return shipEstimateRouteFuel(ship, direct) * 1.08;
-    return cachedRouteFuelNeeded(game, ship, originStar, targetStar);
+    if (shipCanFlyDirect(ship, direct)) return legCost(ship, direct, propellantPrice, fuelPrice);
+    return cachedRouteCost(game, ship, originStar, targetStar, propellantPrice, fuelPrice);
 }
 
 int nearestSignalRelay(const Game& game, int factionIndex, int originStar) {
@@ -1505,11 +1588,9 @@ bool tryAcceptBestContract(Game& game, int agentIndex) {
         }
         const double distance = plannedRouteDistance(game, routeShip, contract.originStar, contract.targetStar);
         if (distance <= 0.0) continue;
-        const double fuelNeeded = std::max(0.0, plannedRouteFuelNeeded(game, routeShip, contract.originStar, contract.targetStar) - routeShip.fuel);
-        double fuelCost = 0.0;
-        if (routeShip.fuelElement >= 0 && routeShip.fuelElement < int(game.markets[contract.originStar].prices.size())) {
-            fuelCost = fuelNeeded * game.markets[contract.originStar].prices[routeShip.fuelElement];
-        }
+        const RouteCost need = plannedRouteCost(game, routeShip, contract.originStar, contract.targetStar);
+        if (!need.feasible) continue;
+        const double fuelCost = refillCost(game, routeShip, contract.originStar, need);
         const double years = plannedRouteTravelTime(game, routeShip, contract.originStar, contract.targetStar);
         const double deadlinePenalty = game.time + years > contract.deadline ? contract.reward * 0.55 : 0.0;
         const double routeThreat = game.factionRouteThreatRisk(agent.ship.ownerFaction, contract.originStar, contract.targetStar);
@@ -1576,11 +1657,10 @@ TradePlan findBestTrade(const Game& game, const Agent& agent) {
             const double distance = plannedRouteDistance(game, routeShip, current, dest);
             if (distance <= 0.0) continue;
             const double years = plannedRouteTravelTime(game, routeShip, current, dest);
-            double fuelCost = 0.0;
-            if (routeShip.fuelElement >= 0 && routeShip.fuelElement < int(source.prices.size())) {
-                const double fuelNeeded = std::max(0.0, plannedRouteFuelNeeded(game, routeShip, current, dest) - routeShip.fuel);
-                fuelCost = fuelNeeded * source.prices[routeShip.fuelElement] * (1.0 + tariffFor(game, current, agent.ship.ownerFaction, 0.014));
-            }
+            const RouteCost need = plannedRouteCost(game, routeShip, current, dest);
+            if (!need.feasible) continue;
+            const double fuelCost = refillCost(game, routeShip, current, need) *
+                (1.0 + tariffFor(game, current, agent.ship.ownerFaction, 0.014));
             const double cargoCost = amount * buyPrice * (1.0 + tariffFor(game, current, agent.ship.ownerFaction, 0.014));
             if (cargoCost + fuelCost > agent.money) continue;
             const double stalePricePenalty = amount * sellPrice * (1.0 - confidence) * (0.45 + (1.0 - agent.riskTolerance) * 0.75);
@@ -1612,6 +1692,29 @@ TradePlan findBestTrade(const Game& game, const Agent& agent) {
     return best;
 }
 
+// Манёвр с раскладкой продуктов горения. Рабочее тело улетает в сопло, а топливо
+// перегорает в активной зоне — зола остаётся на борту и ссыпается в трюм.
+// Если трюм полон, лишнее приходится стравливать за борт.
+double consumeAndStoreAsh(Ship& ship, double deltaV) {
+    std::vector<Resource> ash;
+    const double achieved = shipConsumeForDeltaV(ship, deltaV, &ash);
+    // Зола ложится в трюм ЦЕЛИКОМ, даже сверх нормы: она заменяет собой
+    // сгоревшее топливо, поэтому общая масса корабля не растёт. Перегруз с
+    // золой не запирает игрока в полёте — он мешает лишь следующему вылету.
+    for (size_t i = 0; i < ash.size(); ++i) {
+        if (ash[i].amount <= 1e-9) continue;
+        bool merged = false;
+        for (size_t c = 0; c < ship.cargo.size(); ++c) {
+            if (ship.cargo[c].element != ash[i].element) continue;
+            ship.cargo[c].amount += ash[i].amount;
+            merged = true;
+            break;
+        }
+        if (!merged) ship.cargo.push_back(Resource(ash[i].element, ash[i].amount));
+    }
+    return achieved;
+}
+
 bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
     const double dx = target.x - ship.x;
     const double dy = target.y - ship.y;
@@ -1635,12 +1738,12 @@ bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
     const double deltaV = accel * dt;
 
     if (stoppingDistance + speed * dt * 0.5 >= dist && speed > 0.0) {
-        const double brake = shipConsumeFuelForDeltaV(ship, std::min(deltaV, speed));
+        const double brake = consumeAndStoreAsh(ship, std::min(deltaV, speed));
         ship.vx -= ship.vx / speed * brake;
         ship.vy -= ship.vy / speed * brake;
         ship.vz -= ship.vz / speed * brake;
     } else if (accel > 0.0) {
-        const double thrust = shipConsumeFuelForDeltaV(ship, deltaV);
+        const double thrust = consumeAndStoreAsh(ship, deltaV);
         ship.vx += dirX * thrust;
         ship.vy += dirY * thrust;
         ship.vz += dirZ * thrust;
@@ -1685,36 +1788,80 @@ double tariffFor(const Game& game, int starIndex, int ownerFaction, double exter
     return externalRate * std::max(0.35, 1.0 + hostility * 2.2 - alliance * 0.45);
 }
 
-bool buyFuel(Game& game, Agent& agent, int starIndex, double targetFuel) {
+// Наценка станции за готовый к заливке расходник. Станция продаёт очищенное,
+// обогащённое и упакованное вещество; сырой элемент из трюма переливается
+// бесплатно. Наценка намеренно кусачая: своя топливная схема должна окупаться.
+const double REFINERY_MARKUP = 0.90;
+
+// Станционный макрос: купить расходник и сразу залить его в бак. Один поток
+// для игрока и для ИИ — правила общие (ship.md, «AI Requirements»).
+// bunker=true заливает топливо в реактор, иначе рабочее тело в бак.
+bool buyConsumable(Game& game, Agent& agent, int starIndex, bool bunker, double targetMass) {
     if (!validStar(game, starIndex)) return false;
-    if (agent.ship.fuelElement < 0 || agent.ship.fuelElement >= int(elementCount())) return false;
-    if (agent.ship.fuel >= targetFuel || agent.ship.fuel >= agent.ship.fuelCapacity) return false;
+    Ship& ship = agent.ship;
+    if (!bunker && driveUsesFuelAsPropellant(ship.driveIndex)) return false;
+
+    // Докупаем тот сорт, что уже преобладает в ёмкости: станция доливает то же,
+    // чем корабль заправлен, а не подмешивает случайное.
+    const int element = bunker ? shipDominantFuelElement(ship) : shipDominantPropellantElement(ship);
+    if (element < 0 || element >= int(elementCount())) return false;
+
+    const MixSummary mix = bunker ? shipFuelMix(ship) : shipPropellantMix(ship);
+    const double capacityVolume = bunker ? shipFuelTankVolume(ship) : ship.propellantVolume;
+    const double unitVolume = elementUnitVolume(element);
+    const double unitMass = elementUnitMass(element);
+    const double roomUnits = std::max(0.0, (capacityVolume - mix.volume) / std::max(1e-9, unitVolume));
+    const double wantedUnits = std::min(std::max(0.0, targetMass - mix.mass) / std::max(1e-6, unitMass), roomUnits);
+    if (wantedUnits <= 0.01) return false;
 
     Market& market = game.markets[starIndex];
-    const int fuelIndex = agent.ship.fuelElement;
-    if (fuelIndex < 0 || fuelIndex >= int(market.supply.size()) || fuelIndex >= int(market.prices.size())) return false;
+    if (element >= int(market.supply.size()) || element >= int(market.prices.size())) return false;
 
     double tariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.014);
     if (agent.playerControlled) tariff /= std::max(1.0, game.tech.charisma);
-    const double unitCost = market.prices[fuelIndex] * (1.0 + tariff);
+    const double unitCost = market.prices[element] * (1.0 + REFINERY_MARKUP) * (1.0 + tariff);
     if (unitCost <= 0.0) return false;
 
-    const double wanted = std::max(0.0, std::min(agent.ship.fuelCapacity, targetFuel) - agent.ship.fuel);
-    const double amount = std::min(wanted, std::min(market.supply[fuelIndex].amount, agent.money / unitCost));
+    const double amount = std::min(wantedUnits, std::min(market.supply[element].amount, agent.money / unitCost));
     if (amount <= 0.01) return false;
 
-    const double baseCost = amount * market.prices[fuelIndex];
+    const double baseCost = amount * market.prices[element] * (1.0 + REFINERY_MARKUP);
     const double fee = baseCost * tariff;
     const int owner = game.cluster.stars[starIndex].ownerFaction;
-    market.applyTrade(fuelIndex, -amount);
+    market.applyTrade(element, -amount);
     agent.money -= baseCost + fee;
     if (validFaction(game, owner)) {
         game.factions[owner].treasury += fee;
         if (fee > 0.01) game.queueSettlementSignal(owner, starIndex, fee);
     }
-    agent.ship.fuel += amount;
-    agent.lastAction = "refueled";
+    // Станция заливает напрямую в ёмкость, минуя трюм — за это и берут наценку.
+    const std::string symbol = elementDefinitions()[element].symbol;
+    std::vector<Resource>& dest = bunker ? ship.fuel : ship.propellant;
+    bool merged = false;
+    for (size_t i = 0; i < dest.size(); ++i) {
+        if (dest[i].element != symbol) continue;
+        dest[i].amount += amount;
+        merged = true;
+        break;
+    }
+    if (!merged) dest.push_back(Resource(symbol, amount));
+    agent.lastAction = bunker ? "bunkered fuel" : "loaded propellant";
     return true;
+}
+
+// Долить всё, чего не хватает на маршрут. Возвращает true, если что-то залили.
+bool buyRouteConsumables(Game& game, Agent& agent, int starIndex, const RouteCost& need) {
+    if (!need.feasible) return false;
+    bool any = false;
+    if (need.fuelMass > shipFuelMix(agent.ship).mass) {
+        any = buyConsumable(game, agent, starIndex, true, need.fuelMass) || any;
+    }
+    if (!driveUsesFuelAsPropellant(agent.ship.driveIndex) &&
+        need.propellantMass > shipPropellantMix(agent.ship).mass) {
+        any = buyConsumable(game, agent, starIndex, false, need.propellantMass) || any;
+    }
+    if (any) agent.lastAction = "refueled";
+    return any;
 }
 
 bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount = std::numeric_limits<double>::max(), const std::string& elementSymbol = "") {
@@ -1823,22 +1970,41 @@ void buyCargo(Game& game, Agent& agent, int starIndex, const TradePlan& plan) {
 bool startJourney(Game& game, Agent& agent, int destStar) {
     if (destStar < 0 || destStar == agent.currentStar) return false;
     if (!validStar(game, agent.currentStar) || !validStar(game, destStar)) return false;
-    const double directDistance = distanceBetween(game.cluster.stars[agent.currentStar], game.cluster.stars[destStar]);
-    const double directFuel = shipEstimateRouteFuel(agent.ship, directDistance) * 1.08;
-    if (agent.ship.fuel < directFuel && !agent.playerControlled) {
-        buyFuel(game, agent, agent.currentStar, std::min(agent.ship.fuelCapacity, directFuel * 1.18));
+    double propellantPrice = 1.0;
+    double fuelPrice = 1.0;
+    routePrices(game, agent.ship, agent.currentStar, propellantPrice, fuelPrice);
+
+    // Перегруз не запрещает грузить — он запрещает ВЗЛЕТАТЬ. Паспортная норма
+    // трюма и есть тот предел, выше которого корпус не сертифицирован к тяге.
+    const double overload = shipCargoOverload(agent.ship);
+    if (overload > 0.001) {
+        agent.lastAction = "overloaded";
+        return false;
     }
 
-    const bool direct = agent.ship.fuel >= directFuel;
+    const double directDistance = distanceBetween(game.cluster.stars[agent.currentStar], game.cluster.stars[destStar]);
+    const RouteCost directNeed = legCost(agent.ship, directDistance, propellantPrice, fuelPrice);
+    if (!agent.playerControlled) buyRouteConsumables(game, agent, agent.currentStar, directNeed);
+
+    const bool direct = shipCanFlyDirect(agent.ship, directDistance);
     const int legStar = direct ? destStar : game.routeNextStar(agent.currentStar, destStar);
     if (!validStar(game, legStar) || legStar == agent.currentStar) return false;
     const double distance = distanceBetween(game.cluster.stars[agent.currentStar], game.cluster.stars[legStar]);
-    const double neededFuel = shipEstimateRouteFuel(agent.ship, distance) * 1.08;
-    if (agent.ship.fuel < neededFuel && !agent.playerControlled) {
-        buyFuel(game, agent, agent.currentStar, std::min(agent.ship.fuelCapacity, neededFuel * 1.18));
+    const RouteCost need = legCost(agent.ship, distance, propellantPrice, fuelPrice);
+    if (!agent.playerControlled) buyRouteConsumables(game, agent, agent.currentStar, need);
+    if (!need.feasible) {
+        // Пара движок/рабочее тело физически не тянет это плечо — доливать
+        // бесполезно, надо менять схему.
+        agent.lastAction = "drive cannot reach";
+        return false;
     }
-    if (agent.ship.fuel < neededFuel) {
+    if (shipFuelMix(agent.ship).mass < need.fuelMass) {
         agent.lastAction = "need fuel";
+        return false;
+    }
+    if (!driveUsesFuelAsPropellant(agent.ship.driveIndex) &&
+        shipPropellantMix(agent.ship).mass < need.propellantMass) {
+        agent.lastAction = "need propellant";
         return false;
     }
     agent.destStar = destStar;
@@ -2643,7 +2809,7 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 8 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 9 " << cluster.stars.size() << '\n';
     out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
@@ -2744,13 +2910,20 @@ bool Game::saveToFile(const std::string& path) {
         out << "SHIP " << saveToken(ship.name) << ' ' << ship.x << ' ' << ship.y << ' ' << ship.z << ' '
             << ship.speed << ' ' << ship.vx << ' ' << ship.vy << ' ' << ship.vz << ' '
             << ship.acceleration << ' ' << ship.dryMass << ' ' << ship.driveThrust << ' '
-            << ship.driveEfficiency << ' ' << ship.fuelElement << ' ' << ship.fuel << ' '
-            << ship.fuelCapacity << ' ' << ship.cargoCapacity << ' ' << ship.ownerFaction << ' '
+            << ship.driveEfficiency << ' ' << ship.driveIndex << ' '
+            << ship.fuelVolume << ' ' << ship.propellantVolume << ' ' << ship.throttleBias << ' '
+            << ship.cargoCapacity << ' ' << ship.ownerFaction << ' '
             << ship.targetStar << ' ' << int(ship.enRoute) << ' '
             << ship.heavyWeapons << ' ' << ship.lightWeapons << ' ' << ship.armor << ' '
             << ship.utility << ' ' << ship.hullHP << ' ' << ship.maxHullHP << '\n';
         out << "CARGO ";
         writeResourceList(out, ship.cargo);
+        out << '\n';
+        out << "FUEL ";
+        writeResourceList(out, ship.fuel);
+        out << '\n';
+        out << "PROPELLANT ";
+        writeResourceList(out, ship.propellant);
         out << '\n';
         out << "MODULES ";
         writeIntList(out, ship.modules);
@@ -2880,7 +3053,7 @@ bool Game::loadFromFile(const std::string& path) {
     std::string tag;
     int version = 0;
     size_t starCount = 0;
-    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version < 6 || version > 8) {
+    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 9) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -3148,8 +3321,9 @@ bool Game::loadFromFile(const std::string& path) {
         if (!expectTag(in, "SHIP") ||
             !(in >> shipName >> x >> y >> z >> speed >> agent.ship.vx >> agent.ship.vy >> agent.ship.vz >>
                 agent.ship.acceleration >> agent.ship.dryMass >> agent.ship.driveThrust >>
-                agent.ship.driveEfficiency >> agent.ship.fuelElement >> agent.ship.fuel >>
-                agent.ship.fuelCapacity >> agent.ship.cargoCapacity >> agent.ship.ownerFaction >>
+                agent.ship.driveEfficiency >> agent.ship.driveIndex >>
+                agent.ship.fuelVolume >> agent.ship.propellantVolume >> agent.ship.throttleBias >>
+                agent.ship.cargoCapacity >> agent.ship.ownerFaction >>
                 agent.ship.targetStar >> enRoute >>
                 agent.ship.heavyWeapons >> agent.ship.lightWeapons >> agent.ship.armor >>
                 agent.ship.utility >> agent.ship.hullHP >> agent.ship.maxHullHP)) {
@@ -3168,6 +3342,14 @@ bool Game::loadFromFile(const std::string& path) {
         agent.ship.enRoute = enRoute != 0;
         if (!expectTag(in, "CARGO") || !readResourceList(in, agent.ship.cargo)) {
             lastEvent = "load failed: cargo";
+            return false;
+        }
+        if (!expectTag(in, "FUEL") || !readResourceList(in, agent.ship.fuel)) {
+            lastEvent = "load failed: fuel";
+            return false;
+        }
+        if (!expectTag(in, "PROPELLANT") || !readResourceList(in, agent.ship.propellant)) {
+            lastEvent = "load failed: propellant";
             return false;
         }
         if (!expectTag(in, "MODULES") || !readIntList(in, agent.ship.modules)) {
@@ -4287,7 +4469,7 @@ void Game::updateAgents(double dt) {
                 } else {
                     const double accel = shipCurrentAcceleration(agent.ship);
                     const double deltaV = accel * dt;
-                    const double brake = shipConsumeFuelForDeltaV(agent.ship, std::min(deltaV, speed));
+                    const double brake = consumeAndStoreAsh(agent.ship, std::min(deltaV, speed));
                     if (brake > 0.0) {
                         agent.ship.vx -= agent.ship.vx / speed * brake;
                         agent.ship.vy -= agent.ship.vy / speed * brake;
@@ -4348,18 +4530,9 @@ void downgradeAgentToEscapePod(Agent& a) {
     const std::vector<ShipClass>& classes = shipClasses();
     const ShipClass& pod = classes[0];
     a.ship.name = "Escape Pod";
-    a.ship.dryMass = pod.dryMass;
-    a.ship.driveThrust = pod.driveThrust;
-    a.ship.driveEfficiency = pod.driveEfficiency;
-    a.ship.cargoCapacity = pod.cargoCapacity;
-    a.ship.fuelCapacity = pod.fuelCapacity;
-    a.ship.heavyWeapons = pod.heavyWeapons;
-    a.ship.lightWeapons = pod.lightWeapons;
-    a.ship.armor = pod.armor;
-    a.ship.utility = pod.utility;
     a.ship.cargo.clear();
+    shipApplyClass(a.ship, pod);
     a.cargoCost = 0.0;
-    shipAutofit(a.ship);
 }
 
 bool Game::robAgent(int attackerIndex, int victimIndex) {
@@ -4487,17 +4660,7 @@ bool Game::buyShip(int agentIndex, int starIndex, int classId) {
     
     agent.money -= upgradePrice;
     agent.ship.name = sc.name;
-    agent.ship.dryMass = sc.dryMass;
-    agent.ship.driveThrust = sc.driveThrust;
-    agent.ship.driveEfficiency = sc.driveEfficiency;
-    agent.ship.cargoCapacity = sc.cargoCapacity;
-    agent.ship.fuelCapacity = sc.fuelCapacity;
-    agent.ship.heavyWeapons = sc.heavyWeapons;
-    agent.ship.lightWeapons = sc.lightWeapons;
-    agent.ship.armor = sc.armor;
-    agent.ship.utility = sc.utility;
-    agent.ship.maxModules = sc.maxModules;
-    shipAutofit(agent.ship);
+    shipApplyClass(agent.ship, sc);
     agent.lastAction = "bought " + sc.name;
     return true;
 }
@@ -4527,18 +4690,7 @@ bool Game::buyAdditionalShip(int agentIndex, int starIndex, int classId) {
     agents[agentIndex].money -= totalPrice;
     
     Ship newShip(sc.name, 0, 0, 0, 0, agents[agentIndex].ship.ownerFaction);
-    newShip.dryMass = sc.dryMass;
-    newShip.driveThrust = sc.driveThrust;
-    newShip.driveEfficiency = sc.driveEfficiency;
-    newShip.cargoCapacity = sc.cargoCapacity;
-    newShip.fuelCapacity = sc.fuelCapacity;
-    newShip.heavyWeapons = sc.heavyWeapons;
-    newShip.lightWeapons = sc.lightWeapons;
-    newShip.armor = sc.armor;
-    newShip.utility = sc.utility;
-    newShip.maxModules = sc.maxModules;
-    shipAutofit(newShip);
-    newShip.fuel = newShip.fuelCapacity;
+    shipApplyClass(newShip, sc);
 
     Agent newAgent(agents[agentIndex].type, newShip);
     newAgent.playerControlled = agents[agentIndex].playerControlled;
@@ -4576,14 +4728,28 @@ bool Game::commandAgentToStar(int agentIndex, int starIndex) {
     const double years = agentRouteTravelTime(agentIndex, starIndex);
     const double fuelNeeded = agentRouteFuelNeeded(agentIndex, starIndex);
     const double shortfall = agentRouteFuelShortfall(agentIndex, starIndex);
+    const double propShortfall = agentRoutePropellantShortfall(agentIndex, starIndex);
     const double risk = agentRouteThreatRisk(agentIndex, starIndex);
     const bool departed = startJourney(*this, agent, starIndex);
     if (!agent.playerControlled) return departed;
 
     if (!departed) {
-        lastEvent = "route blocked: fuel " + std::to_string(int(agent.ship.fuel)) +
-            "/" + std::to_string(int(std::ceil(fuelNeeded))) +
-            " short " + std::to_string(int(std::ceil(shortfall)));
+        // Разводим два разных отказа: «нечего жечь» и «нечего выбрасывать в
+        // сопло» — это разные покупки, и игрок должен видеть, какая нужна.
+        const double overload = shipCargoOverload(agent.ship);
+        if (overload > 0.001) {
+            lastEvent = "route blocked: overloaded by " +
+                std::to_string(int(std::ceil(overload))) + " over rated hold";
+        } else if (!agentRouteCost(agentIndex, starIndex).feasible) {
+            lastEvent = "route blocked: drive cannot reach on this propellant";
+        } else if (propShortfall > shortfall) {
+            lastEvent = "route blocked: propellant short " +
+                std::to_string(int(std::ceil(propShortfall)));
+        } else {
+            lastEvent = "route blocked: fuel " + std::to_string(int(shipFuelMix(agent.ship).mass)) +
+                "/" + std::to_string(int(std::ceil(fuelNeeded))) +
+                " short " + std::to_string(int(std::ceil(shortfall)));
+        }
         return false;
     }
 
@@ -4629,23 +4795,49 @@ double Game::agentRouteTravelTime(int agentIndex, int targetStar) const {
 double Game::agentRouteFuelNeeded(int agentIndex, int targetStar) const {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return -1.0;
     if (!validStar(*this, targetStar)) return -1.0;
+    const RouteCost cost = agentRouteCost(agentIndex, targetStar);
+    return cost.feasible ? cost.fuelMass : -1.0;
+}
+
+RouteCost Game::agentRouteCost(int agentIndex, int targetStar) const {
+    RouteCost bad;
+    if (agentIndex < 0 || agentIndex >= int(agents.size()) || !validStar(*this, targetStar)) return bad;
     const Agent& agent = agents[agentIndex];
+
+    double propellantPrice = 1.0;
+    double fuelPrice = 1.0;
+    routePrices(*this, agent.ship, agent.currentStar, propellantPrice, fuelPrice);
+
     if (agent.ship.enRoute && validStar(*this, agent.ship.targetStar)) {
-        const double leg = shipEstimateRouteFuel(agent.ship, distanceShipToStar(agent.ship, cluster.stars[agent.ship.targetStar])) * 1.08;
-        const double rest = agent.ship.targetStar == targetStar ? 0.0 : plannedRouteFuelNeeded(*this, agent.ship, agent.ship.targetStar, targetStar);
-        return leg + std::max(0.0, rest);
+        RouteCost total = legCost(agent.ship,
+            distanceShipToStar(agent.ship, cluster.stars[agent.ship.targetStar]), propellantPrice, fuelPrice);
+        if (agent.ship.targetStar != targetStar) {
+            addCost(total, cachedRouteCost(*this, agent.ship, agent.ship.targetStar, targetStar,
+                                           propellantPrice, fuelPrice));
+        }
+        return total;
     }
     if (!validStar(*this, agent.currentStar)) {
-        return shipEstimateRouteFuel(agent.ship, distanceShipToStar(agent.ship, cluster.stars[targetStar])) * 1.08;
+        return legCost(agent.ship, distanceShipToStar(agent.ship, cluster.stars[targetStar]),
+                       propellantPrice, fuelPrice);
     }
-    return plannedRouteFuelNeeded(*this, agent.ship, agent.currentStar, targetStar);
+    return plannedRouteCost(*this, agent.ship, agent.currentStar, targetStar);
 }
 
 double Game::agentRouteFuelShortfall(int agentIndex, int targetStar) const {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0.0;
-    const double fuelNeeded = agentRouteFuelNeeded(agentIndex, targetStar);
-    if (fuelNeeded < 0.0) return 0.0;
-    return std::max(0.0, fuelNeeded - agents[agentIndex].ship.fuel);
+    const RouteCost cost = agentRouteCost(agentIndex, targetStar);
+    if (!cost.feasible) return 0.0;
+    return std::max(0.0, cost.fuelMass - shipFuelMix(agents[agentIndex].ship).mass);
+}
+
+double Game::agentRoutePropellantShortfall(int agentIndex, int targetStar) const {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0.0;
+    const Ship& ship = agents[agentIndex].ship;
+    if (driveUsesFuelAsPropellant(ship.driveIndex)) return 0.0;
+    const RouteCost cost = agentRouteCost(agentIndex, targetStar);
+    if (!cost.feasible) return 0.0;
+    return std::max(0.0, cost.propellantMass - shipPropellantMix(ship).mass);
 }
 
 double Game::agentRouteThreatRisk(int agentIndex, int targetStar) const {
@@ -4690,28 +4882,51 @@ double Game::agentContractRouteTravelTime(int agentIndex, int contractId) const 
 }
 
 double Game::agentContractRouteFuelNeeded(int agentIndex, int contractId) const {
-    if (agentIndex < 0 || agentIndex >= int(agents.size())) return -1.0;
+    const RouteCost cost = agentContractRouteCost(agentIndex, contractId);
+    return cost.feasible ? cost.fuelMass : -1.0;
+}
+
+RouteCost Game::agentContractRouteCost(int agentIndex, int contractId) const {
+    RouteCost bad;
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return bad;
     const Contract* contract = contractById(*this, contractId);
-    if (!contract || !activeContract(*contract)) return -1.0;
+    if (!contract || !activeContract(*contract)) return bad;
     const double distance = agentContractRouteDistance(agentIndex, contractId);
-    if (distance < 0.0) return -1.0;
+    if (distance < 0.0) return bad;
     const Ship routeShip = contractRouteShip(agents[agentIndex], *contract);
     const Agent& agent = agents[agentIndex];
+
+    double propellantPrice = 1.0;
+    double fuelPrice = 1.0;
+    routePrices(*this, routeShip, agent.currentStar, propellantPrice, fuelPrice);
+
     if (agent.ship.enRoute && validStar(*this, agent.ship.targetStar)) {
-        const double leg = shipEstimateRouteFuel(routeShip, distanceShipToStar(agent.ship, cluster.stars[agent.ship.targetStar])) * 1.08;
-        const double rest = agent.ship.targetStar == contract->targetStar ? 0.0 :
-            plannedRouteFuelNeeded(*this, routeShip, agent.ship.targetStar, contract->targetStar);
-        return leg + std::max(0.0, rest);
+        RouteCost total = legCost(routeShip,
+            distanceShipToStar(agent.ship, cluster.stars[agent.ship.targetStar]), propellantPrice, fuelPrice);
+        if (agent.ship.targetStar != contract->targetStar) {
+            addCost(total, cachedRouteCost(*this, routeShip, agent.ship.targetStar, contract->targetStar,
+                                           propellantPrice, fuelPrice));
+        }
+        return total;
     }
-    if (!validStar(*this, agent.currentStar)) return shipEstimateRouteFuel(routeShip, distance) * 1.08;
-    return plannedRouteFuelNeeded(*this, routeShip, agent.currentStar, contract->targetStar);
+    if (!validStar(*this, agent.currentStar)) return legCost(routeShip, distance, propellantPrice, fuelPrice);
+    return plannedRouteCost(*this, routeShip, agent.currentStar, contract->targetStar);
 }
 
 double Game::agentContractRouteFuelShortfall(int agentIndex, int contractId) const {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0.0;
-    const double fuelNeeded = agentContractRouteFuelNeeded(agentIndex, contractId);
-    if (fuelNeeded < 0.0) return 0.0;
-    return std::max(0.0, fuelNeeded - agents[agentIndex].ship.fuel);
+    const RouteCost cost = agentContractRouteCost(agentIndex, contractId);
+    if (!cost.feasible) return 0.0;
+    return std::max(0.0, cost.fuelMass - shipFuelMix(agents[agentIndex].ship).mass);
+}
+
+double Game::agentContractRoutePropellantShortfall(int agentIndex, int contractId) const {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0.0;
+    const Ship& ship = agents[agentIndex].ship;
+    if (driveUsesFuelAsPropellant(ship.driveIndex)) return 0.0;
+    const RouteCost cost = agentContractRouteCost(agentIndex, contractId);
+    if (!cost.feasible) return 0.0;
+    return std::max(0.0, cost.propellantMass - shipPropellantMix(ship).mass);
 }
 
 double Game::agentContractRouteThreatRisk(int agentIndex, int contractId) const {
@@ -4784,8 +4999,72 @@ bool Game::agentBuyFuel(int agentIndex) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
     Agent& agent = agents[agentIndex];
     if (agent.ship.enRoute || !validStar(*this, agent.currentStar)) return false;
-    const double targetFuel = agent.ship.fuelCapacity;
-    return buyFuel(*this, agent, agent.currentStar, targetFuel);
+    // Заливаем обе ёмкости под пробку по станционной цене (с наценкой за очистку).
+    // Цель задаём в массе: сколько влезет по объёму на текущем составе.
+    const int fuelElem = shipDominantFuelElement(agent.ship);
+    const double fuelTarget = shipFuelTankVolume(agent.ship) /
+        std::max(1e-9, elementUnitVolume(fuelElem)) * elementUnitMass(fuelElem);
+    bool any = buyConsumable(*this, agent, agent.currentStar, true, fuelTarget);
+    if (!driveUsesFuelAsPropellant(agent.ship.driveIndex)) {
+        const int propElem = shipDominantPropellantElement(agent.ship);
+        const double propTarget = agent.ship.propellantVolume /
+            std::max(1e-9, elementUnitVolume(propElem)) * elementUnitMass(propElem);
+        any = buyConsumable(*this, agent, agent.currentStar, false, propTarget) || any;
+    }
+    return any;
+}
+
+// --- Ручной перелив трюм <-> ёмкости. Бесплатен: игрок сам привёз элемент. ---
+
+double Game::agentLoadFuelFromCargo(int agentIndex, int elementIdx, double units) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0.0;
+    Agent& agent = agents[agentIndex];
+    if (agent.ship.enRoute) { lastEvent = "cannot transfer in transit"; return 0.0; }
+    const double moved = shipLoadFuel(agent.ship, elementIdx, units);
+    if (moved > 0.0) agent.lastAction = "bunkered fuel";
+    return moved;
+}
+
+double Game::agentLoadPropellantFromCargo(int agentIndex, int elementIdx, double units) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0.0;
+    Agent& agent = agents[agentIndex];
+    if (agent.ship.enRoute) { lastEvent = "cannot transfer in transit"; return 0.0; }
+    const double moved = shipLoadPropellant(agent.ship, elementIdx, units);
+    if (moved > 0.0) agent.lastAction = "loaded propellant";
+    return moved;
+}
+
+double Game::agentJettisonCargo(int agentIndex, int elementIdx, double units) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0.0;
+    if (elementIdx < 0 || elementIdx >= int(elementCount())) return 0.0;
+    Agent& agent = agents[agentIndex];
+    const std::string symbol = elementDefinitions()[elementIdx].symbol;
+    for (size_t i = 0; i < agent.ship.cargo.size(); ++i) {
+        if (agent.ship.cargo[i].element != symbol) continue;
+        const double moved = std::min(units, agent.ship.cargo[i].amount);
+        agent.ship.cargo[i].amount -= moved;
+        if (agent.ship.cargo[i].amount <= 1e-9) agent.ship.cargo.erase(agent.ship.cargo.begin() + i);
+        if (moved > 0.0) {
+            agent.lastAction = "jettisoned " + symbol;
+            lastEvent = "jettisoned " + std::to_string(int(moved)) + " " + symbol;
+        }
+        return moved;
+    }
+    return 0.0;
+}
+
+double Game::agentDrainFuelToCargo(int agentIndex, int elementIdx, double units) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0.0;
+    Agent& agent = agents[agentIndex];
+    if (agent.ship.enRoute) { lastEvent = "cannot transfer in transit"; return 0.0; }
+    return shipDrainFuel(agent.ship, elementIdx, units);
+}
+
+double Game::agentDrainPropellantToCargo(int agentIndex, int elementIdx, double units) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0.0;
+    Agent& agent = agents[agentIndex];
+    if (agent.ship.enRoute) { lastEvent = "cannot transfer in transit"; return 0.0; }
+    return shipDrainPropellant(agent.ship, elementIdx, units);
 }
 
 bool Game::agentSellCargo(int agentIndex) {

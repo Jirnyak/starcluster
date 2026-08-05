@@ -37,32 +37,58 @@ enRoute
 
 This is already 3D. The missing layer is mass/fuel/modules.
 
-## First Implementation Status
+## Implementation Status
 
-The first implementation adds the physical layer without changing `cargo` into a
-general inventory:
+Топливо больше не абстрактный счётчик. Реализовано:
 
-- `Ship` has `dryMass`, `driveThrust`, `driveEfficiency`, `fuelElement`,
-  `fuel`, and `fuelCapacity`.
-- Cargo mass is derived from `Resource.amount * ElementDefinition.atomicMass`
-  with a small gameplay scale.
-- Fuel is not stored in `ship.cargo`; it is a separate reserve of one element.
-- Ship total mass is computed from dry mass, cargo mass, and fuel mass.
-- Effective acceleration is `min(design acceleration cap, driveThrust / totalMass)`.
-- Acceleration and braking consume fuel through `shipConsumeFuelForDeltaV`.
-- Route start checks estimated fuel and attempts local refuel before departure.
-- Trade scoring subtracts estimated route fuel cost.
-- UI shows cargo mass, total mass, fuel percentage, and a local `FUEL` button in
-  the trade window.
+- `Ship` имеет `driveIndex`, `fuel`/`fuelVolume`, `propellant`/`propellantVolume`,
+  `throttleBias`.
+- **Топливо и рабочее тело разделены** (см. «Fuel And Propellant»).
+- **Бункер и бак — СМЕСИ**, такие же списки `Resource`, как трюм. Никаких
+  «одна ёмкость — один элемент»: грузится что угодно, свойства считаются
+  средневзвешенными по массе. Выбор вещества стал градиентом качества,
+  а не набором запретов — залить железо в реактор можно, толку не будет.
+- Ёмкости меряются в ОБЪЁМЕ. Сколько влезет по массе — решает плотность
+  смеси. Это главный размен между синтезом и делением.
+- Порог поджига движка — не гейт, а середина плавной сходимости
+  (`driveIgnitionFraction`): что реактор не тянет, едет балластом.
+- Ёмкости заполняются переливом из трюма (`shipLoadFuel`/`shipLoadPropellant`,
+  обратно `shipDrainFuel`/`shipDrainPropellant`) либо станционным макросом
+  «купи и залей» с наценкой `REFINERY_MARKUP` (+90%). Своё сырьё — бесплатно.
+- Расход рабочего тела считается по Циолковскому; скорость истечения
+  выбирается минимизацией стоимости по локальным ценам и ограничена сверху
+  физикой пары движок/смесь. Расход снимается со смеси ПРОПОРЦИОНАЛЬНО
+  долям компонентов.
+- Сгоревшее топливо возвращается в трюм ЗОЛОЙ (`elementAshProduct`), покомпонентно.
+- Слот `Drive` эксклюзивен: движок ровно один, новый вытесняет старый.
+  Все проверки идут ДО снятия старого, иначе неудачная замена оставляла
+  корабль без двигателя.
+- UI: окно `HOLD / TANKS` — три колонки `БУНКЕР | ТРЮМ | БАК`, трюм в центре,
+  потому что перелив всегда идёт через него. У каждой строки ЯВНЫЕ кнопки-стрелки:
+  в трюме `<` грузит топливо и `>` рабочее тело, в ёмкостях стрелка к центру
+  сливает обратно. Количество берётся из поля AMOUNT окна торговли, пустое = вся
+  строка. Внизу сводка по установке: энергия смеси уже с учётом поджига, скорость
+  истечения и средняя молярная масса струи.
+  Из окна торговли убраны кнопки перелива и мёртвая кнопка SHIPYARD (верфь
+  открывается кнопкой YARD в окне системы). Кнопка `BUY FUEL+PROP` осталась —
+  это автозаправка обеих ёмкостей по станционной цене с наценкой.
+  Шаг перелива задаётся полем `STEP/CLICK` в правом нижнем углу окна — это
+  ТО ЖЕ значение, что AMOUNT окна торговли: одно число на все операции с
+  веществом, отдельного состояния не заводим. Пустое поле = вся строка.
+  Перегруз показан красным прямо в шапке колонки трюма.
+  Геометрия стрелок и кнопки сброса закреплена регрессией в `ui_click_test`.
+- **Перегруз трюма РАЗРЕШЁН.** `cargoCapacity` — паспортная норма, а не
+  физическая стена: залить можно что угодно и сколько угодно, слив из баков
+  и зола вместимостью не режутся. Цена перегруза — `startJourney` не выпускает
+  корабль, пока масса груза выше нормы. Без этого игрок не мог вылить бак,
+  чтобы сменить топливную схему, и застревал намертво. Выход из перегруза
+  вдали от рынка — кнопка `X` (за борт) в окне HOLD.
+- Save-версия 9; старые сейвы отвергаются.
 
 Deferred:
 
-- modules;
-- fuel switching;
 - heat/radiators;
-- weapons/armor mass;
-- shipyard upgrades;
-- save/load migration.
+- weapons/armor mass.
 
 ## Target Fields
 
@@ -139,47 +165,73 @@ This is enough for gameplay:
 - warships are heavy if armored;
 - high-thrust drives are expensive and fuel-hungry.
 
-## Fuel As Resources
+## Fuel And Propellant
 
-Fuel is not a separate abstract meter. Fuel is cargo/resource stock consumed by
-the drive.
+Ядерный двигатель — это ИСТОЧНИК ЭНЕРГИИ плюс СПОСОБ превратить её в тягу.
+Это два РАЗНЫХ вещества, и путать их нельзя:
 
-Any element can theoretically be fuel. Practical usefulness comes from the
-universal nuclear traits in `elements.md`:
+- **Топливо** — источник энергии. Остаётся в активной зоне и перегорает.
+  Расходуется медленно. Зола падает обратно в трюм.
+- **Рабочее тело** — реактивная масса. Улетает в сопло безвозвратно.
+  Расходуется по Циолковскому, то есть много.
+
+Энергия топлива — одна формула на синтез и деление, расстояние до пика
+кривой связи (`bindingPerNucleon` по Вайцзеккеру уже есть в элементах):
 
 ```text
-fuelEnergyDensity =
-    element.fusionFuelTrait * fusionDriveFactor
-  + element.fissionFuelTrait * fissionDriveFactor
-
-fuelHandlingLoss =
-    1 + element.handlingRisk * 0.8
-
-effectiveFuelEnergy =
-    fuelEnergyDensity * driveEfficiency / fuelHandlingLoss
+specificEnergy(Z) = bindingPeak - bindingPerNucleon(Z)     // МэВ/нуклон
 ```
 
-If `effectiveFuelEnergy` is too low, the drive can still burn it but the route
-becomes uneconomical.
+Ноль ровно на железе, растёт в обе стороны. H = 8.79, U = 1.14, Fe = 0.16.
+Перевод в доли c² — делением на `NUCLEON_REST_MEV`, поэтому ядерная и
+кинетическая энергия считаются в одних единицах без подгоночных множителей.
+
+Размен, который держит выбор топлива живым:
+
+| | на единицу МАССЫ | на единицу ОБЪЁМА |
+|---|---|---|
+| синтез (H) | 8.79 | 1.5 |
+| деление (U) | 1.14 | 18.7 |
+
+Синтез в 7.7x сильнее на массу, деление в 12.6x на объём. Бункер ограничен
+объёмом — поэтому стартовый корабль это ЯРД на тории с водородным рабочим
+телом, ровно как NERVA. Обе проверки закреплены в `balance_test`.
+
+Три семейства двигателей (`drive.h`):
+
+```text
+Thermal  ve ~ sqrt(2*T/A)      греет рабочее тело; нужно лёгкое; высокая тяга
+Ion      ve ~ sqrt(V)/A^0.22   разгоняет полем; выгодно плотное; тяга мизерная
+Torch    ve ~ sqrt(2*E/c²)     топливо И ЕСТЬ выхлоп; второй бак не нужен
+```
+
+Что движок вообще примет как топливо, решает не `specificEnergy`, а
+`max(fusionFuelTrait, fissionFuelTrait)`: энергия в ядре может БЫТЬ, но
+кулоновский барьер и окно делимости до неё не пускают. Поэтому свинец
+реактором не накормить, а сверхтяжёлые отсекаются сами.
 
 ## Movement Fuel Cost
 
-During acceleration:
-
 ```text
-deltaV = acceleration * dt
-kineticCost =
-    0.5 * shipMass * deltaV^2
-fuelMassConsumed =
-    kineticCost / max(epsilon, effectiveFuelEnergy)
+propellantMass = finalMass * (exp(deltaV * DELTAV_SCALE / ve) - 1)   // Циолковский
+fuelMass       = 0.5 * propellantMass * ve^2 / (specificEnergy/931.5 * jetEfficiency)
 ```
 
-During braking, choose one of two models:
+`DELTAV_SCALE` сжимает маршрутный delta-V перед экспонентой. Форма физики
+сохранена полностью (экспонента, внутренний оптимум, недостижимые маршруты),
+без множителя межзвёздные delta-V давали массовые числа в сотни.
 
-1. Conservative simple model: braking consumes fuel symmetrically.
-2. Later advanced model: partial regenerative braking for special drives.
+Скорость истечения — свободный параметр с настоящим оптимумом:
 
-Use option 1 first. It is easier to understand and creates real route cost.
+```text
+cost(ve) = (e^(dV/ve) - 1) * M * [ Pp/mu_p + Pf*ve^2 / (2*E*mu_f) ]
+```
+
+Слева экспонента наказывает низкую ve, справа энергия наказывает высокую.
+Минимум внутри, и его положение зависит от ЛОКАЛЬНЫХ цен на топливо и рабочее
+тело — то есть выгодный режим двигателя меняется от системы к системе.
+`shipRouteCost` ищет его сканированием по логарифму, отбрасывая режимы, не
+влезающие в баки, затем сдвигает результат ручкой `throttleBias`.
 
 ## Route Viability
 
