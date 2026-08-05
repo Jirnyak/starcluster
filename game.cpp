@@ -1630,22 +1630,39 @@ TradePlan findBestTrade(const Game& game, const Agent& agent) {
     if (!validFaction(game, agent.ship.ownerFaction)) return best;
 
     const Market& source = game.markets[current];
+
+    // Направления, о которых фракция вообще что-то знает, отбираются ОДИН РАЗ.
+    // Проверки знания от элемента не зависят, а раньше стояли внутри цикла по
+    // элементам и повторялись для каждого из 118 — стократно лишняя работа в
+    // самом горячем месте симуляции (в профиле factionKnowsOwnerAt был первым
+    // по времени). Порядок и состав списка те же, поведение ИИ не меняется.
+    const int destinationSamples = sampledStarCount(game, 96, 96);
+    std::vector<int> knownDestinations;
+    knownDestinations.reserve(size_t(destinationSamples));
+    for (int sample = 0; sample < destinationSamples; ++sample) {
+        const int dest = sampledStarAt(game, sample, destinationSamples);
+        if (dest == current || dest < 0 || dest >= int(game.markets.size())) continue;
+        if (!game.factionKnowsOwnerAt(agent.ship.ownerFaction, current, dest)) continue;
+        if (!game.factionKnowsMarketAt(agent.ship.ownerFaction, current, dest)) continue;
+        knownDestinations.push_back(dest);
+    }
+    if (knownDestinations.empty()) return best;
+
+    // Тариф и свободный объём трюма тоже не зависят от элемента.
+    const double localTariff = tariffFor(game, current, agent.ship.ownerFaction, 0.014);
+    const double cargoSpace = std::max(0.0, agent.ship.cargoCapacity - shipCargoMass(agent.ship));
+
     for (size_t element = 0; element < source.prices.size(); ++element) {
         const double buyPrice = source.prices[element];
         const double available = source.supply[element].amount;
         if (buyPrice <= 0.0 || available <= 0.01) continue;
 
-        const double cargoSpace = std::max(0.0, agent.ship.cargoCapacity - shipCargoMass(agent.ship));
         const double massLimitedAmount = cargoSpace / resourceUnitMassByIndex(int(element));
         const double amount = std::min(massLimitedAmount, std::min(available, agent.money / buyPrice));
         if (amount <= 0.01) continue;
 
-        const int destinationSamples = sampledStarCount(game, 96, 96);
-        for (int sample = 0; sample < destinationSamples; ++sample) {
-            const int dest = sampledStarAt(game, sample, destinationSamples);
-            if (dest == current || dest < 0 || dest >= int(game.markets.size())) continue;
-            if (!game.factionKnowsOwnerAt(agent.ship.ownerFaction, current, dest)) continue;
-            if (!game.factionKnowsMarketAt(agent.ship.ownerFaction, current, dest)) continue;
+        for (size_t d = 0; d < knownDestinations.size(); ++d) {
+            const int dest = knownDestinations[d];
 
             const double sellPrice = game.factionKnownPriceAt(agent.ship.ownerFaction, current, dest, int(element));
             const double spread = sellPrice - buyPrice;
@@ -1661,9 +1678,8 @@ TradePlan findBestTrade(const Game& game, const Agent& agent) {
             const double years = plannedRouteTravelTime(game, routeShip, current, dest);
             const RouteCost need = plannedRouteCost(game, routeShip, current, dest);
             if (!need.feasible) continue;
-            const double fuelCost = refillCost(game, routeShip, current, need) *
-                (1.0 + tariffFor(game, current, agent.ship.ownerFaction, 0.014));
-            const double cargoCost = amount * buyPrice * (1.0 + tariffFor(game, current, agent.ship.ownerFaction, 0.014));
+            const double fuelCost = refillCost(game, routeShip, current, need) * (1.0 + localTariff);
+            const double cargoCost = amount * buyPrice * (1.0 + localTariff);
             if (cargoCost + fuelCost > agent.money) continue;
             const double stalePricePenalty = amount * sellPrice * (1.0 - confidence) * (0.45 + (1.0 - agent.riskTolerance) * 0.75);
             const double routeThreat = game.factionRouteThreatRisk(agent.ship.ownerFaction, current, dest);

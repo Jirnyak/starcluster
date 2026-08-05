@@ -621,6 +621,11 @@ that interface silently failed twice.
   are not synchronized with the current source list.
 - Startup generates 10,000 systems and takes several seconds with no loading
   screen.
+- A game-year of simulation costs about 160 ms at 10,000 systems and roughly a
+  thousand agents. That is 16% of a second at 1 year/second and fine, but it
+  cannot sustain the higher speed multipliers: the loop caps its substeps and
+  falls behind instead. Most of what remains is the market substitution model
+  and the RNG, not routing.
 - Additional trading licences (each granting another ship and raising the quota)
   are modelled in `Game::licenceCount` but cannot be purchased yet.
 - There is no arbitrage screen: the player must remember price spreads manually
