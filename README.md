@@ -296,6 +296,12 @@ wider than 0.052c anywhere in the spectrum so speed can be grown gradually.
 Flight inside a system is free: fuel and propellant are spent only on
 interstellar legs.
 
+STOP brakes rather than teleports to rest — the ship kills its speed on its own
+thrust, burns both consumables doing it, and coasts a real distance meanwhile. A
+ship halted between systems is docked at none of them, so routes are measured
+from where it actually is rather than from the port it left, trading is out of
+reach until it makes port again, and it can depart for any system at all.
+
 Mixtures average strictly by mass, so blending never beats its best component:
 there is no exploit hiding in there.
 

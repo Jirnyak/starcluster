@@ -627,8 +627,24 @@ void drawAgentPanel(SDL_Renderer* renderer, const Game& game, int agentIndex, in
 
     const ClusterStar* here = starAt(game, agent.currentStar);
     const ClusterStar* dest = starAt(game, agent.destStar);
-    drawText(renderer, x + 10, y + 46, std::string("FROM ") + (here ? here->name : "-"), P.text, 1);
-    drawText(renderer, x + 10, y + 59, std::string("TO   ") + (dest ? dest->name : "-"), P.text, 1);
+    // Экстренное торможение — это НЕ мгновенная остановка: корабль гасит
+    // скорость той же тягой и на то же топливо, что и разгонялся, и по дороге
+    // пролетает по инерции. Без явной строки это выглядит как «кнопка не
+    // сработала»: линия маршрута пропадает сразу, а корабль ещё летит.
+    const bool braking = agent.ship.enRoute && agent.ship.targetStar == -2;
+    const bool adrift = !agent.ship.enRoute && !here;
+    if (braking) {
+        char brake[64];
+        std::snprintf(brake, sizeof(brake), "BRAKING  %.3FC -> 0", speedOf(agent));
+        drawText(renderer, x + 10, y + 46, brake, P.red, 1);
+        drawText(renderer, x + 10, y + 59, "BURNING FUEL TO STOP", P.amber, 1);
+    } else if (adrift) {
+        drawText(renderer, x + 10, y + 46, "ADRIFT - NO PORT", P.amber, 1);
+        drawText(renderer, x + 10, y + 59, std::string("TO   ") + (dest ? dest->name : "-"), P.text, 1);
+    } else {
+        drawText(renderer, x + 10, y + 46, std::string("FROM ") + (here ? here->name : "-"), P.text, 1);
+        drawText(renderer, x + 10, y + 59, std::string("TO   ") + (dest ? dest->name : "-"), P.text, 1);
+    }
 
     labelBar(renderer, x + 10, y + 75, w - 20, "CARGO", shipCargoMass(agent.ship) / std::max(1.0, agent.ship.cargoCapacity), P.amber);
 

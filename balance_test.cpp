@@ -893,6 +893,140 @@ void testSpeedLadderIsSmooth() {
           "лестница скоростей гладкая", buf);
 }
 
+
+// Экстренная остановка (STOP) — это ТОРМОЖЕНИЕ той же моделью, а не телепорт
+// в ноль: корабль гасит скорость своей же тягой, честно жжёт оба расходника и
+// по инерции пролетает заметное расстояние. А встав между систем, он больше
+// НИ К ОДНОЙ не пристыкован — иначе маршруты считались бы от порта вылета
+// (замер: 9.6 ly вместо реальных 3.6), а с рынком за световые годы можно было
+// бы торговать прямо из пустоты.
+void testEmergencyStopIsPhysical() {
+    Game g;
+    buildWorld(g, 42, 12);
+    const int pa = g.playerAgent;
+    const int home = g.agents[pa].currentStar;
+    int target = -1;
+    double bestDist = 0.0;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        if (int(i) == home) continue;
+        const double d = g.routeDistance(home, int(i));
+        if (d > bestDist && d < 10.0) { bestDist = d; target = int(i); }
+    }
+    if (target < 0) { check(false, "экстренная остановка физична", "нет цели"); return; }
+
+    Ship& ship = g.agents[pa].ship;
+    ship.fuelVolume *= 8.0;
+    ship.propellantVolume *= 8.0;
+    ship.fuel.clear();
+    ship.propellant.clear();
+    const int fe = shipDominantFuelElement(ship);
+    const int pe = shipDominantPropellantElement(ship);
+    ship.fuel.push_back(Resource(elementDefinitions()[fe].symbol,
+                                 ship.fuelVolume / elementUnitVolume(fe)));
+    ship.propellant.push_back(Resource(elementDefinitions()[pe].symbol,
+                                       ship.propellantVolume / elementUnitVolume(pe)));
+
+    g.commandAgentToStar(pa, target);
+    for (int i = 0; i < 200 && g.agents[pa].ship.enRoute; ++i) g.update(0.25);
+
+    const double fuel0 = shipFuelMix(ship).mass;
+    const double prop0 = shipPropellantMix(ship).mass;
+    const double x0 = ship.x, y0 = ship.y, z0 = ship.z;
+    const double t0 = g.time;
+    g.abortAgentRoute(pa);
+    // Одного тика заведомо мало: если корабль встал сразу, торможения нет.
+    g.update(0.25);
+    const bool stillMoving = g.agents[pa].ship.enRoute;
+    int ticks = 0;
+    while (g.agents[pa].ship.enRoute && ticks < 20000) { g.update(0.05); ++ticks; }
+
+    const double coasted = std::sqrt((ship.x - x0) * (ship.x - x0) +
+                                     (ship.y - y0) * (ship.y - y0) +
+                                     (ship.z - z0) * (ship.z - z0));
+    const double burnedFuel = fuel0 - shipFuelMix(ship).mass;
+    const double burnedProp = prop0 - shipPropellantMix(ship).mass;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "остановка %.1f года, по инерции %.2f ly, сожжено %.1f топлива и %.1f рабтела",
+        g.time - t0, coasted, burnedFuel, burnedProp);
+    check(stillMoving && g.time - t0 > 1.0 && coasted > 0.05 &&
+          burnedFuel > 0.0 && burnedProp > 0.0,
+          "экстренная остановка физична", buf);
+}
+
+// После остановки между систем перемещение обязано считаться от КООРДИНАТ
+// корабля, а не от звезды, к которой он формально приписан, и торговать из
+// пустоты нельзя. Улететь при этом можно к любой системе.
+void testAdriftShipRoutesByCoordinates() {
+    Game g;
+    buildWorld(g, 42, 12);
+    const int pa = g.playerAgent;
+    const int home = g.agents[pa].currentStar;
+    int target = -1;
+    double bestDist = 0.0;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        if (int(i) == home) continue;
+        const double d = g.routeDistance(home, int(i));
+        if (d > bestDist && d < 10.0) { bestDist = d; target = int(i); }
+    }
+    if (target < 0) { check(false, "дрейф считается по координатам", "нет цели"); return; }
+
+    Ship& ship = g.agents[pa].ship;
+    ship.fuelVolume *= 8.0;
+    ship.propellantVolume *= 8.0;
+    ship.fuel.clear();
+    ship.propellant.clear();
+    const int fe = shipDominantFuelElement(ship);
+    const int pe = shipDominantPropellantElement(ship);
+    ship.fuel.push_back(Resource(elementDefinitions()[fe].symbol,
+                                 ship.fuelVolume / elementUnitVolume(fe)));
+    ship.propellant.push_back(Resource(elementDefinitions()[pe].symbol,
+                                       ship.propellantVolume / elementUnitVolume(pe)));
+
+    g.commandAgentToStar(pa, target);
+    for (int i = 0; i < 200 && g.agents[pa].ship.enRoute; ++i) g.update(0.25);
+    g.abortAgentRoute(pa);
+    int ticks = 0;
+    while (g.agents[pa].ship.enRoute && ticks < 20000) { g.update(0.05); ++ticks; }
+
+    const bool undocked = g.agents[pa].currentStar < 0;
+    const bool tradeBlocked = !g.agentBuyElementAmount(pa, elementIndex("Fe"), 1.0);
+
+    // Дистанция до цели: по факту от корабля, а не от порта вылета.
+    const ClusterStar& T = g.cluster.stars[target];
+    const ClusterStar& H = g.cluster.stars[home];
+    const double fromShip = std::sqrt((ship.x - T.x) * (ship.x - T.x) +
+                                      (ship.y - T.y) * (ship.y - T.y) +
+                                      (ship.z - T.z) * (ship.z - T.z));
+    const double fromHome = std::sqrt((H.x - T.x) * (H.x - T.x) +
+                                      (H.y - T.y) * (H.y - T.y) +
+                                      (H.z - T.z) * (H.z - T.z));
+    const double reported = g.agentRouteDistance(pa, target);
+
+    // И из пустоты можно улететь к произвольной системе, а не только к «своей».
+    int other = -1;
+    double nearest = 1e18;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        if (int(i) == target) continue;
+        const ClusterStar& C = g.cluster.stars[i];
+        const double d = std::sqrt((ship.x - C.x) * (ship.x - C.x) +
+                                   (ship.y - C.y) * (ship.y - C.y) +
+                                   (ship.z - C.z) * (ship.z - C.z));
+        if (d < nearest) { nearest = d; other = int(i); }
+    }
+    const bool departed = other >= 0 && g.commandAgentToStar(pa, other);
+    int t2 = 0;
+    while (g.agents[pa].ship.enRoute && t2 < 40000) { g.update(0.05); ++t2; }
+    const bool arrived = g.agents[pa].currentStar == other;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "от корабля %.2f ly (от порта было бы %.2f), API даёт %.2f; вылет %s, стыковка %s",
+        fromShip, fromHome, reported, departed ? "ок" : "ОТКАЗ", arrived ? "ок" : "НЕТ");
+    check(undocked && tradeBlocked && std::fabs(reported - fromShip) < 0.05 &&
+          departed && arrived,
+          "дрейф считается по координатам", buf);
+}
+
 } // namespace
 
 int main() {
@@ -923,6 +1057,8 @@ int main() {
     testRapidityDivergesNearLight();
     testDockedAndLocalFlightAreFree();
     testSpeedLadderIsSmooth();
+    testEmergencyStopIsPhysical();
+    testAdriftShipRoutesByCoordinates();
     testDriveSlotExclusive();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;

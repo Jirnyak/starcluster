@@ -1983,7 +1983,11 @@ void buyCargo(Game& game, Agent& agent, int starIndex, const TradePlan& plan) {
 
 bool startJourney(Game& game, Agent& agent, int destStar) {
     if (destStar < 0 || destStar == agent.currentStar) return false;
-    if (!validStar(game, agent.currentStar) || !validStar(game, destStar)) return false;
+    if (!validStar(game, destStar)) return false;
+    // Из пустоты летим НАПРЯМУЮ от координат корабля: звёздный граф нужен лишь
+    // для выбора промежуточных портов, а когда порта под ногами нет, выбирать
+    // нечего. Перемещение привязано к координатам, а не к системам.
+    const bool docked = validStar(game, agent.currentStar);
     double propellantPrice = 1.0;
     double fuelPrice = 1.0;
     routePrices(game, agent.ship, agent.currentStar, propellantPrice, fuelPrice);
@@ -2000,16 +2004,19 @@ bool startJourney(Game& game, Agent& agent, int destStar) {
     // дальше не меняется: планировщик и реальный расход считают по одной ve.
     shipTuneDrive(agent.ship, propellantPrice, fuelPrice);
 
-    const double directDistance = distanceBetween(game.cluster.stars[agent.currentStar], game.cluster.stars[destStar]);
+    // Дистанция всегда от ФАКТИЧЕСКОГО положения корабля, а не от звезды, к
+    // которой он формально приписан: после экстренной остановки это разные
+    // точки, иногда на световые годы.
+    const double directDistance = distanceShipToStar(agent.ship, game.cluster.stars[destStar]);
     const RouteCost directNeed = legCost(agent.ship, directDistance, propellantPrice, fuelPrice);
-    if (!agent.playerControlled) buyRouteConsumables(game, agent, agent.currentStar, directNeed);
+    if (!agent.playerControlled && docked) buyRouteConsumables(game, agent, agent.currentStar, directNeed);
 
-    const bool direct = shipCanFlyDirect(agent.ship, directDistance);
+    const bool direct = !docked || shipCanFlyDirect(agent.ship, directDistance);
     const int legStar = direct ? destStar : game.routeNextStar(agent.currentStar, destStar);
     if (!validStar(game, legStar) || legStar == agent.currentStar) return false;
-    const double distance = distanceBetween(game.cluster.stars[agent.currentStar], game.cluster.stars[legStar]);
+    const double distance = distanceShipToStar(agent.ship, game.cluster.stars[legStar]);
     const RouteCost need = legCost(agent.ship, distance, propellantPrice, fuelPrice);
-    if (!agent.playerControlled) buyRouteConsumables(game, agent, agent.currentStar, need);
+    if (!agent.playerControlled && docked) buyRouteConsumables(game, agent, agent.currentStar, need);
     if (!need.feasible) {
         // Пара движок/рабочее тело физически не тянет это плечо — доливать
         // бесполезно, надо менять схему.
@@ -4491,6 +4498,13 @@ void Game::updateAgents(double dt) {
                     agent.ship.vx = agent.ship.vy = agent.ship.vz = 0.0;
                     agent.ship.enRoute = false;
                     agent.ship.targetStar = -1;
+                    // Корабль встал МЕЖДУ системами и больше ни к одной не
+                    // пристыкован. Без этого currentStar продолжал указывать на
+                    // порт вылета: маршруты считались от звезды, а не от
+                    // корабля (9.6 ly вместо реальных 3.6), и с рынком за
+                    // световые годы можно было торговать прямо из пустоты.
+                    // Все ветки «не в системе» уже есть и включаются отсюда.
+                    agent.currentStar = -1;
                     agent.lastAction = "stopped in deep space";
                 } else {
                     const double accel = shipCurrentAcceleration(agent.ship);

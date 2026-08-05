@@ -673,7 +673,13 @@ int main(int argc, char** argv) {
             specs.push_back(Spec{ACT_ENTER, "L ENTER", UI::P.cyan, true, false});
             specs.push_back(Spec{ACT_GO, "G GO", UI::P.green,
                                  selectedStar >= 0 && game.playerAgent >= 0 && !enRoute, false});
-            specs.push_back(Spec{ACT_STOP, "X STOP", UI::P.amber, enRoute, false});
+            // Пока корабль гасит скорость, STOP уже нажат — показываем это,
+            // иначе кажется, что кнопка не сработала.
+            const bool braking = game.playerAgent >= 0 &&
+                game.agents[game.playerAgent].ship.enRoute &&
+                game.agents[game.playerAgent].ship.targetStar == -2;
+            specs.push_back(Spec{ACT_STOP, braking ? "X BRAKING" : "X STOP",
+                                 braking ? UI::P.red : UI::P.amber, enRoute && !braking, false});
             specs.push_back(Spec{ACT_TRADE, "T TRADE", UI::P.cyan, anchorStar() >= 0, false});
             specs.push_back(Spec{ACT_SHIPFIT, "U FIT", UI::P.cyan, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_SWITCH, "W SWITCH", UI::P.amber, game.playerAgent >= 0, false});
