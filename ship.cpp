@@ -230,6 +230,16 @@ const std::vector<ShipClass>& shipClasses() {
     return classes;
 }
 
+double shipClassMaxSpeed(const ShipClass& sc) {
+    // Ступень корпуса по цене: 10^4 (стартовый) .. 10^15 (крепость).
+    const double tier = std::max(0.0, std::min(1.0,
+        (std::log10(std::max(1.0, sc.price)) - 4.0) / 11.0));
+    // Роль внутри ступени: тяга на единицу сухой массы, 0.15 .. 1.2 по таблице.
+    const double agility = std::max(0.0, std::min(1.0,
+        (sc.driveThrust / std::max(1.0, sc.dryMass) - 0.15) / 1.05));
+    return 0.10 + 0.42 * std::max(0.0, std::min(1.0, 0.65 * tier + 0.35 * agility));
+}
+
 double resourceUnitMassByIndex(int elementIndex) {
     return elementUnitMass(elementIndex);
 }
@@ -698,6 +708,9 @@ void fillTank(std::vector<Resource>& dest, int elementIdx, double capacity, doub
 }
 
 void shipApplyClass(Ship& ship, const ShipClass& sc) {
+    // Скорость — часть лестницы корпусов. Раньше её тут не было вовсе, и
+    // покупка нового корабля не давала ни единицы скорости.
+    ship.speed = shipClassMaxSpeed(sc);
     ship.cargoCapacity = sc.cargoCapacity;
     ship.heavyWeapons = sc.heavyWeapons;
     ship.lightWeapons = sc.lightWeapons;

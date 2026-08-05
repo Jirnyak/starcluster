@@ -287,6 +287,15 @@ which is also true of reality. The compression preserves the entire shape of the
 physics — the exponential, the optimum, the reachability wall — and moves only
 the scale.
 
+Hull top speed is part of the ladder rather than a constant, and it is derived
+from the class table's own fields — price tier for the overall level, thrust to
+dry mass for the role within it. The starter Hauler runs at 0.121c and a Titan
+at 0.488c, freighters always trailing fighters of the same tier, with no gap
+wider than 0.052c anywhere in the spectrum so speed can be grown gradually.
+
+Flight inside a system is free: fuel and propellant are spent only on
+interstellar legs.
+
 Mixtures average strictly by mass, so blending never beats its best component:
 there is no exploit hiding in there.
 

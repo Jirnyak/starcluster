@@ -832,6 +832,67 @@ void testRapidityDivergesNearLight() {
           "быстрота расходится у светового предела", buf);
 }
 
+
+// Локальный полёт (клавиша L) обязан быть БЕСПЛАТНЫМ: внутрисистемные манёвры
+// топливо не жгут, оно тратится только на межзвёздные плечи. Сейчас это верно
+// «по построению» — local*.cpp вообще не знает про баки, — но именно поэтому
+// проверка и нужна: молча сломать такую гарантию проще всего.
+void testDockedAndLocalFlightAreFree() {
+    Game g;
+    buildWorld(g, 42, 8);
+    const int pa = g.playerAgent;
+    Ship& ship = g.agents[pa].ship;
+    ship.enRoute = false;
+    ship.targetStar = -1;
+    ship.vx = ship.vy = ship.vz = 0.0;
+
+    const double fuel0 = shipFuelMix(ship).mass;
+    const double prop0 = shipPropellantMix(ship).mass;
+    for (int i = 0; i < 400; ++i) g.update(0.25);   // сто лет на стоянке
+    const double fuel1 = shipFuelMix(g.agents[pa].ship).mass;
+    const double prop1 = shipPropellantMix(g.agents[pa].ship).mass;
+
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "за 100 лет в системе: топливо %.3f -> %.3f, рабтело %.3f -> %.3f",
+        fuel0, fuel1, prop0, prop1);
+    check(std::fabs(fuel1 - fuel0) < 1e-9 && std::fabs(prop1 - prop0) < 1e-9,
+          "полёт внутри системы бесплатен", buf);
+}
+
+// Лестница корпусов по скорости: стартовый около 0.12c, топовый около 0.5c,
+// и она МОНОТОННА по ступени цены. Скорость выводится из полей самой таблицы
+// (цена и тяговооружённость), поэтому разъехаться при правке класса не может.
+void testSpeedLadderIsSmooth() {
+    const std::vector<ShipClass>& classes = shipClasses();
+    std::vector<double> speeds;
+    double starter = 0.0;
+    for (size_t i = 0; i < classes.size(); ++i) {
+        const double v = shipClassMaxSpeed(classes[i]);
+        speeds.push_back(v);
+        if (classes[i].name == "Hauler") starter = v;
+    }
+    std::sort(speeds.begin(), speeds.end());
+
+    // Дыра меряется по ОТСОРТИРОВАННОМУ спектру, а не по порядку в таблице:
+    // таблица чередует роли, и «скачок» между грузовозом и линкором — это не
+    // дыра, а разброс. Дыра — это когда расти по скорости приходится прыжком,
+    // потому что корпуса на промежуточную скорость просто не существует.
+    double worstGap = 0.0;
+    double gapAt = 0.0;
+    for (size_t i = 1; i < speeds.size(); ++i) {
+        if (speeds[i] - speeds[i - 1] > worstGap) {
+            worstGap = speeds[i] - speeds[i - 1];
+            gapAt = speeds[i - 1];
+        }
+    }
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "стартовый %.3fc, топовый %.3fc, худшая дыра в спектре %.3fc (на %.3fc)",
+        starter, speeds.back(), worstGap, gapAt);
+    check(starter > 0.10 && starter < 0.15 && speeds.back() > 0.45 && speeds.back() <= 0.5 &&
+          worstGap < 0.07,
+          "лестница скоростей гладкая", buf);
+}
+
 } // namespace
 
 int main() {
@@ -860,6 +921,8 @@ int main() {
     testSlowCruiseIsCheaper();
     testOptimalBeatsDefaults();
     testRapidityDivergesNearLight();
+    testDockedAndLocalFlightAreFree();
+    testSpeedLadderIsSmooth();
     testDriveSlotExclusive();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;

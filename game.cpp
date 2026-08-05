@@ -3948,10 +3948,16 @@ void Game::init(size_t num_stars) {
     const ClusterStar& playerHome = cluster.stars[playerStart];
     // Имя = класс из shipClasses(): иначе buyShip не находит текущий корпус и не
     // засчитывает его стоимость (см. комментарий у класса "Hauler" в ship.cpp).
-    Ship playerShip("Hauler", playerHome.x, playerHome.y, playerHome.z, 0.28, playerFaction);
-    playerShip.cargoCapacity = 110.0;
+    Ship playerShip("Hauler", playerHome.x, playerHome.y, playerHome.z, 0.12, playerFaction);
     playerShip.acceleration = 0.22;
-    shipAutofit(playerShip);
+    // Стартовый корпус берётся ИЗ ТАБЛИЦЫ целиком, включая потолок скорости:
+    // так лестница корпусов начинается ровно там, где написано в классе, и
+    // покупка следующего корабля даёт реальную прибавку хода.
+    for (size_t c = 0; c < shipClasses().size(); ++c) {
+        if (shipClasses()[c].name != "Hauler") continue;
+        shipApplyClass(playerShip, shipClasses()[c]);
+        break;
+    }
     Agent player("player", playerShip);
     player.playerControlled = true;
     player.currentStar = playerStart;
@@ -4009,7 +4015,7 @@ void Game::init(size_t num_stars) {
             start = factions[owner].controlledStars[i % int(factions[owner].controlledStars.size())];
         }
         const ClusterStar& star = cluster.stars[start];
-        const double maxSpeed = 0.1 + 0.4 * double((i * 17) % 100) / 99.0;
+        const double maxSpeed = 0.11 + 0.16 * double((i * 17) % 100) / 99.0;
         Ship ship("Trader_" + std::to_string(i + 1), star.x, star.y, star.z, maxSpeed, owner);
         ship.cargoCapacity = 45.0 + double((i * 13) % 90);
         ship.acceleration = 0.12 + 0.16 * double((i * 11) % 100) / 99.0;
@@ -4032,7 +4038,7 @@ void Game::init(size_t num_stars) {
         for (int i = 0; i < perFactionPatrol; ++i) {
             const int start = factions[f].controlledStars[i % int(factions[f].controlledStars.size())];
             const ClusterStar& star = cluster.stars[start];
-            Ship ship(factions[f].name + "_Patrol_" + std::to_string(i + 1), star.x, star.y, star.z, 0.18 + 0.05 * i, f);
+            Ship ship(factions[f].name + "_Patrol_" + std::to_string(i + 1), star.x, star.y, star.z, 0.13 + 0.03 * i, f);
             ship.cargoCapacity = 70.0 + 18.0 * i;
             ship.acceleration = 0.18 + 0.03 * i;
             shipAutofit(ship);
@@ -4050,7 +4056,7 @@ void Game::init(size_t num_stars) {
         for (int i = 0; i < perFactionColonist; ++i) {
             const int start = factions[f].controlledStars[(i + 1) % int(factions[f].controlledStars.size())];
             const ClusterStar& star = cluster.stars[start];
-            Ship ship(factions[f].name + "_Charter_" + std::to_string(i + 1), star.x, star.y, star.z, 0.12 + 0.025 * i, f);
+            Ship ship(factions[f].name + "_Charter_" + std::to_string(i + 1), star.x, star.y, star.z, 0.11 + 0.015 * i, f);
             ship.cargoCapacity = 240.0 + 80.0 * i;
             ship.acceleration = 0.11 + 0.02 * i;
             shipAutofit(ship);
@@ -4069,7 +4075,7 @@ void Game::init(size_t num_stars) {
         for (int i = 0; i < perFactionScout; ++i) {
             const int scoutStart = factions[f].controlledStars[i % int(factions[f].controlledStars.size())];
             const ClusterStar& scoutStar = cluster.stars[scoutStart];
-            Ship scoutShip(factions[f].name + "_Scout_" + std::to_string(i + 1), scoutStar.x, scoutStar.y, scoutStar.z, 0.32, f);
+            Ship scoutShip(factions[f].name + "_Scout_" + std::to_string(i + 1), scoutStar.x, scoutStar.y, scoutStar.z, 0.22, f);
             scoutShip.cargoCapacity = 35.0;
             scoutShip.acceleration = 0.24;
             shipAutofit(scoutShip);
@@ -4088,7 +4094,7 @@ void Game::init(size_t num_stars) {
         for (int i = 0; i < perFactionPirate; ++i) {
             const int pirateStart = factions[f].controlledStars[(f + 2 + i) % int(factions[f].controlledStars.size())];
             const ClusterStar& pirateStar = cluster.stars[pirateStart];
-            Ship pirateShip(factions[f].name + "_Raider_" + std::to_string(i + 1), pirateStar.x, pirateStar.y, pirateStar.z, 0.26, f);
+            Ship pirateShip(factions[f].name + "_Raider_" + std::to_string(i + 1), pirateStar.x, pirateStar.y, pirateStar.z, 0.18, f);
             pirateShip.cargoCapacity = 80.0;
             pirateShip.acceleration = 0.20;
             shipAutofit(pirateShip);
@@ -4111,7 +4117,7 @@ void Game::init(size_t num_stars) {
             factions[owner].controlledStars[(i + 2) % int(factions[owner].controlledStars.size())] :
             randomer(rng, int(num_stars) - 1);
         const ClusterStar& star = cluster.stars[start];
-        Ship ship("Adventurer_" + std::to_string(i + 1), star.x, star.y, star.z, 0.18 + 0.16 * double((i * 19) % 100) / 99.0, owner);
+        Ship ship("Adventurer_" + std::to_string(i + 1), star.x, star.y, star.z, 0.12 + 0.10 * double((i * 19) % 100) / 99.0, owner);
         ship.cargoCapacity = 38.0 + double((i * 29) % 70);
         ship.acceleration = 0.15 + 0.12 * double((i * 23) % 100) / 99.0;
         shipAutofit(ship);
@@ -5848,7 +5854,7 @@ bool Game::playerHireShip() {
 
     ClusterStar& star = cluster.stars[player.currentStar];
     const int fleetNumber = int(factions[playerFaction].fleetAgents.size()) + 1;
-    Ship ship("Freehold_Trader_" + std::to_string(fleetNumber), star.x, star.y, star.z, shipyard ? 0.24 : 0.19, playerFaction);
+    Ship ship("Freehold_Trader_" + std::to_string(fleetNumber), star.x, star.y, star.z, shipyard ? 0.17 : 0.13, playerFaction);
     ship.cargoCapacity = shipyard ? 95.0 + colonyShipHiringCapacity(colony) * 8.0 : 72.0;
     ship.acceleration = shipyard ? 0.19 + colonyShipHiringCapacity(colony) * 0.004 : 0.15;
     shipAutofit(ship);
