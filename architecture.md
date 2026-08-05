@@ -36,7 +36,11 @@ Legacy `civ.*`, `galaxy.*`, and `graphic.*` are not the active simulation path.
 Detailed implementation plans for future subsystem work:
 
 - `elements.md`: universal element traits from atomic number.
-- `ship.md`: ship mass, fuel, modules, and route fuel cost.
+- `ship.md`: ship mass, the fuel/propellant split, drive families, the
+  relativistic rocket equation with its reachability wall, the hull speed
+  ladder, and route cost.
+- `elements.md`: where density, ionization ease and specific nuclear energy
+  come from — all derived from shell physics and the binding curve.
 - `economy.md`: local markets, prices, stale snapshots, tariffs.
 - `factions.md`: faction budgets, relations, fleets, influence overlay.
 - `ai.md`: traders, scouts, couriers, military, adventurers.

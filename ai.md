@@ -106,6 +106,12 @@ score =
 Trader constraints:
 
 - must reserve enough fuel for route or refuel stop;
+- `fuelCost` here means BOTH consumables: the reactor fuel and the propellant
+  are separate substances with separate prices, and `refillCost` values the
+  shortfall of each at local rates;
+- a route can be refused as physically unreachable rather than merely
+  unaffordable: past the `k >= 1` wall no loadout completes the manoeuvre, and
+  the answer is a different drive, propellant or throttle, not more cargo space;
 - should not use live remote market truth unless debug/NPC omniscience is
   explicitly enabled;
 - should avoid war zones unless riskTolerance is high.

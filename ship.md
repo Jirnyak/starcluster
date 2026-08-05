@@ -98,31 +98,30 @@ Deferred:
 
 ## Target Fields
 
-Add gradually:
+Реализованная двигательная часть `Ship`:
 
 ```cpp
 struct Ship {
     double dryMass;
-    double moduleMass;
-    double cargoMass;
-    double fuelMass;
-    double maxCargoMass;
-    double fuelCapacityMass;
+    double driveThrust;             // mass * c / year
+    double driveEfficiency;         // 0..1
+    double speed;                   // потолок, доли c (см. shipClassMaxSpeed)
+    double acceleration;            // конструктивный предел, c/год
 
-    double driveThrust;       // mass * c / year
-    double driveEfficiency;   // 0..1
-    double maxSpeed;          // fraction of c
-    double heatCapacity;
-    double radiatorPower;
+    int driveIndex;                 // семейство и параметры движка (drive.h)
+    std::vector<Resource> fuel;     // СМЕСЬ в бункере
+    double fuelVolume;              // ёмкость бункера, в объёме
+    std::vector<Resource> propellant; // СМЕСЬ в баке
+    double propellantVolume;        // ёмкость бака, в объёме
+    double throttle;                // 0..1, режим: чем платим
+    double cruiseFraction;          // 0.2..1, доля от потолка скорости
+    double cruiseExhaust;           // зафиксированная рабочая точка, ve
 
-    int fuelElement = -1;     // element index used by current drive
-    double fuelReserve;       // amount units, converted to mass by element
-
-    std::vector<ShipModule> modules;
+    std::vector<int> modules;
 };
 ```
 
-Keep the current `speed` field temporarily as `maxSpeed` compatibility.
+Отложено: теплоёмкость и радиаторы, масса брони и оружия.
 
 ## Cargo Quantity And Mass
 
@@ -331,16 +330,22 @@ cost(ve) = P_prop * W(ve) + P_fuel * F(ve)
 Before accepting a route, estimate:
 
 ```text
-routeDistance = dist3d(origin, destination)
-deltaVBudget = routeDistanceFactor(routeDistance, maxSpeed, acceleration)
-fuelNeeded = estimateFuelForDeltaV(shipMass, deltaVBudget, fuelElement)
+peak            = min(shipCruiseSpeed(ship), sqrt(distance * accel))
+rapidityBudget  = 2 * artanh(peak)                  // складываются быстроты
+RouteCost cost  = shipRouteCost(ship, rapidityBudget, propPrice, fuelPrice)
 ```
 
-If current fuel is insufficient:
+`RouteCost` возвращает ОБА расходника в массе и признак `feasible`. Отказы
+теперь разные по смыслу, и UI их различает:
 
-- player route UI shows "insufficient fuel";
-- AI either buys fuel, chooses another route, or waits;
-- emergency drift can be added later but should be rare.
+- `feasible == false` — связка движок/рабочее тело физически не тянет плечо
+  (стена `k >= 1`), доливать бесполезно, надо менять схему;
+- не хватает топлива — «нечего жечь»;
+- не хватает рабочего тела — «нечего выбрасывать в сопло»;
+- перегруз трюма — грузить можно, взлетать нельзя.
+
+ИИ пользуется теми же функциями: `refillCost` считает докупку обоих
+расходников по локальным ценам и вычитается из ожидаемой прибыли рейса.
 
 ## Hull Speed Ladder
 
@@ -392,7 +397,9 @@ struct ShipModuleDef {
     double mass;
     double price;
     double cargoBonus;
-    double fuelCapacityBonus;
+    double propellantVolumeBonus;   // объём бака рабочего тела
+    double fuelVolumeBonus;         // объём топливного бункера
+    int driveIndex;                 // для слота Drive: какой движок ставится
     double thrustBonus;
     double efficiencyBonus;
     double sensorBonus;

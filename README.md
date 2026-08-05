@@ -619,6 +619,17 @@ that interface silently failed twice.
   are modelled in `Game::licenceCount` but cannot be purchased yet.
 - There is no arbitrage screen: the player must remember price spreads manually
   even though market age and confidence are already tracked per faction.
+- The propulsion model computes several quantities it does not yet spend:
+  `handlingRisk` only trims jet efficiency when it could carry radiation,
+  contraband status and hull wear; `nuclearStability` only picks the starting
+  fuel when it could decay a stored reserve. Specific heat, melting point and
+  neutron capture cross section are all derivable from the existing shell
+  physics and would give the thermal branch a real material ceiling and a third
+  consumable. See the closing section of `ship.md`.
+- `DELTAV_SCALE` compresses route delta-V 250-fold. The shape of the physics is
+  intact — exponential, cost optimum, reachability wall — but the magnitude is
+  a deliberate, documented fudge, because honest Tsiolkovsky makes interstellar
+  flight impossible on any fuel.
 
 
 ---
