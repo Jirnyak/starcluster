@@ -584,6 +584,78 @@ void testAshIgnoresHoldLimit() {
     check(landed > ship.cargoCapacity, "зола не режется вместимостью трюма", buf);
 }
 
+
+// Ручка режима двигателя: 0 — платим рабочим телом, 0.5 — ценовой оптимум,
+// 1 — платим топливом. Проверяем, что размен монотонный в обе стороны, иначе
+// ручка декоративна.
+void testThrottleTradesPropellantForFuel() {
+    Game g;
+    buildWorld(g, 42, 10);
+    Ship ship = g.agents[g.playerAgent].ship;
+
+    ship.throttle = 0.0;
+    const RouteCost bulk = shipRouteCost(ship, 0.4, 1.0, 1.0);
+    ship.throttle = 0.5;
+    const RouteCost mid = shipRouteCost(ship, 0.4, 1.0, 1.0);
+    ship.throttle = 1.0;
+    const RouteCost burn = shipRouteCost(ship, 0.4, 1.0, 1.0);
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "0.0: ve %.4f prop %.0f | 0.5: ve %.4f prop %.0f fuel %.0f | 1.0: ve %.4f fuel %.0f",
+        bulk.exhaustVelocity, bulk.propellantMass,
+        mid.exhaustVelocity, mid.propellantMass, mid.fuelMass,
+        burn.exhaustVelocity, burn.fuelMass);
+    // Скорость истечения растёт слева направо; рабочего тела становится меньше,
+    // топлива на форсаже — больше, чем в оптимуме.
+    const bool ok = bulk.feasible && mid.feasible && burn.feasible &&
+                    bulk.exhaustVelocity < mid.exhaustVelocity &&
+                    mid.exhaustVelocity < burn.exhaustVelocity &&
+                    bulk.propellantMass > mid.propellantMass &&
+                    mid.propellantMass > burn.propellantMass &&
+                    burn.fuelMass > mid.fuelMass;
+    check(ok, "ручка меняет рабочее тело на топливо", buf);
+}
+
+// Середина ручки обязана быть ценовым оптимумом СРЕДИ ВЛЕЗАЮЩИХ В БАКИ
+// режимов — это её точка отсчёта. Глобально дешевле бывает, но если под режим
+// негде возить рабочее тело, он бесполезен, и оптимизатор его не выбирает.
+// Если середина съедет, игрок по умолчанию полетит не оптимально и не узнает.
+void testThrottleMidpointIsCostOptimum() {
+    Game g;
+    buildWorld(g, 42, 10);
+    Ship ship = g.agents[g.playerAgent].ship;
+
+    const double propPrice = 3.0;
+    const double fuelPrice = 40.0;
+    const MixSummary pm = shipPropellantMix(ship);
+    const MixSummary fm = shipFuelMix(ship);
+    const double propVolPerMass = pm.mass > 0.0 ? pm.volume / pm.mass : 1.0;
+    const double fuelVolPerMass = fm.mass > 0.0 ? fm.volume / fm.mass : 1.0;
+
+    ship.throttle = 0.5;
+    const RouteCost mid = shipRouteCost(ship, 0.4, propPrice, fuelPrice);
+    const double midCost = mid.propellantMass * propPrice + mid.fuelMass * fuelPrice;
+
+    double best = midCost;
+    double bestT = 0.5;
+    int fitting = 0;
+    for (int i = 0; i <= 40; ++i) {
+        ship.throttle = double(i) / 40.0;
+        const RouteCost r = shipRouteCost(ship, 0.4, propPrice, fuelPrice);
+        if (!r.feasible) continue;
+        // Считаем только те режимы, под которые реально есть ёмкости.
+        if (r.propellantMass * propVolPerMass > ship.propellantVolume) continue;
+        if (r.fuelMass * fuelVolPerMass > shipFuelTankVolume(ship)) continue;
+        ++fitting;
+        const double c = r.propellantMass * propPrice + r.fuelMass * fuelPrice;
+        if (c < best) { best = c; bestT = ship.throttle; }
+    }
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "середина %.0f Cr, лучшее из %d влезающих %.0f Cr при t=%.2f",
+        midCost, fitting, best, bestT);
+    check(fitting > 1 && best >= midCost * 0.97, "середина ручки — оптимум среди влезающих", buf);
+}
+
 } // namespace
 
 int main() {
@@ -606,6 +678,8 @@ int main() {
     testSelfFuelBeatsStation();
     testOverloadAllowedButGrounds();
     testAshIgnoresHoldLimit();
+    testThrottleTradesPropellantForFuel();
+    testThrottleMidpointIsCostOptimum();
     testDriveSlotExclusive();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;

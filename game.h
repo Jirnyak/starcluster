@@ -310,6 +310,9 @@ public:
     // Ручной перелив из трюма: бесплатно, но возить элемент надо самому.
     double agentLoadFuelFromCargo(int agentIndex, int elementIdx, double units);
     double agentLoadPropellantFromCargo(int agentIndex, int elementIdx, double units);
+    // Режим двигателя 0..1: 0 — платим рабочим телом, 0.5 — ценовой оптимум,
+    // 1 — платим топливом (максимальная скорость истечения).
+    void agentSetThrottle(int agentIndex, double throttle);
     // Выбросить груз за борт: единственный выход, если перегрузился вдали от рынка.
     double agentJettisonCargo(int agentIndex, int elementIdx, double units);
     double agentDrainFuelToCargo(int agentIndex, int elementIdx, double units);

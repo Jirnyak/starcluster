@@ -300,6 +300,25 @@ void testHoldArrowsMoveMatter() {
         UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, j.x + j.w / 2, j.y + j.h / 2, SDL_BUTTON_LEFT);
     }
     check(amountOf(ship.cargo, "Xe") == 0.0, "cargo X button jettisons the row");
+
+    // Ручка режима: щелчок по левой и правой трети шкалы. Зеркалит
+    // UI::holdThrottleRect(); разъедется — тест это и поймает.
+    SDL_Rect thr;
+    thr.x = win.x + win.w - 210;
+    thr.y = win.y + win.h - 70;
+    thr.w = 190;
+    thr.h = 12;
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, thr.x + 4, thr.y + 6, SDL_BUTTON_LEFT);
+    }
+    const double low = ship.throttle;
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, thr.x + thr.w - 8, thr.y + 6, SDL_BUTTON_LEFT);
+    }
+    const double high = ship.throttle;
+    check(low < 0.15 && high > 0.85, "throttle bar sets the drive mode by click position");
 }
 
 int main() {

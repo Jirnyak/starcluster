@@ -2809,7 +2809,7 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 9 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 10 " << cluster.stars.size() << '\n';
     out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
@@ -2911,7 +2911,7 @@ bool Game::saveToFile(const std::string& path) {
             << ship.speed << ' ' << ship.vx << ' ' << ship.vy << ' ' << ship.vz << ' '
             << ship.acceleration << ' ' << ship.dryMass << ' ' << ship.driveThrust << ' '
             << ship.driveEfficiency << ' ' << ship.driveIndex << ' '
-            << ship.fuelVolume << ' ' << ship.propellantVolume << ' ' << ship.throttleBias << ' '
+            << ship.fuelVolume << ' ' << ship.propellantVolume << ' ' << ship.throttle << ' '
             << ship.cargoCapacity << ' ' << ship.ownerFaction << ' '
             << ship.targetStar << ' ' << int(ship.enRoute) << ' '
             << ship.heavyWeapons << ' ' << ship.lightWeapons << ' ' << ship.armor << ' '
@@ -3053,7 +3053,7 @@ bool Game::loadFromFile(const std::string& path) {
     std::string tag;
     int version = 0;
     size_t starCount = 0;
-    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 9) {
+    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 10) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -3322,7 +3322,7 @@ bool Game::loadFromFile(const std::string& path) {
             !(in >> shipName >> x >> y >> z >> speed >> agent.ship.vx >> agent.ship.vy >> agent.ship.vz >>
                 agent.ship.acceleration >> agent.ship.dryMass >> agent.ship.driveThrust >>
                 agent.ship.driveEfficiency >> agent.ship.driveIndex >>
-                agent.ship.fuelVolume >> agent.ship.propellantVolume >> agent.ship.throttleBias >>
+                agent.ship.fuelVolume >> agent.ship.propellantVolume >> agent.ship.throttle >>
                 agent.ship.cargoCapacity >> agent.ship.ownerFaction >>
                 agent.ship.targetStar >> enRoute >>
                 agent.ship.heavyWeapons >> agent.ship.lightWeapons >> agent.ship.armor >>
@@ -5032,6 +5032,11 @@ double Game::agentLoadPropellantFromCargo(int agentIndex, int elementIdx, double
     const double moved = shipLoadPropellant(agent.ship, elementIdx, units);
     if (moved > 0.0) agent.lastAction = "loaded propellant";
     return moved;
+}
+
+void Game::agentSetThrottle(int agentIndex, double throttle) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return;
+    agents[agentIndex].ship.throttle = std::max(0.0, std::min(1.0, throttle));
 }
 
 double Game::agentJettisonCargo(int agentIndex, int elementIdx, double units) {

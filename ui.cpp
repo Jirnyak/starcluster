@@ -104,7 +104,7 @@ SDL_Rect defaultWindowRect(WindowKind kind, int screenW, int screenH, int cascad
         rect.y = std::max(96, screenH - rect.h - 46 - cascade * 10);
     } else if (kind == WindowKind::Cargo) {
         rect.w = 720;
-        rect.h = 430;
+        rect.h = 470;
         rect.x = std::max(380, (screenW - rect.w) / 2 + cascade * 18);
         rect.y = std::max(100, screenH - rect.h - 50 - cascade * 10);
     } else if (kind == WindowKind::Exchange) {
@@ -1050,6 +1050,16 @@ SDL_Rect holdStepRect(const Window& window) {
     return r;
 }
 
+// Ручка режима двигателя. Слева платим рабочим телом, справа — топливом.
+SDL_Rect holdThrottleRect(const Window& window) {
+    SDL_Rect r;
+    r.x = window.rect.x + window.rect.w - 210;
+    r.y = window.rect.y + window.rect.h - 70;
+    r.w = 190;
+    r.h = 12;
+    return r;
+}
+
 // Кнопка «за борт»: единственный выход, если перегрузился вдали от рынка.
 SDL_Rect holdJettisonRect(const Window& window, int row) {
     SDL_Rect r;
@@ -1085,6 +1095,19 @@ bool handleCargoWindowMouseDown(WindowState& state, Game& game, const Window& wi
         return true;
     }
     if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) return true;
+
+    // Ручка режима: щелчок по шкале ставит значение по позиции курсора.
+    // Зона захвата чуть выше и ниже полосы, иначе в неё трудно попасть.
+    {
+        SDL_Rect thr = holdThrottleRect(window);
+        thr.y -= 6;
+        thr.h += 12;
+        if (contains(thr, mouseX, mouseY)) {
+            const double t = double(mouseX - thr.x) / double(std::max(1, thr.w - 6));
+            game.agentSetThrottle(game.playerAgent, t);
+            return true;
+        }
+    }
     const Ship& ship = game.agents[game.playerAgent].ship;
 
     const std::vector<Resource>* columns[3];
@@ -2453,8 +2476,8 @@ void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& win
                    ship.propellant, propMix.volume, ship.propellantVolume, "VOL", P.cyan, !torch);
 
     // Итог по двигательной установке: что реально даёт текущая заправка.
-    const int footY = window.rect.y + window.rect.h - 58;
-    strokeRect(renderer, window.rect.x + 8, footY - 6, window.rect.w - 16, 1, P.border);
+    const int footY = window.rect.y + window.rect.h - 86;
+    strokeRect(renderer, window.rect.x + 8, footY - 8, window.rect.w - 16, 1, P.border);
 
     const std::vector<DriveDef>& drives = driveDefs();
     const std::string driveName = (ship.driveIndex >= 0 && ship.driveIndex < int(drives.size()))
@@ -2464,10 +2487,40 @@ void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         driveFamilyLabel(driveFamilyOf(ship.driveIndex)));
     drawText(renderer, x, footY, line, P.text, 1);
 
+    // Показываем скорость истечения, которую даёт ТЕКУЩАЯ ручка на типовом
+    // манёвре, а не только физический потолок: иначе ручку не видно в работе.
+    const RouteCost nominal = shipRouteCost(ship, ship.speed * 2.0, 1.0, 1.0);
+    const double ceiling = shipMaxExhaustVelocity(ship);
     // Энергия топлива УЖЕ с учётом доли поджига: балласт виден сразу.
-    std::snprintf(line, sizeof(line), "FUEL %.2F MEV/NUC   EXHAUST %.4FC   MEAN A %.0F",
-        fuelMix.specificEnergy, shipMaxExhaustVelocity(ship), shipExhaustMix(ship).meanAtomicMass);
+    std::snprintf(line, sizeof(line), "FUEL %.2F MEV/NUC   VE %.4FC / MAX %.4FC   MEAN A %.0F",
+        fuelMix.specificEnergy, nominal.feasible ? nominal.exhaustVelocity : 0.0, ceiling,
+        shipExhaustMix(ship).meanAtomicMass);
     drawText(renderer, x, footY + 14, line, P.dim, 1);
+
+    // Во что обходится типовой манёвр при текущем режиме — так видно, ЧЕМ платим.
+    if (nominal.feasible) {
+        std::snprintf(line, sizeof(line), "PER HOP  PROPELLANT %.1F   FUEL %.1F  (MASS)",
+            nominal.propellantMass, nominal.fuelMass);
+        drawText(renderer, x, footY + 28, line, P.dim, 1);
+    }
+
+    drawText(renderer, x, footY + 44, "<  LOAD FUEL      X JETTISON      LOAD PROPELLANT  >", P.dim, 1);
+
+    // --- Ручка режима двигателя ---
+    const SDL_Rect thr = holdThrottleRect(window);
+    const double t = std::max(0.0, std::min(1.0, ship.throttle));
+    const char* mode = t < 0.42 ? "BULK" : (t > 0.58 ? "BURN" : "OPTIMUM");
+    std::snprintf(line, sizeof(line), "THROTTLE %.2F  %s", t, mode);
+    drawText(renderer, thr.x, thr.y - 14, line, P.text, 1);
+
+    fillRect(renderer, thr.x, thr.y, thr.w, thr.h, {9, 14, 26, 245});
+    strokeRect(renderer, thr.x, thr.y, thr.w, thr.h, P.border);
+    // Отметка ценового оптимума ровно посередине шкалы.
+    fillRect(renderer, thr.x + thr.w / 2, thr.y - 3, 1, thr.h + 6, P.dim);
+    const int knob = thr.x + int(t * double(thr.w - 6));
+    fillRect(renderer, knob, thr.y - 2, 6, thr.h + 4, t < 0.42 ? P.cyan : (t > 0.58 ? P.amber : P.green));
+    drawText(renderer, thr.x, thr.y + 16, "PROP", P.cyan, 1);
+    drawText(renderer, thr.x + thr.w - 26, thr.y + 16, "FUEL", P.amber, 1);
 
     // Поле шага: сколько двигает ОДНО нажатие стрелки. То же число, что AMOUNT
     // в окне торговли, — одно понятие на все операции с веществом.
@@ -2478,8 +2531,6 @@ void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         state.tradeAmountEditing && active ? P.cyan : P.border);
     drawText(renderer, step.x + 8, step.y + 7, tradeAmountLabel(state),
         state.tradeAmount.empty() ? P.dim : P.text, 1);
-
-    drawText(renderer, x, footY + 28, "<  LOAD FUEL      X JETTISON      LOAD PROPELLANT  >", P.dim, 1);
 }
 
 void drawWindows(SDL_Renderer* renderer, const Game& game, int, int, const HudSelection& selection, const WindowState& state) {

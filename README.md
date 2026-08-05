@@ -259,7 +259,10 @@ Three drive families, each with different propellant preferences:
 Propellant is consumed by the real Tsiolkovsky equation, and exhaust velocity
 is a free parameter with a genuine cost optimum that depends on *local* fuel
 and propellant prices — so the best engine setting changes from system to
-system. Load iron as propellant and the reactor will happily melt it and throw
+system. A `THROTTLE` slider in the hold picks a point in that band: all the way
+left you pay in propellant mass and fly heavy, all the way right you pay in fuel
+and fly light, and the midpoint is the cost optimum among settings that actually
+fit your tanks. Load iron as propellant and the reactor will happily melt it and throw
 it away at a terrible exhaust velocity. Nothing stops you.
 
 Mixtures average strictly by mass, so blending never beats its best component:
@@ -369,7 +372,7 @@ hold into a small colony is a loss; sizing the trade to the market is the skill.
 - dry mass, thrust, drive efficiency;
 - drive index (thermal / ion / torch, see `drive.h`);
 - fuel bunker and propellant tank, each a `Resource` mixture with a VOLUME capacity;
-- throttle bias (manual skew off the cost-optimal exhaust velocity);
+- throttle (0..1: 0 spends propellant, 0.5 is the cost optimum, 1 spends fuel);
 - cargo vector and cargo capacity;
 - owner faction, route target, and en-route state.
 
@@ -523,13 +526,13 @@ back to the working directory so older saves still open.
 The file is text and begins with:
 
 ```text
-STARCLUSTER_SAVE 9
+STARCLUSTER_SAVE 10
 ```
 
 The save stores the world seed, RNG state, time, stars, markets, factions,
 relations, colonies, contracts, agents, faction knowledge, player knowledge,
 pending signals, signal memory, and trading licence state. `F9` loads the same
-file and rebuilds runtime caches. Only version 9 loads: the propulsion rework
+file and rebuilds runtime caches. Only version 10 loads: the propulsion rework
 changed the ship record beyond migrating, so older saves are rejected with a
 clear message rather than opening corrupt.
 

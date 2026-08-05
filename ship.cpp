@@ -377,9 +377,16 @@ RouteCost shipRouteCost(const Ship& ship, double deltaV, double propellantPrice,
         bestVe = bestOverflowVe;
     }
 
-    // Ручка игрока сдвигает найденный оптимум, но потолок остаётся потолком.
-    const double bias = std::max(0.4, std::min(2.5, ship.throttleBias));
-    const double ve = std::max(veMin, std::min(ceiling, bestVe * bias));
+    // Ручка игрока выбирает точку внутри полосы [минимум .. оптимум .. потолок].
+    // Интерполяция логарифмическая, потому что и стоимость, и массовое число
+    // зависят от скорости истечения экспоненциально: в логарифме ручка идёт
+    // равномерно, а в линейной шкале half-way ощущался бы как «почти форсаж».
+    const double t = std::max(0.0, std::min(1.0, ship.throttle));
+    const double lowEnd = std::min(bestVe, veMin);
+    const double highEnd = std::max(bestVe, ceiling);
+    const double ve = t <= 0.5
+        ? lowEnd * std::pow(bestVe / std::max(1e-9, lowEnd), t * 2.0)
+        : bestVe * std::pow(highEnd / std::max(1e-9, bestVe), (t - 0.5) * 2.0);
 
     const double ratio = std::exp(std::min(60.0, effectiveDeltaV / ve));
     const double propMass = finalMass * (ratio - 1.0);
