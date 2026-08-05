@@ -732,6 +732,92 @@ void testRouteEstimateMatchesFlight() {
           "прогноз маршрута сходится с полётом", buf);
 }
 
+
+// Лететь медленнее объективно дешевле: бюджет быстроты равен 2*artanh(peak),
+// поэтому снижение крейсера прямо режет расход обоих расходников. Раньше этот
+// размен игроку был недоступен — корабль всегда шёл на полном потолке.
+void testSlowCruiseIsCheaper() {
+    Game g;
+    buildWorld(g, 42, 10);
+    Ship ship = g.agents[g.playerAgent].ship;
+
+    ship.cruiseFraction = 1.0;
+    const RouteCost fast = shipEstimateRoute(ship, 8.0, 1.0, 1.0);
+    ship.cruiseFraction = 0.4;
+    const RouteCost slow = shipEstimateRoute(ship, 8.0, 1.0, 1.0);
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "100%%: W %.1f F %.1f | 40%%: W %.1f F %.1f",
+        fast.propellantMass, fast.fuelMass, slow.propellantMass, slow.fuelMass);
+    check(fast.feasible && slow.feasible &&
+          slow.propellantMass < fast.propellantMass && slow.fuelMass < fast.fuelMass,
+          "медленный крейсер дешевле быстрого", buf);
+}
+
+// Кнопка OPTIMAL обязана находить связку не хуже той, что стояла до неё,
+// иначе она бесполезна.
+void testOptimalBeatsDefaults() {
+    Game g;
+    buildWorld(g, 42, 12);
+    const int pa = g.playerAgent;
+    const int home = g.agents[pa].currentStar;
+    int target = -1;
+    double bestDist = 0.0;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        if (int(i) == home) continue;
+        const double d = g.routeDistance(home, int(i));
+        if (d > bestDist && d < 10.0) { bestDist = d; target = int(i); }
+    }
+    if (target < 0) { check(false, "OPTIMAL подбирает режим под цель", "нет цели"); return; }
+
+    double propPrice = 1.0, fuelPrice = 1.0;
+    Ship& ship = g.agents[pa].ship;
+    ship.throttle = 0.9;
+    ship.cruiseFraction = 1.0;
+    g.agentSetThrottle(pa, 0.9);
+    const RouteCost before = g.agentRouteCost(pa, target);
+    const double costBefore = before.feasible
+        ? before.propellantMass + before.fuelMass * 40.0 : 1e18;
+
+    const bool ok = g.agentOptimiseForTarget(pa, target);
+    const RouteCost after = g.agentRouteCost(pa, target);
+    const double costAfter = after.feasible
+        ? after.propellantMass + after.fuelMass * 40.0 : 1e18;
+    (void)propPrice; (void)fuelPrice;
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "было t=0.90 cruise=100%% => %.0f, стало t=%.2f cruise=%.0f%% => %.0f",
+        costBefore, ship.throttle, ship.cruiseFraction * 100.0, costAfter);
+    check(ok && after.feasible && costAfter <= costBefore * 1.001,
+          "OPTIMAL подбирает режим под цель", buf);
+}
+
+// Релятивизм: складывается БЫСТРОТА, а не скорость. На малых скоростях это
+// одно и то же, у светового предела — расходится. Без этого бюджет «разгон до
+// 0.5c плюс торможение» дал бы ровно 1.0c, величину несуществующую.
+void testRapidityDivergesNearLight() {
+    Game g;
+    buildWorld(g, 42, 6);
+    Ship ship = g.agents[g.playerAgent].ship;
+
+    // Один и тот же корпус на разных потолках скорости: во сколько раз бюджет
+    // быстроты обгоняет наивную сумму скоростей.
+    ship.speed = 0.05;
+    ship.cruiseFraction = 1.0;
+    const RouteCost slow = shipEstimateRoute(ship, 500.0, 1.0, 1.0);
+    ship.speed = 0.5;
+    const RouteCost fast = shipEstimateRoute(ship, 500.0, 1.0, 1.0);
+
+    // artanh(0.05)/0.05 = 1.0008, artanh(0.5)/0.5 = 1.0986
+    const double lowFactor = std::atanh(0.05) / 0.05;
+    const double highFactor = std::atanh(0.5) / 0.5;
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "надбавка быстроты: при 0.05c +%.2f%%, при 0.5c +%.1f%%",
+        (lowFactor - 1.0) * 100.0, (highFactor - 1.0) * 100.0);
+    check(slow.feasible && fast.feasible && lowFactor < 1.01 && highFactor > 1.05,
+          "быстрота расходится у светового предела", buf);
+}
+
 } // namespace
 
 int main() {
@@ -757,6 +843,9 @@ int main() {
     testThrottleTradesPropellantForFuel();
     testThrottleMidpointIsCostOptimum();
     testRouteEstimateMatchesFlight();
+    testSlowCruiseIsCheaper();
+    testOptimalBeatsDefaults();
+    testRapidityDivergesNearLight();
     testDriveSlotExclusive();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;

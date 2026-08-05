@@ -121,20 +121,27 @@ void testGoButtonGoesToTopWindow() {
     UI::openSystemWindow(ui, starB, SCREEN_W, SCREEN_H);
 
     const Overlap p = buttonPointUnderLowerWindow(ui, routeRect);
-    check(p.coveredByLower, "GO of top window sits over the lower window (bug precondition)");
+    check(p.coveredByLower, "DESTINATION of top window sits over the lower window (bug precondition)");
 
     UI::HudSelection sel;
     UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, p.x, p.y, SDL_BUTTON_LEFT);
 
+    // Кнопка НАЗНАЧАЕТ цель и не стартует: вылет отдельным GO на карте, чтобы
+    // между выбором системы и стартом можно было настроить двигатель под неё.
     const Agent& player = game.agents[game.playerAgent];
-    check(player.ship.enRoute, "GO started a journey");
-    check(player.ship.targetStar == starB, "journey targets the TOP window's star");
+    check(player.destStar == starB, "DESTINATION targets the TOP window's star");
+    check(!player.ship.enRoute, "DESTINATION does not depart by itself");
 
+    // Окно остаётся открытым: цель выбрана, дальше игрок настраивает режим.
     bool topStillOpen = false;
     for (const UI::Window& w : ui.windows) {
         if (w.kind == UI::WindowKind::SystemInfo && w.star == starB) topStillOpen = true;
     }
-    check(!topStillOpen, "successful GO closed its own window");
+    check(topStillOpen, "setting a destination keeps the window open");
+
+    // И только теперь GO на карте действительно отправляет корабль.
+    check(game.commandAgentToStar(game.playerAgent, player.destStar), "map GO departs to the destination");
+    check(player.ship.enRoute && player.ship.targetStar == starB, "journey targets the destination");
 }
 
 // Клик по кнопке НИЖНЕГО окна там, где верхнее окно его не перекрывает,
@@ -169,14 +176,14 @@ void testUncoveredLowerWindowStillReceivesClicks() {
     const SDL_Rect button = routeRect(lower);
     const int x = button.x + 2;
     const int y = button.y + button.h / 2;
-    check(contains(button, x, y), "test point is on the lower window's GO button");
+    check(contains(button, x, y), "test point is on the lower window's DESTINATION button");
     check(!contains(upper, x, y), "that point is not covered by the top window");
 
     UI::HudSelection sel;
     UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, x, y, SDL_BUTTON_LEFT);
 
     const Agent& player = game.agents[game.playerAgent];
-    check(player.ship.enRoute && player.ship.targetStar == starA,
+    check(player.destStar == starA,
           "uncovered lower window still handles its own click");
 }
 
@@ -304,9 +311,9 @@ void testHoldArrowsMoveMatter() {
     // Ручка режима: щелчок по левой и правой трети шкалы. Зеркалит
     // UI::holdThrottleRect(); разъедется — тест это и поймает.
     SDL_Rect thr;
-    thr.x = win.x + win.w - 210;
-    thr.y = win.y + win.h - 70;
-    thr.w = 190;
+    thr.x = win.x + win.w - 168;
+    thr.y = win.y + win.h - 78;
+    thr.w = 116;
     thr.h = 12;
     {
         UI::HudSelection sel;
@@ -319,6 +326,36 @@ void testHoldArrowsMoveMatter() {
     }
     const double high = ship.throttle;
     check(low < 0.15 && high > 0.85, "throttle bar sets the drive mode by click position");
+
+    // Шкала крейсерской скорости — зеркалит UI::holdCruiseRect() (throttle + 32).
+    SDL_Rect cru = thr;
+    cru.y += 32;
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, cru.x + 4, cru.y + 6, SDL_BUTTON_LEFT);
+    }
+    const double slow = ship.cruiseFraction;
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, cru.x + cru.w - 8, cru.y + 6, SDL_BUTTON_LEFT);
+    }
+    const double fast = ship.cruiseFraction;
+    check(slow < 0.3 && fast > 0.9, "cruise bar sets the cruise speed by click position");
+
+    // Кнопка OPTIMAL — зеркалит UI::holdOptimalRect().
+    SDL_Rect opt;
+    opt.x = win.x + win.w - 210;
+    opt.y = win.y + win.h - 28;
+    opt.w = 88;
+    opt.h = 22;
+    game.agents[game.playerAgent].destStar = -1;
+    game.lastEvent.clear();
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, opt.x + opt.w / 2, opt.y + opt.h / 2, SDL_BUTTON_LEFT);
+    }
+    check(game.lastEvent.find("no destination") != std::string::npos,
+          "OPTIMAL without a destination explains itself");
 }
 
 int main() {

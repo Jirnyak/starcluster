@@ -310,6 +310,16 @@ public:
     // Ручной перелив из трюма: бесплатно, но возить элемент надо самому.
     double agentLoadFuelFromCargo(int agentIndex, int elementIdx, double units);
     double agentLoadPropellantFromCargo(int agentIndex, int elementIdx, double units);
+    // Назначение маршрута БЕЗ вылета: кнопка DESTINATION в окне системы.
+    // Сам вылет — отдельным действием GO, чтобы между выбором цели и стартом
+    // можно было настроить двигатель под неё.
+    bool setAgentDestination(int agentIndex, int starIndex);
+    // Крейсерская скорость как доля от потолка корпуса, 0.2..1.
+    void agentSetCruiseFraction(int agentIndex, double fraction);
+    // Подбирает режим двигателя и крейсер под КОНКРЕТНУЮ цель: перебирает пару
+    // (throttle, cruise) и берёт самую дешёвую связку, которая долетает и
+    // влезает в баки. Возвращает false, если цель недостижима ни в каком режиме.
+    bool agentOptimiseForTarget(int agentIndex, int targetStar);
     // Режим двигателя 0..1: 0 — платим рабочим телом, 0.5 — ценовой оптимум,
     // 1 — платим топливом (максимальная скорость истечения).
     void agentSetThrottle(int agentIndex, double throttle);

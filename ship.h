@@ -45,6 +45,11 @@ public:
     // вычисления на каждом вызове: иначе планировщик и реальный расход в полёте
     // считали бы по разным ценам и разъезжались. 0 — «подобрать автоматически».
     double cruiseExhaust = 0.0;
+    // Доля от потолка скорости, на которой корабль идёт крейсером, 0.2..1.
+    // Лететь медленнее объективно дешевле: бюджет быстроты равен 2*artanh(peak),
+    // поэтому снижение крейсера прямо режет расход обоих расходников. Раньше
+    // корабль всегда шёл на полном потолке, и этот размен игроку был недоступен.
+    double cruiseFraction = 1.0;
 
     std::vector<Resource> cargo;
     double cargoCapacity = 100.0; // Максимальный груз (масса)
@@ -69,6 +74,8 @@ extern const double DELTAV_SCALE;
 
 double resourceUnitMassByIndex(int elementIndex);
 double resourceUnitMass(const std::string& element);
+// Фактическая крейсерская скорость с учётом cruiseFraction.
+double shipCruiseSpeed(const Ship& ship);
 double shipCargoMass(const Ship& ship);
 double shipFuelMass(const Ship& ship);
 double shipPropellantMass(const Ship& ship);
@@ -105,6 +112,8 @@ struct RouteCost {
     double propellantMass = 0.0;
     double fuelMass = 0.0;
 };
+// deltaV здесь — бюджет БЫСТРОТЫ (rapidity), а не скорости: складывать можно
+// только её. На нерелятивистских скоростях они совпадают.
 RouteCost shipRouteCost(const Ship& ship, double deltaV, double propellantPrice, double fuelPrice);
 
 // Оценка расхода на перелёт заданной длины (разгон + торможение).

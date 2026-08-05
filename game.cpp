@@ -1738,20 +1738,24 @@ bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
     const double dirZ = dist > 0.0 ? dz / dist : 0.0;
     const double stoppingDistance = accel > 0.0 ? speed * speed / (2.0 * accel) : 1e9;
     const double deltaV = accel * dt;
+    // Расход считается в БЫСТРОТЕ: dw = dv / (1 - v²). На малой скорости это
+    // просто dv, но чем ближе к световой, тем дороже обходится тот же прирост
+    // скорости — та самая релятивистская расходимость, без отдельных костылей.
+    const double rapidityCost = 1.0 / std::max(1e-6, 1.0 - speed * speed);
 
     if (stoppingDistance + speed * dt * 0.5 >= dist && speed > 0.0) {
-        const double brake = consumeAndStoreAsh(ship, std::min(deltaV, speed));
+        const double brake = consumeAndStoreAsh(ship, std::min(deltaV, speed) * rapidityCost) / rapidityCost;
         ship.vx -= ship.vx / speed * brake;
         ship.vy -= ship.vy / speed * brake;
         ship.vz -= ship.vz / speed * brake;
-    } else if (accel > 0.0 && speed < ship.speed - 1e-9) {
+    } else if (accel > 0.0 && speed < shipCruiseSpeed(ship) - 1e-9) {
         // Тратим ровно столько, сколько ещё влезает до потолка скорости.
         // Раньше двигатель жёг deltaV каждый тик и на крейсерском участке, а
         // прирост скорости тут же срезался клампом — то есть топливо горело в
         // пустоту, и расход не сходился с маршрутной оценкой, которая считает
         // только разгон и торможение. В вакууме крейсер обязан быть бесплатным.
-        const double wanted = std::min(deltaV, ship.speed - speed);
-        const double thrust = consumeAndStoreAsh(ship, wanted);
+        const double wanted = std::min(deltaV, shipCruiseSpeed(ship) - speed);
+        const double thrust = consumeAndStoreAsh(ship, wanted * rapidityCost) / rapidityCost;
         ship.vx += dirX * thrust;
         ship.vy += dirY * thrust;
         ship.vz += dirZ * thrust;
@@ -1759,8 +1763,8 @@ bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
         // Страховка: тяга идёт вдоль направления на цель, а вектор скорости
         // может смотреть чуть иначе, поэтому итог всё же нормируем.
         const double newSpeed = std::sqrt(ship.vx * ship.vx + ship.vy * ship.vy + ship.vz * ship.vz);
-        if (newSpeed > ship.speed) {
-            const double k = ship.speed / newSpeed;
+        if (newSpeed > shipCruiseSpeed(ship)) {
+            const double k = shipCruiseSpeed(ship) / newSpeed;
             ship.vx *= k;
             ship.vy *= k;
             ship.vz *= k;
@@ -2823,7 +2827,7 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 11 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 12 " << cluster.stars.size() << '\n';
     out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
@@ -2926,7 +2930,7 @@ bool Game::saveToFile(const std::string& path) {
             << ship.acceleration << ' ' << ship.dryMass << ' ' << ship.driveThrust << ' '
             << ship.driveEfficiency << ' ' << ship.driveIndex << ' '
             << ship.fuelVolume << ' ' << ship.propellantVolume << ' ' << ship.throttle << ' '
-            << ship.cruiseExhaust << ' '
+            << ship.cruiseExhaust << ' ' << ship.cruiseFraction << ' '
             << ship.cargoCapacity << ' ' << ship.ownerFaction << ' '
             << ship.targetStar << ' ' << int(ship.enRoute) << ' '
             << ship.heavyWeapons << ' ' << ship.lightWeapons << ' ' << ship.armor << ' '
@@ -3068,7 +3072,7 @@ bool Game::loadFromFile(const std::string& path) {
     std::string tag;
     int version = 0;
     size_t starCount = 0;
-    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 11) {
+    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 12) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -3338,7 +3342,7 @@ bool Game::loadFromFile(const std::string& path) {
                 agent.ship.acceleration >> agent.ship.dryMass >> agent.ship.driveThrust >>
                 agent.ship.driveEfficiency >> agent.ship.driveIndex >>
                 agent.ship.fuelVolume >> agent.ship.propellantVolume >> agent.ship.throttle >>
-                agent.ship.cruiseExhaust >>
+                agent.ship.cruiseExhaust >> agent.ship.cruiseFraction >>
                 agent.ship.cargoCapacity >> agent.ship.ownerFaction >>
                 agent.ship.targetStar >> enRoute >>
                 agent.ship.heavyWeapons >> agent.ship.lightWeapons >> agent.ship.armor >>
@@ -5058,6 +5062,80 @@ void Game::agentSetThrottle(int agentIndex, double throttle) {
     double fuelPrice = 1.0;
     routePrices(*this, agent.ship, agent.currentStar, propellantPrice, fuelPrice);
     shipTuneDrive(agent.ship, propellantPrice, fuelPrice);
+}
+
+bool Game::setAgentDestination(int agentIndex, int starIndex) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size()) || !validStar(*this, starIndex)) return false;
+    Agent& agent = agents[agentIndex];
+    if (agent.ship.enRoute) {
+        if (agent.playerControlled) lastEvent = "cannot retarget in transit";
+        return false;
+    }
+    agent.destStar = starIndex;
+    if (agent.playerControlled) lastEvent = "destination: " + cluster.stars[starIndex].name;
+    return true;
+}
+
+void Game::agentSetCruiseFraction(int agentIndex, double fraction) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return;
+    Agent& agent = agents[agentIndex];
+    agent.ship.cruiseFraction = std::max(0.2, std::min(1.0, fraction));
+    double propellantPrice = 1.0;
+    double fuelPrice = 1.0;
+    routePrices(*this, agent.ship, agent.currentStar, propellantPrice, fuelPrice);
+    shipTuneDrive(agent.ship, propellantPrice, fuelPrice);
+}
+
+bool Game::agentOptimiseForTarget(int agentIndex, int targetStar) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
+    if (!validStar(*this, targetStar)) return false;
+    Agent& agent = agents[agentIndex];
+
+    double propellantPrice = 1.0;
+    double fuelPrice = 1.0;
+    routePrices(*this, agent.ship, agent.currentStar, propellantPrice, fuelPrice);
+
+    const double keepThrottle = agent.ship.throttle;
+    const double keepCruise = agent.ship.cruiseFraction;
+
+    // Перебираем пару. Сетка грубая намеренно: обе оси пологие, а окно
+    // достижимости узкое, поэтому мелкий шаг ничего не уточнит, зато кнопка
+    // должна отрабатывать мгновенно.
+    double bestCost = -1.0;
+    double bestThrottle = keepThrottle;
+    double bestCruise = keepCruise;
+    for (int ti = 0; ti <= 20; ++ti) {
+        for (int ci = 0; ci <= 16; ++ci) {
+            agent.ship.throttle = double(ti) / 20.0;
+            agent.ship.cruiseFraction = 0.2 + 0.8 * double(ci) / 16.0;
+            shipTuneDrive(agent.ship, propellantPrice, fuelPrice);
+            const RouteCost r = agentRouteCost(agentIndex, targetStar);
+            if (!r.feasible) continue;
+            // Считаем только то, что реально влезает в баки корабля.
+            const MixSummary pm = shipPropellantMix(agent.ship);
+            const MixSummary fm = shipFuelMix(agent.ship);
+            const double propVol = pm.mass > 0.0 ? r.propellantMass * pm.volume / pm.mass : 0.0;
+            const double fuelVol = fm.mass > 0.0 ? r.fuelMass * fm.volume / fm.mass : 0.0;
+            if (propVol > agent.ship.propellantVolume) continue;
+            if (fuelVol > shipFuelTankVolume(agent.ship)) continue;
+            const double cost = r.propellantMass * propellantPrice + r.fuelMass * fuelPrice;
+            if (bestCost < 0.0 || cost < bestCost) {
+                bestCost = cost;
+                bestThrottle = agent.ship.throttle;
+                bestCruise = agent.ship.cruiseFraction;
+            }
+        }
+    }
+
+    agent.ship.throttle = bestCost >= 0.0 ? bestThrottle : keepThrottle;
+    agent.ship.cruiseFraction = bestCost >= 0.0 ? bestCruise : keepCruise;
+    shipTuneDrive(agent.ship, propellantPrice, fuelPrice);
+    if (bestCost < 0.0) {
+        lastEvent = "no drive setting reaches that system";
+        return false;
+    }
+    lastEvent = "drive tuned for " + cluster.stars[targetStar].name;
+    return true;
 }
 
 double Game::agentJettisonCargo(int agentIndex, int elementIdx, double units) {

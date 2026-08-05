@@ -272,6 +272,21 @@ and fly light, and the midpoint is the cost optimum among settings that actually
 fit your tanks. Load iron as propellant and the reactor will happily melt it and throw
 it away at a terrible exhaust velocity. Nothing stops you.
 
+Velocities do not add; rapidity does. Route budgets are `2*artanh(peak)` and
+in-flight burn charges `dv / (1 - v^2)`, so the same speed increment costs more
+the closer you already are to light. Exhaust kinetic energy is `gamma - 1`
+rather than `v^2/2`. The correction is small at these speeds (+2.7% at 0.28c)
+but it removes the nonsense of a "0.5c cruise plus braking" budget summing to
+exactly 1.0c.
+
+One deliberate fudge is documented rather than hidden: `DELTAV_SCALE` compresses
+route delta-V 67-fold. Honest Tsiolkovsky for a 0.28c cruise at 0.0264c exhaust
+demands a mass ratio of e^21.2 — 1.6 billion kilograms of propellant per
+kilogram of ship. Interstellar flight is impossible on any fuel without it,
+which is also true of reality. The compression preserves the entire shape of the
+physics — the exponential, the optimum, the reachability wall — and moves only
+the scale.
+
 Mixtures average strictly by mass, so blending never beats its best component:
 there is no exploit hiding in there.
 
@@ -381,6 +396,7 @@ hold into a small colony is a loss; sizing the trade to the market is the skill.
 - fuel bunker and propellant tank, each a `Resource` mixture with a VOLUME capacity;
 - throttle (0..1: 0 spends propellant, 0.5 is the cost optimum, 1 spends fuel);
 - the drive's fixed operating exhaust velocity, retuned on refuel, transfer and departure;
+- cruise speed as a fraction of the hull's cap: flying slower is genuinely cheaper;
 - cargo vector and cargo capacity;
 - owner faction, route target, and en-route state.
 
@@ -534,13 +550,13 @@ back to the working directory so older saves still open.
 The file is text and begins with:
 
 ```text
-STARCLUSTER_SAVE 11
+STARCLUSTER_SAVE 12
 ```
 
 The save stores the world seed, RNG state, time, stars, markets, factions,
 relations, colonies, contracts, agents, faction knowledge, player knowledge,
 pending signals, signal memory, and trading licence state. `F9` loads the same
-file and rebuilds runtime caches. Only version 11 loads: the propulsion rework
+file and rebuilds runtime caches. Only version 12 loads: the propulsion rework
 changed the ship record beyond migrating, so older saves are rejected with a
 clear message rather than opening corrupt.
 

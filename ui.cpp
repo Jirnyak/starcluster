@@ -104,7 +104,7 @@ SDL_Rect defaultWindowRect(WindowKind kind, int screenW, int screenH, int cascad
         rect.y = std::max(96, screenH - rect.h - 46 - cascade * 10);
     } else if (kind == WindowKind::Cargo) {
         rect.w = 720;
-        rect.h = 470;
+        rect.h = 512;
         rect.x = std::max(380, (screenW - rect.w) / 2 + cascade * 18);
         rect.y = std::max(100, screenH - rect.h - 50 - cascade * 10);
     } else if (kind == WindowKind::Exchange) {
@@ -864,24 +864,13 @@ bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window&
 bool handleSystemWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int screenW, int screenH, int mouseX, int mouseY) {
     const SystemLayout layout = systemLayout(window);
     if (contains(layout.route, mouseX, mouseY)) {
-        // Explicitly matched with GO implementation
-        if (window.star >= 0) {
-            // Отказ (нет топлива / уже в пути / перегруз) объясняется через
-            // game.lastEvent, который HUD показывает строкой событий.
-            const bool success = game.commandAgentToStar(game.playerAgent, window.star);
-            if (success) {
-                selection.star = window.star;
-                selection.agent = game.playerAgent;
-                selection.followAgent = true;
-                
-                // Close the window immediately to reveal the ship and route line
-                for (size_t i = 0; i < state.windows.size(); ++i) {
-                    if (state.windows[i].id == window.id) {
-                        state.windows.erase(state.windows.begin() + i);
-                        break;
-                    }
-                }
-            }
+        // Кнопка НАЗНАЧАЕТ цель, но не стартует. Вылет — отдельным GO на карте,
+        // чтобы между выбором системы и стартом настроить под неё двигатель
+        // (кнопка OPTIMAL в окне HOLD считает режим именно под назначенную цель).
+        // Отказ объясняется через game.lastEvent, который HUD показывает строкой.
+        if (window.star >= 0 && game.setAgentDestination(game.playerAgent, window.star)) {
+            selection.star = window.star;
+            selection.agent = game.playerAgent;
         }
         return true;
     }
@@ -1043,20 +1032,48 @@ int holdRowY(const Window& window, int row) {
 // одно число на все операции с веществом, отдельного состояния не заводим.
 SDL_Rect holdStepRect(const Window& window) {
     SDL_Rect r;
-    r.x = window.rect.x + window.rect.w - 122;
-    r.y = window.rect.y + window.rect.h - 32;
-    r.w = 104;
+    r.x = window.rect.x + window.rect.w - 114;
+    r.y = window.rect.y + window.rect.h - 28;
+    r.w = 96;
     r.h = 22;
     return r;
+}
+
+// Строка про назначенную цель — чтобы OPTIMAL не был кнопкой в никуда.
+std::string destStarLabel(const Game& game) {
+    if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) return "";
+    const int dest = game.agents[game.playerAgent].destStar;
+    if (dest < 0 || dest >= int(game.cluster.stars.size())) {
+        return "NO DESTINATION - OPEN A SYSTEM AND PRESS DESTINATION";
+    }
+    return "DESTINATION: " + game.cluster.stars[dest].name;
 }
 
 // Ручка режима двигателя. Слева платим рабочим телом, справа — топливом.
 SDL_Rect holdThrottleRect(const Window& window) {
     SDL_Rect r;
-    r.x = window.rect.x + window.rect.w - 210;
-    r.y = window.rect.y + window.rect.h - 70;
-    r.w = 190;
+    r.x = window.rect.x + window.rect.w - 168;
+    r.y = window.rect.y + window.rect.h - 78;
+    r.w = 116;
     r.h = 12;
+    return r;
+}
+
+// Шкала крейсерской скорости: доля от потолка корпуса. Лететь медленнее
+// объективно дешевле — бюджет быстроты равен 2*artanh(peak).
+SDL_Rect holdCruiseRect(const Window& window) {
+    SDL_Rect r = holdThrottleRect(window);
+    r.y += 32;
+    return r;
+}
+
+// Кнопка автоподбора режима под НАЗНАЧЕННУЮ цель.
+SDL_Rect holdOptimalRect(const Window& window) {
+    SDL_Rect r;
+    r.x = window.rect.x + window.rect.w - 210;
+    r.y = window.rect.y + window.rect.h - 28;
+    r.w = 88;
+    r.h = 22;
     return r;
 }
 
@@ -1095,6 +1112,23 @@ bool handleCargoWindowMouseDown(WindowState& state, Game& game, const Window& wi
         return true;
     }
     if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) return true;
+
+    if (contains(holdOptimalRect(window), mouseX, mouseY)) {
+        const int dest = game.agents[game.playerAgent].destStar;
+        if (dest >= 0) game.agentOptimiseForTarget(game.playerAgent, dest);
+        else game.lastEvent = "no destination set: open a system and press DESTINATION";
+        return true;
+    }
+    {
+        SDL_Rect cru = holdCruiseRect(window);
+        cru.y -= 6;
+        cru.h += 12;
+        if (contains(cru, mouseX, mouseY)) {
+            const double f = 0.2 + 0.8 * double(mouseX - cru.x) / double(std::max(1, cru.w - 6));
+            game.agentSetCruiseFraction(game.playerAgent, f);
+            return true;
+        }
+    }
 
     // Ручка режима: щелчок по шкале ставит значение по позиции курсора.
     // Зона захвата чуть выше и ниже полосы, иначе в неё трудно попасть.
@@ -1940,7 +1974,10 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
         const bool isEnRouteToThis = isEnRoute && game.agents[game.playerAgent].destStar == window.star;
         const bool isAtThis = game.playerAgent >= 0 && game.agents[game.playerAgent].currentStar == window.star && !isEnRoute;
         
-        std::string label = "GO";
+        // Кнопка НАЗНАЧАЕТ цель, а не стартует: вылет отдельным GO на карте.
+        const bool isDestination = game.playerAgent >= 0 &&
+            game.agents[game.playerAgent].destStar == window.star && !isEnRoute;
+        std::string label = "DESTINATION";
         SDL_Color color = P.cyan;
         if (isEnRouteToThis) {
             label = "EN ROUTE"; color = P.green;
@@ -1948,6 +1985,8 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
             label = "DOCKED"; color = P.dim;
         } else if (isEnRoute) {
             label = "MOVING"; color = P.red;
+        } else if (isDestination) {
+            label = "DEST SET"; color = P.green;
         }
         drawButton(renderer, layout.route, label, color, game.playerAgent >= 0);
         drawButton(renderer, layout.trade, "TRADE", P.green, false);
@@ -2014,7 +2053,10 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
     const bool isEnRouteToThis = isEnRoute && game.agents[game.playerAgent].destStar == window.star;
     const bool isAtThis = game.playerAgent >= 0 && game.agents[game.playerAgent].currentStar == window.star && !isEnRoute;
     
-    std::string label = "GO";
+    // Кнопка НАЗНАЧАЕТ цель, а не стартует: вылет отдельным GO на карте.
+    const bool isDestination = game.playerAgent >= 0 &&
+        game.agents[game.playerAgent].destStar == window.star && !isEnRoute;
+    std::string label = "DESTINATION";
     SDL_Color color = P.cyan;
     if (isEnRouteToThis) {
         label = "EN ROUTE"; color = P.green;
@@ -2022,6 +2064,8 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
         label = "DOCKED"; color = P.dim;
     } else if (isEnRoute) {
         label = "MOVING"; color = P.red;
+    } else if (isDestination) {
+        label = "DEST SET"; color = P.green;
     }
     drawButton(renderer, layout.route, label, color, game.playerAgent >= 0);
     drawButton(renderer, layout.trade, "TRADE", P.green, playerMarketStar(game) == window.star);
@@ -2505,13 +2549,15 @@ void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     }
 
     drawText(renderer, x, footY + 44, "<  LOAD FUEL      X JETTISON      LOAD PROPELLANT  >", P.dim, 1);
+    drawText(renderer, x, footY + 58,
+        destStarLabel(game).c_str(), P.dim, 1);
 
     // --- Ручка режима двигателя ---
     const SDL_Rect thr = holdThrottleRect(window);
     const double t = std::max(0.0, std::min(1.0, ship.throttle));
     const char* mode = t < 0.42 ? "BULK" : (t > 0.58 ? "BURN" : "OPTIMUM");
     std::snprintf(line, sizeof(line), "THROTTLE %.2F  %s", t, mode);
-    drawText(renderer, thr.x, thr.y - 14, line, P.text, 1);
+    drawText(renderer, thr.x - 40, thr.y - 14, line, P.text, 1);
 
     fillRect(renderer, thr.x, thr.y, thr.w, thr.h, {9, 14, 26, 245});
     strokeRect(renderer, thr.x, thr.y, thr.w, thr.h, P.border);
@@ -2519,17 +2565,35 @@ void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     fillRect(renderer, thr.x + thr.w / 2, thr.y - 3, 1, thr.h + 6, P.dim);
     const int knob = thr.x + int(t * double(thr.w - 6));
     fillRect(renderer, knob, thr.y - 2, 6, thr.h + 4, t < 0.42 ? P.cyan : (t > 0.58 ? P.amber : P.green));
-    drawText(renderer, thr.x, thr.y + 16, "PROP", P.cyan, 1);
-    drawText(renderer, thr.x + thr.w - 26, thr.y + 16, "FUEL", P.amber, 1);
+    drawText(renderer, thr.x - 40, thr.y + 2, "PROP", P.cyan, 1);
+    drawText(renderer, thr.x + thr.w + 6, thr.y + 2, "FUEL", P.amber, 1);
+
+    // --- Крейсерская скорость ---
+    const SDL_Rect cru = holdCruiseRect(window);
+    const double cf = std::max(0.2, std::min(1.0, ship.cruiseFraction));
+    std::snprintf(line, sizeof(line), "CRUISE %.0F%%  %.3FC", cf * 100.0, shipCruiseSpeed(ship));
+    drawText(renderer, cru.x - 40, cru.y - 14, line, P.text, 1);
+    fillRect(renderer, cru.x, cru.y, cru.w, cru.h, {9, 14, 26, 245});
+    strokeRect(renderer, cru.x, cru.y, cru.w, cru.h, P.border);
+    const int cknob = cru.x + int((cf - 0.2) / 0.8 * double(cru.w - 6));
+    fillRect(renderer, cknob, cru.y - 2, 6, cru.h + 4, P.green);
+    drawText(renderer, cru.x - 40, cru.y + 2, "SLOW", P.green, 1);
+    drawText(renderer, cru.x + cru.w + 6, cru.y + 2, "FAST", P.red, 1);
+
+    // --- Автоподбор под назначенную цель ---
+    const int destStar = game.playerAgent >= 0 ? game.agents[game.playerAgent].destStar : -1;
+    const bool canOptimise = destStar >= 0 && !ship.enRoute &&
+                             destStar != game.agents[game.playerAgent].currentStar;
+    drawButton(renderer, holdOptimalRect(window), "OPTIMAL", P.green, canOptimise);
 
     // Поле шага: сколько двигает ОДНО нажатие стрелки. То же число, что AMOUNT
     // в окне торговли, — одно понятие на все операции с веществом.
     const SDL_Rect step = holdStepRect(window);
-    drawText(renderer, step.x - 98, step.y + 7, "STEP/CLICK", P.dim, 1);
     fillRect(renderer, step.x, step.y, step.w, step.h, {9, 14, 26, 245});
     strokeRect(renderer, step.x, step.y, step.w, step.h,
         state.tradeAmountEditing && active ? P.cyan : P.border);
-    drawText(renderer, step.x + 8, step.y + 7, tradeAmountLabel(state),
+    std::snprintf(line, sizeof(line), "STEP %s", tradeAmountLabel(state).c_str());
+    drawText(renderer, step.x + 7, step.y + 7, line,
         state.tradeAmount.empty() ? P.dim : P.text, 1);
 }
 

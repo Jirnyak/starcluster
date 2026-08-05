@@ -9,6 +9,24 @@ const double DELTAV_SCALE = 0.015;
 
 namespace {
 
+// --- Релятивистская кинематика -------------------------------------------
+// Скорости складывать нельзя, складывать можно БЫСТРОТУ w = artanh(v/c).
+// Именно она входит в релятивистское уравнение Циолковского: m0/m1 = e^(dw/ve).
+// Отсюда сама собой берётся расходимость при v -> c: чем ближе к световой,
+// тем дороже каждый следующий прирост скорости.
+double rapidityOf(double beta) {
+    const double b = std::max(-0.999999, std::min(0.999999, beta));
+    return 0.5 * std::log((1.0 + b) / (1.0 - b));
+}
+
+// Кинетическая энергия единицы массы выхлопа в долях c²: (gamma - 1).
+// В нерелятивистском пределе даёт привычные 0.5*v², но не занижает энергию
+// на быстрой струе.
+double exhaustSpecificEnergy(double ve) {
+    const double v = std::max(0.0, std::min(0.999999, ve));
+    return 1.0 / std::sqrt(std::max(1e-12, 1.0 - v * v)) - 1.0;
+}
+
 // Лучшее стартовое рабочее тело для тепловой камеры — самое лёгкое, что есть:
 // скорость истечения идёт как 1/sqrt(A).
 int defaultPropellantElement() {
@@ -227,6 +245,10 @@ double resourceUnitMass(const std::string& element) {
     return index >= 0 ? resourceUnitMassByIndex(index) : 1.0;
 }
 
+double shipCruiseSpeed(const Ship& ship) {
+    return std::max(0.02, ship.speed * std::max(0.2, std::min(1.0, ship.cruiseFraction)));
+}
+
 double shipCargoMass(const Ship& ship) {
     double mass = 0.0;
     for (size_t i = 0; i < ship.cargo.size(); ++i) {
@@ -304,7 +326,7 @@ namespace {
 // корабля: разгон до собственного потолка скорости и торможение.
 double chosenExhaustVelocity(const Ship& ship, double propellantPrice, double fuelPrice,
                              double ceiling, double energyPerMass, double payload) {
-    const double nominalDeltaV = std::max(1e-6, ship.speed * 2.0) * DELTAV_SCALE;
+    const double nominalDeltaV = std::max(1e-6, 2.0 * rapidityOf(shipCruiseSpeed(ship))) * DELTAV_SCALE;
     const double priceP = std::max(0.0, propellantPrice);
     const double priceF = std::max(0.0, fuelPrice);
     const double veMin = std::max(1e-4, ceiling * 0.02);
@@ -338,7 +360,7 @@ double chosenExhaustVelocity(const Ship& ship, double propellantPrice, double fu
         // Топливо входит в массу, которую само же разгоняет, — решаем это
         // замкнуто (см. shipRouteCost). k >= 1 означает, что манёвр недостижим
         // ни при каком запасе: топливо на разгон топлива съедает само себя.
-        const double k = 0.5 * ve * ve / energyPerMass * (ratio - 1.0);
+        const double k = exhaustSpecificEnergy(ve) / energyPerMass * (ratio - 1.0);
         if (!(k < 0.999)) continue;
         const double fuelMass = k * payload / (1.0 - k);
         const double propMass = (payload + fuelMass) * (ratio - 1.0);
@@ -438,7 +460,7 @@ RouteCost shipRouteCost(const Ship& ship, double deltaV, double propellantPrice,
     // такой манёвр не выполнить ни при каком запасе, нужен другой режим,
     // другое рабочее тело или другой движок.
     const double ratio = std::exp(std::min(60.0, effectiveDeltaV / ve));
-    const double k = 0.5 * ve * ve / energyPerMass * (ratio - 1.0);
+    const double k = exhaustSpecificEnergy(ve) / energyPerMass * (ratio - 1.0);
     if (!(k < 0.999)) return result;
     const double fuelMass = k * payload / (1.0 - k);
     const double propMass = (payload + fuelMass) * (ratio - 1.0);
@@ -472,9 +494,12 @@ RouteCost shipEstimateRoute(const Ship& ship, double distance, double propellant
         return zero;
     }
     const double accel = std::max(0.001, std::min(ship.acceleration, ship.driveThrust / shipTotalMass(ship)));
-    const double peakSpeed = std::min(ship.speed, std::sqrt(distance * accel));
-    // Разгон и торможение симметричны (ship.md, «Movement Fuel Cost», вариант 1).
-    return shipRouteCost(ship, peakSpeed * 2.0, propellantPrice, fuelPrice);
+    const double peakSpeed = std::min(shipCruiseSpeed(ship), std::sqrt(distance * accel));
+    // Разгон и торможение симметричны (ship.md, «Movement Fuel Cost», вариант 1),
+    // но складываются БЫСТРОТЫ, а не скорости: 2*artanh(peak), не 2*peak.
+    // Иначе на быстром корпусе с потолком 0.5c бюджет вышел бы ровно 1.0c —
+    // величина, которой не существует.
+    return shipRouteCost(ship, 2.0 * rapidityOf(peakSpeed), propellantPrice, fuelPrice);
 }
 
 bool shipCanFlyDistance(const Ship& ship, double distance) {
@@ -554,7 +579,7 @@ double shipConsumeForDeltaV(Ship& ship, double desiredDeltaV, std::vector<Resour
         listConsumeMass(ship.fuel, burn);
     } else {
         listConsumeMass(ship.propellant, burn);
-        const double fuelBurn = std::min(fuelAvail, 0.5 * burn * ve * ve / energyPerMass);
+        const double fuelBurn = std::min(fuelAvail, burn * exhaustSpecificEnergy(ve) / energyPerMass);
         burned = listConsumeMass(ship.fuel, fuelBurn);
     }
 
