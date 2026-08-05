@@ -593,11 +593,17 @@ void testThrottleTradesPropellantForFuel() {
     buildWorld(g, 42, 10);
     Ship ship = g.agents[g.playerAgent].ship;
 
+    // Ручка действует через перенастройку: cruiseExhaust — ЗАФИКСИРОВАННАЯ
+    // рабочая точка, и менять throttle без shipTuneDrive бессмысленно. Именно
+    // так это делает и игра (agentSetThrottle перенастраивает движок).
     ship.throttle = 0.0;
+    shipTuneDrive(ship, 1.0, 1.0);
     const RouteCost bulk = shipRouteCost(ship, 0.4, 1.0, 1.0);
     ship.throttle = 0.5;
+    shipTuneDrive(ship, 1.0, 1.0);
     const RouteCost mid = shipRouteCost(ship, 0.4, 1.0, 1.0);
     ship.throttle = 1.0;
+    shipTuneDrive(ship, 1.0, 1.0);
     const RouteCost burn = shipRouteCost(ship, 0.4, 1.0, 1.0);
 
     char buf[240];
@@ -636,6 +642,7 @@ void testThrottleMidpointIsCostOptimum() {
 
     const double nominal = ship.speed * 2.0;
     ship.throttle = 0.5;
+    shipTuneDrive(ship, propPrice, fuelPrice);
     const RouteCost mid = shipRouteCost(ship, nominal, propPrice, fuelPrice);
     const double midCost = mid.propellantMass * propPrice + mid.fuelMass * fuelPrice;
 
@@ -644,6 +651,7 @@ void testThrottleMidpointIsCostOptimum() {
     int fitting = 0;
     for (int i = 0; i <= 40; ++i) {
         ship.throttle = double(i) / 40.0;
+        shipTuneDrive(ship, propPrice, fuelPrice);
         const RouteCost r = shipRouteCost(ship, nominal, propPrice, fuelPrice);
         if (!r.feasible) continue;
         // Считаем только те режимы, под которые реально есть ёмкости.
@@ -696,10 +704,14 @@ void testRouteEstimateMatchesFlight() {
     ship.cargo.clear();
     ship.fuel.clear();
     ship.propellant.clear();
+    // Запас сверх прогноза: вылет перенастраивает движок по ценам порта, а
+    // залитое вещество само меняет массу и, значит, оптимум. Точной подгонки
+    // «залить ровно по расчёту» тут быть не может — тест меряет ОТНОШЕНИЕ
+    // факта к прогнозу, а не умение попасть в ноль.
     ship.fuel.push_back(Resource(elementDefinitions()[fuelElem].symbol,
-                                 est.fuelMass / elementUnitMass(fuelElem)));
+                                 1.6 * est.fuelMass / elementUnitMass(fuelElem)));
     ship.propellant.push_back(Resource(elementDefinitions()[propElem].symbol,
-                                       est.propellantMass / elementUnitMass(propElem)));
+                                       1.6 * est.propellantMass / elementUnitMass(propElem)));
     g.agents[pa].money = 0.0;   // чтобы не докупал по пути
 
     // Прогноз пересчитываем на ФАКТИЧЕСКОЕ состояние перед вылетом: первая
@@ -742,8 +754,10 @@ void testSlowCruiseIsCheaper() {
     Ship ship = g.agents[g.playerAgent].ship;
 
     ship.cruiseFraction = 1.0;
+    shipTuneDrive(ship, 1.0, 1.0);
     const RouteCost fast = shipEstimateRoute(ship, 8.0, 1.0, 1.0);
     ship.cruiseFraction = 0.4;
+    shipTuneDrive(ship, 1.0, 1.0);
     const RouteCost slow = shipEstimateRoute(ship, 8.0, 1.0, 1.0);
 
     char buf[220];

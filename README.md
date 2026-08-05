@@ -280,7 +280,7 @@ but it removes the nonsense of a "0.5c cruise plus braking" budget summing to
 exactly 1.0c.
 
 One deliberate fudge is documented rather than hidden: `DELTAV_SCALE` compresses
-route delta-V 67-fold. Honest Tsiolkovsky for a 0.28c cruise at 0.0264c exhaust
+route delta-V 250-fold. Honest Tsiolkovsky for a 0.28c cruise at 0.0264c exhaust
 demands a mass ratio of e^21.2 — 1.6 billion kilograms of propellant per
 kilogram of ship. Interstellar flight is impossible on any fuel without it,
 which is also true of reality. The compression preserves the entire shape of the

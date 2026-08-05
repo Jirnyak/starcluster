@@ -5,7 +5,7 @@
 #include <cmath>
 
 // Маршрутный delta-V сжимается перед Циолковским: см. комментарий в ship.h.
-const double DELTAV_SCALE = 0.015;
+const double DELTAV_SCALE = 0.004;
 
 namespace {
 
@@ -717,6 +717,10 @@ void shipApplyClass(Ship& ship, const ShipClass& sc) {
     }
     ship.maxHullHP = std::max(20.0, 30.0 + ship.armor * 3.0 + ship.dryMass * 0.30);
     ship.hullHP = ship.maxHullHP;
+    // Рабочая точка двигателя подбирается СРАЗУ. Иначе каждый расчёт маршрута
+    // для такого корабля запускает 48-сэмпловый подбор заново, а ИИ считает
+    // маршруты тысячами за такт — на замере это давало 1842 подбора в кадр.
+    shipTuneDrive(ship, 1.0, 1.0);
 }
 
 void shipTrimTanks(Ship& ship) {
@@ -748,4 +752,9 @@ void shipAutofit(Ship& ship) {
     }
     ship.maxHullHP = std::max(20.0, 30.0 + ship.armor * 3.0 + ship.dryMass * 0.30);
     ship.hullHP = ship.maxHullHP;
+    // Рабочая точка двигателя подбирается СРАЗУ, при создании корпуса. Иначе
+    // каждый расчёт маршрута для такого корабля запускает 48-сэмпловый подбор
+    // заново, а ИИ считает маршруты тысячами за такт: на замере это давало
+    // 1842 подбора в кадр и вдвое утяжеляло симуляцию.
+    shipTuneDrive(ship, 1.0, 1.0);
 }

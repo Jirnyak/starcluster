@@ -1,4 +1,5 @@
 #include "resource.h"
+#include <unordered_map>
 #include <algorithm>
 #include <cmath>
 
@@ -478,13 +479,23 @@ size_t elementCount() {
 }
 
 int elementIndex(const std::string& element) {
-    const auto& elements = elementDefinitions();
-    for (size_t i = 0; i < elements.size(); ++i) {
-        if (element == elements[i].symbol || element == elements[i].name) {
-            return int(i);
+    // Раньше это был линейный проход по 118 элементам с ДВУМЯ сравнениями строк
+    // на каждый — до 236 сравнений за один поиск. Пока элемент искали изредка,
+    // это не мешало, но смеси в баках сделали функцию горячей: она зовётся на
+    // каждый компонент при каждом расчёте маршрута, а ИИ считает маршруты
+    // тысячами за такт. Индекс строится один раз и стоит O(1).
+    static const std::unordered_map<std::string, int> index = [] {
+        std::unordered_map<std::string, int> map;
+        const std::vector<ElementDefinition>& elements = elementDefinitions();
+        map.reserve(elements.size() * 2);
+        for (size_t i = 0; i < elements.size(); ++i) {
+            map[elements[i].symbol] = int(i);
+            map[elements[i].name] = int(i);
         }
-    }
-    return -1;
+        return map;
+    }();
+    const std::unordered_map<std::string, int>::const_iterator it = index.find(element);
+    return it == index.end() ? -1 : it->second;
 }
 
 Resource::Resource(const std::string& element_, double amount_)
