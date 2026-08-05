@@ -5,7 +5,7 @@
 #include <cmath>
 
 // Маршрутный delta-V сжимается перед Циолковским: см. комментарий в ship.h.
-const double DELTAV_SCALE = 0.05;
+const double DELTAV_SCALE = 0.015;
 
 namespace {
 
@@ -292,6 +292,95 @@ double shipCurrentAcceleration(const Ship& ship) {
     return std::max(0.0, std::min(ship.acceleration, massLimited));
 }
 
+namespace {
+
+// Рабочая точка двигателя: скорость истечения зависит ТОЛЬКО от конфигурации
+// корабля, цен и ручки — но НЕ от длины конкретного манёвра.
+//
+// Это принципиально. Полёт интегрируется по тикам, и если выбирать ve под dV
+// каждого тика, оптимум уползает вниз (при малом dV экспонента вырождается в
+// линейный член), режим двигателя втихую меняется посреди рейса и расход
+// перестаёт сходиться с маршрутной оценкой. Точка отсчёта — номинальный манёвр
+// корабля: разгон до собственного потолка скорости и торможение.
+double chosenExhaustVelocity(const Ship& ship, double propellantPrice, double fuelPrice,
+                             double ceiling, double energyPerMass, double payload) {
+    const double nominalDeltaV = std::max(1e-6, ship.speed * 2.0) * DELTAV_SCALE;
+    const double priceP = std::max(0.0, propellantPrice);
+    const double priceF = std::max(0.0, fuelPrice);
+    const double veMin = std::max(1e-4, ceiling * 0.02);
+
+    const MixSummary exhaustMix = shipExhaustMix(ship);
+    const MixSummary fuelMix = shipFuelMix(ship);
+    const double propVolumePerMass = exhaustMix.mass > 0.0 ? exhaustMix.volume / exhaustMix.mass : 1.0;
+    const double fuelVolumePerMass = fuelMix.mass > 0.0 ? fuelMix.volume / fuelMix.mass : 1.0;
+
+    // Стоимость номинального манёвра как функция скорости истечения:
+    //   cost(v) = (e^(dV/v) - 1) * M * [ Pp + Pf*v^2 / (2*E) ]
+    // Слева экспонента наказывает низкую скорость, справа энергия — высокую.
+    // Минимум внутри; ищем сканированием по логарифму, отбрасывая режимы, под
+    // которые негде возить вещество: дешёвый, но не влезающий режим бесполезен.
+    double bestVe = ceiling;
+    double bestCost = -1.0;
+    double bestOverflow = -1.0;
+    double bestOverflowVe = ceiling;
+    // Границы РЕАЛЬНО достижимой полосы. Ручка обязана ходить по ней, а не по
+    // сырому потолку: на деле сверху её ограничивает не конструкция сопла, а
+    // условие k < 1 (топливо не должно съедать само себя), и снизу — объём
+    // баков. Иначе у топлива победнее половина шкалы оказывается мёртвой.
+    double loFeasible = -1.0;
+    double hiFeasible = -1.0;
+    const int samples = 48;
+    for (int i = 0; i < samples; ++i) {
+        const double t = double(i) / double(samples - 1);
+        const double ve = veMin * std::pow(ceiling / veMin, t);
+        const double ratio = std::exp(std::min(60.0, nominalDeltaV / ve));
+        if (!std::isfinite(ratio)) continue;
+        // Топливо входит в массу, которую само же разгоняет, — решаем это
+        // замкнуто (см. shipRouteCost). k >= 1 означает, что манёвр недостижим
+        // ни при каком запасе: топливо на разгон топлива съедает само себя.
+        const double k = 0.5 * ve * ve / energyPerMass * (ratio - 1.0);
+        if (!(k < 0.999)) continue;
+        const double fuelMass = k * payload / (1.0 - k);
+        const double propMass = (payload + fuelMass) * (ratio - 1.0);
+        if (!std::isfinite(propMass) || !std::isfinite(fuelMass)) continue;
+
+        const double overflow = std::max(
+            propMass * propVolumePerMass / std::max(1e-6, ship.propellantVolume),
+            fuelMass * fuelVolumePerMass / std::max(1e-6, shipFuelTankVolume(ship)));
+        if (bestOverflow < 0.0 || overflow < bestOverflow) {
+            bestOverflow = overflow;
+            bestOverflowVe = ve;
+        }
+        if (overflow > 1.0) continue;
+
+        if (loFeasible < 0.0) loFeasible = ve;
+        hiFeasible = ve;
+
+        const double cost = priceP * propMass + priceF * fuelMass;
+        if (bestCost < 0.0 || cost < bestCost) {
+            bestCost = cost;
+            bestVe = ve;
+        }
+    }
+    if (bestCost < 0.0) {
+        if (bestOverflow < 0.0) return 0.0;
+        bestVe = bestOverflowVe;
+    }
+
+    // Ручка игрока выбирает точку внутри полосы [минимум .. оптимум .. потолок].
+    // Интерполяция логарифмическая, потому что и стоимость, и массовое число
+    // зависят от скорости истечения экспоненциально: в логарифме ручка идёт
+    // равномерно, а в линейной шкале half-way ощущался бы как «почти форсаж».
+    const double t = std::max(0.0, std::min(1.0, ship.throttle));
+    const double lowEnd = std::min(bestVe, loFeasible > 0.0 ? loFeasible : veMin);
+    const double highEnd = std::max(bestVe, hiFeasible > 0.0 ? hiFeasible : ceiling);
+    return t <= 0.5
+        ? lowEnd * std::pow(bestVe / std::max(1e-9, lowEnd), t * 2.0)
+        : bestVe * std::pow(highEnd / std::max(1e-9, bestVe), (t - 0.5) * 2.0);
+}
+
+}
+
 RouteCost shipRouteCost(const Ship& ship, double deltaV, double propellantPrice, double fuelPrice) {
     RouteCost result;
     if (deltaV <= 0.0) {
@@ -312,15 +401,16 @@ RouteCost shipRouteCost(const Ship& ship, double deltaV, double propellantPrice,
     const double energyPerMass = fuelMix.specificEnergy / NUCLEON_REST_MEV * jetEfficiency;
     if (energyPerMass <= 1e-12) return result;
 
-    // Сухая масса на конец манёвра: корпус и груз — то, что не сгорит.
-    const double finalMass = std::max(1.0, ship.dryMass + shipCargoMass(ship));
+    // Полезная нагрузка: корпус и груз. Топливо в неё НЕ входит — оно решается
+    // из уравнения ниже.
+    const double payload = std::max(1.0, ship.dryMass + shipCargoMass(ship));
     const double effectiveDeltaV = deltaV * DELTAV_SCALE;
 
     // Факел жжёт топливо как рабочее тело: скорость истечения не выбирается,
     // её задаёт сама реакция, и расход считается одним потоком.
     if (torch) {
         const double ratio = std::exp(std::min(60.0, effectiveDeltaV / ceiling));
-        const double burnMass = finalMass * (ratio - 1.0);
+        const double burnMass = payload * (ratio - 1.0);
         if (!std::isfinite(burnMass)) return result;
         result.feasible = true;
         result.exhaustVelocity = ceiling;
@@ -328,69 +418,30 @@ RouteCost shipRouteCost(const Ship& ship, double deltaV, double propellantPrice,
         return result;
     }
 
-    // Стоимость манёвра как функция скорости истечения:
-    //   cost(v) = (e^(dV/v) - 1) * M * [ Pp + Pf*v^2 / (2*E) ]
-    // Слева экспонента наказывает низкую скорость, справа энергия наказывает
-    // высокую. Минимум внутри — его и ищем сканированием по логарифму.
+    // Зафиксированная рабочая точка имеет приоритет: планировщик и расход в
+    // полёте обязаны считать по одной и той же скорости истечения.
+    const double ve = ship.cruiseExhaust > 1e-9
+        ? std::min(ship.cruiseExhaust, ceiling)
+        : chosenExhaustVelocity(ship, propellantPrice, fuelPrice, ceiling, energyPerMass, payload);
+    if (ve <= 1e-9) return result;
+
+    // В сопло уходит ТОЛЬКО рабочее тело; топливо перегорает в золу почти той
+    // же массы и остаётся на борту. Поэтому топливо разгоняет само себя, и
+    // уравнение самоссылочно. Пусть P — нагрузка, W — рабочее тело, F — топливо:
     //
-    // Оптимум обязан ВЛЕЗАТЬ в баки: дешёвый режим, под который негде возить
-    // рабочее тело, бесполезен. Поэтому среди влезающих берём самый дешёвый,
-    // а если не влезает ни один — тот, что переполняет меньше всех.
-    const double priceP = std::max(0.0, propellantPrice);
-    const double priceF = std::max(0.0, fuelPrice);
-    const double veMin = std::max(1e-4, ceiling * 0.02);
-    // Плотность смесей: сколько объёма занимает единица массы каждого потока.
-    const double propVolumePerMass = exhaustMix.mass > 0.0 ? exhaustMix.volume / exhaustMix.mass : 1.0;
-    const double fuelVolumePerMass = fuelMix.mass > 0.0 ? fuelMix.volume / fuelMix.mass : 1.0;
-
-    double bestVe = ceiling;
-    double bestCost = -1.0;
-    double bestOverflow = -1.0;
-    double bestOverflowVe = ceiling;
-    const int samples = 48;
-    for (int i = 0; i < samples; ++i) {
-        const double t = double(i) / double(samples - 1);
-        const double ve = veMin * std::pow(ceiling / veMin, t);
-        const double ratio = std::exp(std::min(60.0, effectiveDeltaV / ve));
-        if (!std::isfinite(ratio)) continue;
-        const double propMass = finalMass * (ratio - 1.0);
-        const double fuelMass = 0.5 * propMass * ve * ve / energyPerMass;
-        if (!std::isfinite(propMass) || !std::isfinite(fuelMass)) continue;
-
-        const double overflow = std::max(
-            propMass * propVolumePerMass / std::max(1e-6, ship.propellantVolume),
-            fuelMass * fuelVolumePerMass / std::max(1e-6, shipFuelTankVolume(ship)));
-        if (bestOverflow < 0.0 || overflow < bestOverflow) {
-            bestOverflow = overflow;
-            bestOverflowVe = ve;
-        }
-        if (overflow > 1.0) continue;
-
-        const double cost = priceP * propMass + priceF * fuelMass;
-        if (bestCost < 0.0 || cost < bestCost) {
-            bestCost = cost;
-            bestVe = ve;
-        }
-    }
-    if (bestCost < 0.0) {
-        if (bestOverflow < 0.0) return result;
-        bestVe = bestOverflowVe;
-    }
-
-    // Ручка игрока выбирает точку внутри полосы [минимум .. оптимум .. потолок].
-    // Интерполяция логарифмическая, потому что и стоимость, и массовое число
-    // зависят от скорости истечения экспоненциально: в логарифме ручка идёт
-    // равномерно, а в линейной шкале half-way ощущался бы как «почти форсаж».
-    const double t = std::max(0.0, std::min(1.0, ship.throttle));
-    const double lowEnd = std::min(bestVe, veMin);
-    const double highEnd = std::max(bestVe, ceiling);
-    const double ve = t <= 0.5
-        ? lowEnd * std::pow(bestVe / std::max(1e-9, lowEnd), t * 2.0)
-        : bestVe * std::pow(highEnd / std::max(1e-9, bestVe), (t - 0.5) * 2.0);
-
+    //     W = (P + F) * (e^x - 1)          Циолковский: улетает только W
+    //     F = W * ve^2 / (2E)              энергия на разгон этого W
+    //  => F = k*P / (1 - k),  k = ve^2/(2E) * (e^x - 1)
+    //
+    // При k >= 1 решения нет ВООБЩЕ: топливо, нужное чтобы везти топливо,
+    // съедает само себя. Это честный предел достижимости, а не переполнение —
+    // такой манёвр не выполнить ни при каком запасе, нужен другой режим,
+    // другое рабочее тело или другой движок.
     const double ratio = std::exp(std::min(60.0, effectiveDeltaV / ve));
-    const double propMass = finalMass * (ratio - 1.0);
-    const double fuelMass = 0.5 * propMass * ve * ve / energyPerMass;
+    const double k = 0.5 * ve * ve / energyPerMass * (ratio - 1.0);
+    if (!(k < 0.999)) return result;
+    const double fuelMass = k * payload / (1.0 - k);
+    const double propMass = (payload + fuelMass) * (ratio - 1.0);
     if (!std::isfinite(propMass) || !std::isfinite(fuelMass)) return result;
 
     result.feasible = true;
@@ -398,6 +449,20 @@ RouteCost shipRouteCost(const Ship& ship, double deltaV, double propellantPrice,
     result.propellantMass = propMass;
     result.fuelMass = fuelMass;
     return result;
+}
+
+void shipTuneDrive(Ship& ship, double propellantPrice, double fuelPrice) {
+    ship.cruiseExhaust = 0.0;   // сначала сбрасываем, чтобы подбор шёл начисто
+    const MixSummary fuelMix = shipFuelMix(ship);
+    const MixSummary exhaustMix = shipExhaustMix(ship);
+    const double ceiling = driveExhaustCeiling(ship.driveIndex, exhaustMix);
+    if (ceiling <= 1e-6) return;
+    const double energyPerMass = fuelMix.specificEnergy / NUCLEON_REST_MEV *
+                                 driveJetEfficiency(ship.driveIndex, exhaustMix);
+    if (energyPerMass <= 1e-12) return;
+    const double payload = std::max(1.0, ship.dryMass + shipCargoMass(ship));
+    ship.cruiseExhaust = chosenExhaustVelocity(ship, propellantPrice, fuelPrice,
+                                               ceiling, energyPerMass, payload);
 }
 
 RouteCost shipEstimateRoute(const Ship& ship, double distance, double propellantPrice, double fuelPrice) {
@@ -439,41 +504,63 @@ int elementAshProduct(int fuelElement) {
 double shipConsumeForDeltaV(Ship& ship, double desiredDeltaV, std::vector<Resource>* ashOut) {
     if (desiredDeltaV <= 0.0) return 0.0;
     const bool torch = driveUsesFuelAsPropellant(ship.driveIndex);
-    const double fuelHave = shipFuelMix(ship).mass;
-    const double propHave = shipPropellantMix(ship).mass;
-    if (fuelHave <= 0.0) return 0.0;
-    if (!torch && propHave <= 0.0) return 0.0;
+    const MixSummary fuelMix = shipFuelMix(ship);
+    const MixSummary exhaustMix = shipExhaustMix(ship);
+    const double fuelAvail = fuelMix.mass;
+    const double propAvail = shipPropellantMix(ship).mass;
+    if (fuelAvail <= 0.0) return 0.0;
+    if (!torch && propAvail <= 0.0) return 0.0;
 
-    RouteCost need = shipRouteCost(ship, desiredDeltaV, 1.0, 1.0);
-    if (!need.feasible) return 0.0;
+    // Скорость истечения берём из планировщика: она зависит от ручки, цен и
+    // ёмкостей, и повторять этот выбор здесь нельзя — разъедется с оценкой.
+    const RouteCost plan = shipRouteCost(ship, desiredDeltaV, 1.0, 1.0);
+    if (!plan.feasible || plan.exhaustVelocity <= 1e-9) return 0.0;
+    const double ve = plan.exhaustVelocity;
+    const double energyPerMass = fuelMix.specificEnergy / NUCLEON_REST_MEV *
+                                 driveJetEfficiency(ship.driveIndex, exhaustMix);
+    if (energyPerMass <= 1e-12) return 0.0;
 
-    double achieved = desiredDeltaV;
-    // Не хватает запаса — урезаем манёвр до того, что реально вытянем. Ищем
-    // максимальный deltaV, влезающий в остаток, делением отрезка пополам.
-    const bool short_ = need.fuelMass > fuelHave || (!torch && need.propellantMass > propHave);
-    if (short_) {
-        double low = 0.0;
-        double high = desiredDeltaV;
-        for (int i = 0; i < 40; ++i) {
-            const double mid = 0.5 * (low + high);
-            const RouteCost trial = shipRouteCost(ship, mid, 1.0, 1.0);
-            const bool ok = trial.feasible && trial.fuelMass <= fuelHave &&
-                            (torch || trial.propellantMass <= propHave);
-            if (ok) low = mid; else high = mid;
-        }
-        achieved = low;
-        need = shipRouteCost(ship, achieved, 1.0, 1.0);
-        if (!need.feasible) return 0.0;
+    // ДИФФЕРЕНЦИАЛЬНАЯ форма Циолковского: выброшенная масса считается от массы
+    // ТЕКУЩЕЙ, а не от «сухой после манёвра».
+    //
+    //     burn = m0 * (1 - exp(-dV / ve))
+    //
+    // Это критично, потому что полёт интегрируется по тикам. Если на каждом
+    // тике брать за точку отсчёта одну и ту же конечную массу, сумма
+    // sum(e^xi - 1) окажется НАМНОГО меньше e^(sum xi) - 1: экспонента выпуклая.
+    // На замере такой расход занижался в шесть раз. В этой же форме тики
+    // телескопируются точно в общий Циолковский, и оценка сходится с фактом.
+    const double m0 = shipTotalMass(ship);
+    const double burnForDeltaV = [&](double dv) {
+        return m0 * (1.0 - std::exp(-std::min(60.0, dv * DELTAV_SCALE / ve)));
+    }(desiredDeltaV);
+
+    // Сколько массы вообще можно выбросить с текущими запасами.
+    const double fuelLimitedBurn = torch
+        ? fuelAvail
+        : fuelAvail * 2.0 * energyPerMass / std::max(1e-12, ve * ve);
+    const double maxBurn = std::min(torch ? fuelAvail : propAvail, fuelLimitedBurn);
+    const double burn = std::min(burnForDeltaV, std::min(maxBurn, m0 * 0.999));
+    if (burn <= 1e-12) return 0.0;
+
+    // Урезанный манёвр — обратное преобразование той же формулы, без итераций.
+    const double achieved = burn >= burnForDeltaV - 1e-12
+        ? desiredDeltaV
+        : -std::log(std::max(1e-12, 1.0 - burn / m0)) * ve / DELTAV_SCALE;
+
+    std::vector<Resource> burned;
+    if (torch) {
+        // У факела топливо и есть выхлоп: один поток, золы не остаётся.
+        listConsumeMass(ship.fuel, burn);
+    } else {
+        listConsumeMass(ship.propellant, burn);
+        const double fuelBurn = std::min(fuelAvail, 0.5 * burn * ve * ve / energyPerMass);
+        burned = listConsumeMass(ship.fuel, fuelBurn);
     }
-
-    // Расход снимается со смеси пропорционально долям компонентов.
-    const std::vector<Resource> burned = listConsumeMass(ship.fuel, need.fuelMass);
-    if (!torch) listConsumeMass(ship.propellant, need.propellantMass);
 
     // Топливо из активной зоны не улетает — оно перегорает. Дефект массы порядка
     // процента, так что зола весит практически столько же, сколько сгорело.
-    // У факела продукты синтеза уходят в сопло, поэтому золы нет вовсе.
-    if (ashOut && !torch) {
+    if (ashOut) {
         const std::vector<ElementDefinition>& elements = elementDefinitions();
         for (size_t i = 0; i < burned.size(); ++i) {
             const int from = elementIndex(burned[i].element);
@@ -549,20 +636,28 @@ int shipDominantPropellantElement(const Ship& ship) {
 }
 
 double shipLoadFuel(Ship& ship, int elementIdx, double units) {
-    return loadInto(ship, ship.fuel, shipFuelTankVolume(ship), elementIdx, units);
+    const double moved = loadInto(ship, ship.fuel, shipFuelTankVolume(ship), elementIdx, units);
+    if (moved > 0.0) ship.cruiseExhaust = 0.0;   // состав сменился — подобрать заново
+    return moved;
 }
 
 double shipLoadPropellant(Ship& ship, int elementIdx, double units) {
     if (driveUsesFuelAsPropellant(ship.driveIndex)) return 0.0;
-    return loadInto(ship, ship.propellant, ship.propellantVolume, elementIdx, units);
+    const double moved = loadInto(ship, ship.propellant, ship.propellantVolume, elementIdx, units);
+    if (moved > 0.0) ship.cruiseExhaust = 0.0;
+    return moved;
 }
 
 double shipDrainFuel(Ship& ship, int elementIdx, double units) {
-    return drainInto(ship, ship.fuel, elementIdx, units);
+    const double moved = drainInto(ship, ship.fuel, elementIdx, units);
+    if (moved > 0.0) ship.cruiseExhaust = 0.0;
+    return moved;
 }
 
 double shipDrainPropellant(Ship& ship, int elementIdx, double units) {
-    return drainInto(ship, ship.propellant, elementIdx, units);
+    const double moved = drainInto(ship, ship.propellant, elementIdx, units);
+    if (moved > 0.0) ship.cruiseExhaust = 0.0;
+    return moved;
 }
 
 namespace {

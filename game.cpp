@@ -540,6 +540,8 @@ double cachedRouteTravelTime(const Game& game, const Ship& ship, int originStar,
 }
 
 // Запас 8% сверх расчёта — на манёвры и неточность оценки скорости.
+// Больше делать бессмысленно: лишнее рабочее тело корабль везёт на себе и
+// сжигает пропорционально, поэтому padding не улучшает запас хода.
 const double ROUTE_MARGIN = 1.08;
 
 // Плечо маршрута: расход считается по локальным ценам, чтобы движок выбирал
@@ -1742,12 +1744,20 @@ bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
         ship.vx -= ship.vx / speed * brake;
         ship.vy -= ship.vy / speed * brake;
         ship.vz -= ship.vz / speed * brake;
-    } else if (accel > 0.0) {
-        const double thrust = consumeAndStoreAsh(ship, deltaV);
+    } else if (accel > 0.0 && speed < ship.speed - 1e-9) {
+        // Тратим ровно столько, сколько ещё влезает до потолка скорости.
+        // Раньше двигатель жёг deltaV каждый тик и на крейсерском участке, а
+        // прирост скорости тут же срезался клампом — то есть топливо горело в
+        // пустоту, и расход не сходился с маршрутной оценкой, которая считает
+        // только разгон и торможение. В вакууме крейсер обязан быть бесплатным.
+        const double wanted = std::min(deltaV, ship.speed - speed);
+        const double thrust = consumeAndStoreAsh(ship, wanted);
         ship.vx += dirX * thrust;
         ship.vy += dirY * thrust;
         ship.vz += dirZ * thrust;
 
+        // Страховка: тяга идёт вдоль направления на цель, а вектор скорости
+        // может смотреть чуть иначе, поэтому итог всё же нормируем.
         const double newSpeed = std::sqrt(ship.vx * ship.vx + ship.vy * ship.vy + ship.vz * ship.vz);
         if (newSpeed > ship.speed) {
             const double k = ship.speed / newSpeed;
@@ -1981,6 +1991,10 @@ bool startJourney(Game& game, Agent& agent, int destStar) {
         agent.lastAction = "overloaded";
         return false;
     }
+
+    // Двигатель настраивается ПЕРЕД вылетом по ценам порта отправления и
+    // дальше не меняется: планировщик и реальный расход считают по одной ve.
+    shipTuneDrive(agent.ship, propellantPrice, fuelPrice);
 
     const double directDistance = distanceBetween(game.cluster.stars[agent.currentStar], game.cluster.stars[destStar]);
     const RouteCost directNeed = legCost(agent.ship, directDistance, propellantPrice, fuelPrice);
@@ -2809,7 +2823,7 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 10 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 11 " << cluster.stars.size() << '\n';
     out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
@@ -2912,6 +2926,7 @@ bool Game::saveToFile(const std::string& path) {
             << ship.acceleration << ' ' << ship.dryMass << ' ' << ship.driveThrust << ' '
             << ship.driveEfficiency << ' ' << ship.driveIndex << ' '
             << ship.fuelVolume << ' ' << ship.propellantVolume << ' ' << ship.throttle << ' '
+            << ship.cruiseExhaust << ' '
             << ship.cargoCapacity << ' ' << ship.ownerFaction << ' '
             << ship.targetStar << ' ' << int(ship.enRoute) << ' '
             << ship.heavyWeapons << ' ' << ship.lightWeapons << ' ' << ship.armor << ' '
@@ -3053,7 +3068,7 @@ bool Game::loadFromFile(const std::string& path) {
     std::string tag;
     int version = 0;
     size_t starCount = 0;
-    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 10) {
+    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 11) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -3323,6 +3338,7 @@ bool Game::loadFromFile(const std::string& path) {
                 agent.ship.acceleration >> agent.ship.dryMass >> agent.ship.driveThrust >>
                 agent.ship.driveEfficiency >> agent.ship.driveIndex >>
                 agent.ship.fuelVolume >> agent.ship.propellantVolume >> agent.ship.throttle >>
+                agent.ship.cruiseExhaust >>
                 agent.ship.cargoCapacity >> agent.ship.ownerFaction >>
                 agent.ship.targetStar >> enRoute >>
                 agent.ship.heavyWeapons >> agent.ship.lightWeapons >> agent.ship.armor >>
@@ -5036,7 +5052,12 @@ double Game::agentLoadPropellantFromCargo(int agentIndex, int elementIdx, double
 
 void Game::agentSetThrottle(int agentIndex, double throttle) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return;
-    agents[agentIndex].ship.throttle = std::max(0.0, std::min(1.0, throttle));
+    Agent& agent = agents[agentIndex];
+    agent.ship.throttle = std::max(0.0, std::min(1.0, throttle));
+    double propellantPrice = 1.0;
+    double fuelPrice = 1.0;
+    routePrices(*this, agent.ship, agent.currentStar, propellantPrice, fuelPrice);
+    shipTuneDrive(agent.ship, propellantPrice, fuelPrice);
 }
 
 double Game::agentJettisonCargo(int agentIndex, int elementIdx, double units) {

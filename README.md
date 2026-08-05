@@ -256,6 +256,13 @@ Three drive families, each with different propellant preferences:
 | Ion (NEP) | set by voltage | tiny | dense, easily ionized: Xe, Cs, Hg |
 | Fusion Torch | from the reaction | high | fuel *is* the exhaust |
 
+Only propellant leaves through the nozzle; fuel transmutes into ash of nearly the
+same mass and stays aboard. So the fuel has to accelerate itself, and the rocket
+equation becomes self-referential with a closed-form solution — and a hard wall
+where the fuel needed to carry the fuel eats itself, making the manoeuvre
+impossible at any loadout. That single term is why fission cannot sustain
+relativistic exhaust velocities and fusion can.
+
 Propellant is consumed by the real Tsiolkovsky equation, and exhaust velocity
 is a free parameter with a genuine cost optimum that depends on *local* fuel
 and propellant prices — so the best engine setting changes from system to
@@ -373,6 +380,7 @@ hold into a small colony is a loss; sizing the trade to the market is the skill.
 - drive index (thermal / ion / torch, see `drive.h`);
 - fuel bunker and propellant tank, each a `Resource` mixture with a VOLUME capacity;
 - throttle (0..1: 0 spends propellant, 0.5 is the cost optimum, 1 spends fuel);
+- the drive's fixed operating exhaust velocity, retuned on refuel, transfer and departure;
 - cargo vector and cargo capacity;
 - owner faction, route target, and en-route state.
 
@@ -526,13 +534,13 @@ back to the working directory so older saves still open.
 The file is text and begins with:
 
 ```text
-STARCLUSTER_SAVE 10
+STARCLUSTER_SAVE 11
 ```
 
 The save stores the world seed, RNG state, time, stars, markets, factions,
 relations, colonies, contracts, agents, faction knowledge, player knowledge,
 pending signals, signal memory, and trading licence state. `F9` loads the same
-file and rebuilds runtime caches. Only version 10 loads: the propulsion rework
+file and rebuilds runtime caches. Only version 11 loads: the propulsion rework
 changed the ship record beyond migrating, so older saves are rejected with a
 clear message rather than opening corrupt.
 

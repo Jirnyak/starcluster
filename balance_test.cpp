@@ -617,8 +617,10 @@ void testThrottleTradesPropellantForFuel() {
 }
 
 // Середина ручки обязана быть ценовым оптимумом СРЕДИ ВЛЕЗАЮЩИХ В БАКИ
-// режимов — это её точка отсчёта. Глобально дешевле бывает, но если под режим
-// негде возить рабочее тело, он бесполезен, и оптимизатор его не выбирает.
+// режимов на НОМИНАЛЬНОМ манёвре корабля (разгон до своего потолка скорости и
+// торможение). Именно на нём определена рабочая точка двигателя: ve намеренно
+// не подстраивается под длину конкретного рейса, иначе режим менялся бы прямо
+// в полёте и расход не сходился бы с оценкой.
 // Если середина съедет, игрок по умолчанию полетит не оптимально и не узнает.
 void testThrottleMidpointIsCostOptimum() {
     Game g;
@@ -632,8 +634,9 @@ void testThrottleMidpointIsCostOptimum() {
     const double propVolPerMass = pm.mass > 0.0 ? pm.volume / pm.mass : 1.0;
     const double fuelVolPerMass = fm.mass > 0.0 ? fm.volume / fm.mass : 1.0;
 
+    const double nominal = ship.speed * 2.0;
     ship.throttle = 0.5;
-    const RouteCost mid = shipRouteCost(ship, 0.4, propPrice, fuelPrice);
+    const RouteCost mid = shipRouteCost(ship, nominal, propPrice, fuelPrice);
     const double midCost = mid.propellantMass * propPrice + mid.fuelMass * fuelPrice;
 
     double best = midCost;
@@ -641,7 +644,7 @@ void testThrottleMidpointIsCostOptimum() {
     int fitting = 0;
     for (int i = 0; i <= 40; ++i) {
         ship.throttle = double(i) / 40.0;
-        const RouteCost r = shipRouteCost(ship, 0.4, propPrice, fuelPrice);
+        const RouteCost r = shipRouteCost(ship, nominal, propPrice, fuelPrice);
         if (!r.feasible) continue;
         // Считаем только те режимы, под которые реально есть ёмкости.
         if (r.propellantMass * propVolPerMass > ship.propellantVolume) continue;
@@ -654,6 +657,79 @@ void testThrottleMidpointIsCostOptimum() {
     std::snprintf(buf, sizeof(buf), "середина %.0f Cr, лучшее из %d влезающих %.0f Cr при t=%.2f",
         midCost, fitting, best, bestT);
     check(fitting > 1 && best >= midCost * 0.97, "середина ручки — оптимум среди влезающих", buf);
+}
+
+
+// Прогноз маршрута обязан сходиться с ФАКТИЧЕСКИМ расходом в полёте. Именно
+// отсутствие этой проверки скрыло два бага сразу:
+//   1) Циолковский применялся по-тиковый от постоянной «сухой» массы, а не от
+//      текущей; сумма sum(e^xi - 1) вместо e^(sum xi) - 1 занижала расход в 6 раз;
+//   2) скорость истечения переоптимизировалась под dV КАЖДОГО тика, поэтому
+//      режим двигателя менялся посреди рейса.
+// Заливаем ровно расчётное количество и смотрим, что корабль долетает и
+// сжигает примерно столько, сколько обещано.
+void testRouteEstimateMatchesFlight() {
+    Game g;
+    buildWorld(g, 42, 12);
+    const int pa = g.playerAgent;
+    const int home = g.agents[pa].currentStar;
+
+    int target = -1;
+    double bestDist = 0.0;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        if (int(i) == home) continue;
+        const double d = g.routeDistance(home, int(i));
+        if (d > bestDist && d < 12.0) { bestDist = d; target = int(i); }
+    }
+    if (target < 0) { check(false, "прогноз маршрута сходится с полётом", "нет цели"); return; }
+
+    Ship& ship = g.agents[pa].ship;
+    const int fuelElem = shipDominantFuelElement(ship);
+    const int propElem = shipDominantPropellantElement(ship);
+    const RouteCost est = g.agentRouteCost(pa, target);
+    if (!est.feasible) { check(false, "прогноз маршрута сходится с полётом", "маршрут недостижим"); return; }
+
+    // Ёмкости под расчётную заправку, груз пуст (зола будет копиться в нём).
+    ship.cargoCapacity = 1.0e5;
+    ship.fuelVolume = 1.0e5;
+    ship.propellantVolume = 1.0e5;
+    ship.cargo.clear();
+    ship.fuel.clear();
+    ship.propellant.clear();
+    ship.fuel.push_back(Resource(elementDefinitions()[fuelElem].symbol,
+                                 est.fuelMass / elementUnitMass(fuelElem)));
+    ship.propellant.push_back(Resource(elementDefinitions()[propElem].symbol,
+                                       est.propellantMass / elementUnitMass(propElem)));
+    g.agents[pa].money = 0.0;   // чтобы не докупал по пути
+
+    // Прогноз пересчитываем на ФАКТИЧЕСКОЕ состояние перед вылетом: первая
+    // оценка делалась для другой загрузки и сравнивать с ней нечестно.
+    const RouteCost plan = g.agentRouteCost(pa, target);
+    const double fuel0 = shipFuelMix(ship).mass;
+    const double prop0 = shipPropellantMix(ship).mass;
+    if (!g.commandAgentToStar(pa, target)) {
+        char why[160];
+        std::snprintf(why, sizeof(why), "вылет отклонён: %s", g.lastEvent.c_str());
+        check(false, "прогноз маршрута сходится с полётом", why);
+        return;
+    }
+    int steps = 0;
+    while (g.agents[pa].ship.enRoute && steps < 400000) { g.update(0.02); ++steps; }
+
+    const Ship& q = g.agents[pa].ship;
+    const bool arrived = !q.enRoute;
+    const double burnedProp = prop0 - shipPropellantMix(q).mass;
+    const double burnedFuel = fuel0 - shipFuelMix(q).mass;
+    const double propRatio = plan.propellantMass > 0.0 ? burnedProp / plan.propellantMass : 1.0;
+    const double fuelRatio = plan.fuelMass > 0.0 ? burnedFuel / plan.fuelMass : 1.0;
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "%.1f ly: рабтело %.0f%% от прогноза, топливо %.0f%%, долетел %s",
+        bestDist, propRatio * 100.0, fuelRatio * 100.0, arrived ? "да" : "НЕТ");
+    // Полтора конца допуска: прогноз строится на массе в момент вылета, а по
+    // дороге корабль тяжелеет от золы, поэтому точного равенства не бывает.
+    check(arrived && propRatio > 0.5 && propRatio < 1.5 && fuelRatio > 0.5 && fuelRatio < 1.5,
+          "прогноз маршрута сходится с полётом", buf);
 }
 
 } // namespace
@@ -680,6 +756,7 @@ int main() {
     testAshIgnoresHoldLimit();
     testThrottleTradesPropellantForFuel();
     testThrottleMidpointIsCostOptimum();
+    testRouteEstimateMatchesFlight();
     testDriveSlotExclusive();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;
