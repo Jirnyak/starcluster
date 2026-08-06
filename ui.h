@@ -28,7 +28,8 @@ enum class WindowKind {
     Cargo,
     ShipFit,
     Transactions,
-    Exchange
+    Exchange,
+    Colony
 };
 
 struct Window {
@@ -81,6 +82,8 @@ void openCargoWindow(WindowState& state, int starIndex, int screenW, int screenH
 void openShipFitWindow(WindowState& state, int starIndex, int screenW, int screenH);
 void openTransactionsWindow(WindowState& state, int screenW, int screenH);
 void openExchangeWindow(WindowState& state, int starIndex, int screenW, int screenH);
+// Окно собственности: цена системы с разбором, покупка, касса колонии.
+void openColonyWindow(WindowState& state, int starIndex, int screenW, int screenH);
 // Держит кэш сводки свежим. Зовётся каждый кадр, пересчитывает редко.
 void updateExchangeBoard(WindowState& state, const Game& game);
 // Прокрутка списков колесом мыши. true — колесо съедено окном (не зумим карту).

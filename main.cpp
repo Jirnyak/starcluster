@@ -25,7 +25,7 @@
 enum ActionId {
     ACT_NONE = 0,
     // Макро-режим (звёздная карта):
-    ACT_ENTER, ACT_GO, ACT_STOP, ACT_TRADE, ACT_SHIPFIT, ACT_SWITCH, ACT_REPAIR, ACT_HIRE, ACT_CARGO, ACT_PAUSE, ACT_SPEED, ACT_TRANSACTIONS,
+    ACT_ENTER, ACT_GO, ACT_STOP, ACT_TRADE, ACT_SHIPFIT, ACT_SWITCH, ACT_REPAIR, ACT_COLONY, ACT_CARGO, ACT_PAUSE, ACT_SPEED, ACT_TRANSACTIONS,
     // Локальный режим (полёт):
     ACT_FIRE, ACT_MINE, ACT_DOCK, ACT_TARGET, ACT_ZOOM_IN, ACT_ZOOM_OUT, ACT_VIEW, ACT_EXIT
 };
@@ -692,7 +692,12 @@ int main(int argc, char** argv) {
             specs.push_back(Spec{ACT_SHIPFIT, "U FIT", UI::P.cyan, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_SWITCH, "W SWITCH", UI::P.amber, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_REPAIR, "J REPAIR", UI::P.green, docked && hullHurt, false});
-            specs.push_back(Spec{ACT_HIRE, "H HIRE", UI::P.green, docked, false});
+            // Витрина цены системы открывается всегда; сама сделка внутри уже
+            // требует стоянки. Зелёный горит, когда система уже твоя.
+            specs.push_back(Spec{ACT_COLONY,
+                                 game.playerOwnsStar(anchorStar()) ? "C MY SYS" : "C COLONY",
+                                 game.playerOwnsStar(anchorStar()) ? UI::P.green : UI::P.amber,
+                                 anchorStar() >= 0, false});
             specs.push_back(Spec{ACT_CARGO, "O CARGO", UI::P.cyan, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_TRANSACTIONS, "I LOG", UI::P.cyan, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_PAUSE, paused ? "|| PAUSE" : "> PLAY", UI::P.amber, true, paused});
@@ -799,9 +804,10 @@ int main(int argc, char** argv) {
             case ACT_REPAIR:
                 if (game.playerRepairHull()) { selectedAgent = game.playerAgent; titleTick = 11; }
                 break;
-            case ACT_HIRE:
-                game.playerHireShip(); selectedAgent = game.playerAgent;
-                break;
+            case ACT_COLONY: {
+                const int a = anchorStar();
+                if (a >= 0) { selectedStar = a; UI::openColonyWindow(ui, a, winW, winH); }
+            } break;
             case ACT_PAUSE: paused = !paused; break;
             case ACT_SPEED:
                 simSpeed = (simSpeed >= 10.0) ? 1.0 : (simSpeed >= 5.0 ? 10.0 : (simSpeed >= 2.0 ? 5.0 : 2.0));
@@ -1064,12 +1070,9 @@ int main(int argc, char** argv) {
                 if (e.key.keysym.sym == SDLK_x && game.playerAgent >= 0) {
                     game.abortAgentRoute(game.playerAgent);
                 }
-                if (e.key.keysym.sym == SDLK_c && game.playerFoundColony()) {
-                    selectedAgent = game.playerAgent;
-                }
-                if (e.key.keysym.sym == SDLK_h) {
-                    game.playerHireShip();
-                    selectedAgent = game.playerAgent;
+                if (e.key.keysym.sym == SDLK_c && anchorStar() >= 0) {
+                    selectedStar = anchorStar();
+                    UI::openColonyWindow(ui, selectedStar, winW, winH);
                 }
                 if (e.key.keysym.sym == SDLK_m && game.playerToggleMining()) {
                     selectedAgent = game.playerAgent;
@@ -1460,7 +1463,7 @@ int main(int argc, char** argv) {
                 }
             } else {
                 std::snprintf(title, sizeof(title), "Starcluster | pos x %.1f y %.1f z %.1f | t %.1f rate %.2fy/s spd x%.1f %s | view %s | factions %zu colonies %zu founded %d captures %d | traders %d military %d colonists %d | %s %s/%s -> %s %.2fc fuel %.0f%% mass %.0f %s money %.0f | F5 save F9 load RMB/G route B buy S sell T auto H hire/build C colony/reinforce | %s%s",
-                    coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, game.factions.size(), game.colonies.size(), game.foundedColonies, game.capturedSystems,
+                    coordX, coordY, coordZ, game.time, simYearsPerSecond, simSpeed, (paused ? "PAUSED" : "LIVE"), element.symbol, game.factions.size(), game.colonies.size(), game.boughtSystems, game.capturedSystems,
                     countAgentsOfType(game, "trader"), countAgentsOfType(game, "military"), countAgentsOfType(game, "colonist"),
                     shipName, agentType.c_str(), agentOwner.c_str(), targetName.c_str(), speed, fuel, mass, cargo, money, game.lastEvent.c_str(), followAgent ? " follow" : "");
             }

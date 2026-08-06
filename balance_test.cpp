@@ -305,6 +305,21 @@ void testStarterHullIsAClass() {
 // --- 9. Лицензионная квота проходима, но не даром ---------------------------
 // Ловит развал главного таймера: квоту должно быть реально закрыть торговлей за
 // период, но не с одного рейса (иначе она перестаёт давить вовсе).
+// Квота — главный таймер игры, и у неё две стороны отказа. Слишком мала — берётся
+// за пару рейсов и лежит мёртвым грузом три четверти тысячелетия. Слишком велика —
+// первый период кончается заморозкой торговли при любой игре.
+//
+// Планка поднята до 10 000 (была 1 000). Замер по трём сидам при игре «как живой
+// игрок», то есть возя в радиусе ~8 ly стартовым Hauler-ом: ~105 Cr тарифа за рейс
+// при ~47 годах на рейс. Значит 1 000 закрывалась за ~440 лет — меньше половины
+// периода, дальше игрок просто коптил небо. 10 000 в одиночку стартовым корпусом за
+// период НЕ берутся: первое тысячелетие честно кончается доплатой кредитами
+// (`playerSettleQuota`, 1.5× недобора) — к этому моменту капитал уже десятки тысяч,
+// так что это ощутимый укус, а не стена. Со второго корпуса пропускная способность
+// растёт на порядок, и квота снова берётся оборотом.
+//
+// Границы здесь широкие: ловим ПОЛОМКУ МЕХАНИЗМА (квота стала тривиальной либо
+// недостижимой в принципе), а не точное число.
 void testQuotaReachable() {
     Game g; buildWorld(g, 42, 120);
     ArbitrageDeal d; bool ok = false;
@@ -313,9 +328,15 @@ void testQuotaReachable() {
     const double tariff = g.licenceQuotaPaid - before;
     const double target = g.licenceQuotaTarget();
     const double runs = tariff > 0.0 ? target / tariff : 1e9;
-    char buf[160];
-    std::snprintf(buf, sizeof(buf), "квота %.0f, тариф с рейса %.0f => рейсов %.1f", target, tariff, runs);
-    check(tariff > 0.0 && runs > 1.0 && runs < 60.0, "квота закрывается за разумное число рейсов", buf);
+    // Доплата кредитами обязана оставаться выходом: если она уходит в космос,
+    // провал квоты превращается в непроходимую стену.
+    g.licenceQuotaPaid = 0.0;
+    const double settle = g.licenceSettleCost();
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "квота %.0f, тариф с рейса %.0f => рейсов %.1f, доплата %.0f Cr",
+        target, tariff, runs, settle);
+    check(tariff > 0.0 && runs > 20.0 && runs < 250.0 && settle < 40000.0,
+          "квота закрывается за разумное число рейсов", buf);
 }
 
 
@@ -1027,6 +1048,181 @@ void testAdriftShipRoutesByCoordinates() {
           "дрейф считается по координатам", buf);
 }
 
+// --------------------------------------------------------- СОБСТВЕННОСТЬ --
+// Цена системы — произведение шести множителей, и любая правка любого из них
+// сдвигает ПОРЯДОК итога. Здесь заморожен именно порядок: медиана по скоплению
+// должна остаться миллиардом (тир капитальных кораблей, §SYSTEM_PRICE_*), а не
+// уехать в миллионы (система покупается между рейсами) или в триллионы
+// (недостижимая цель). Пороги нарочно широкие — ловим поломку механизма.
+void testSystemPriceOrder() {
+    double medians[3] = {0.0, 0.0, 0.0};
+    double lo = 1e300, hi = 0.0;
+    bool monotone = true;
+    for (int s = 0; s < 3; ++s) {
+        Game g;
+        buildWorld(g, unsigned(11 + s * 7), 0);
+        std::vector<double> prices;
+        for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+            const SystemPrice p = g.systemPrice(int(i));
+            // Каждый множитель обязан быть >= 1: он отвечает «во сколько раз
+            // система ЛУЧШЕ пустого камня», а не «во сколько раз хуже».
+            if (p.population < 1.0 || p.industry < 1.0 || p.habitability < 1.0 ||
+                p.resources < 1.0 || p.development < 1.0 || p.sovereignty < 1.0) monotone = false;
+            prices.push_back(p.total);
+        }
+        std::sort(prices.begin(), prices.end());
+        medians[s] = prices[prices.size() / 2];
+        lo = std::min(lo, prices.front());
+        hi = std::max(hi, prices.back());
+    }
+    const double median = (medians[0] + medians[1] + medians[2]) / 3.0;
+    // Разброс обязан быть: если богатая система стоит как пустая, множители не работают.
+    const bool spread = hi > lo * 8.0;
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "медиана %.3g Cr (нужно 3e8..4e9), разброс %.3g..%.3g",
+        median, lo, hi);
+    check(median > 3.0e8 && median < 4.0e9 && spread && monotone,
+          "система стоит порядка миллиарда", buf);
+}
+
+// Покупка = смена владельца и перевод денег продавцу. Ни один кредит не должен
+// ни исчезнуть, ни родиться: сумма «игрок + казна продавца» сохраняется.
+void testBuySystemMovesMoneyAndOwner() {
+    Game g;
+    buildWorld(g, 42, 4);
+    const int pa = g.playerAgent;
+    const int home = g.agents[pa].currentStar;
+    // Берём чужую систему: своя стартовая уже наша и продаваться не должна.
+    int target = -1;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        if (g.cluster.stars[i].ownerFaction >= 0 && !g.playerOwnsStar(int(i))) { target = int(i); break; }
+    }
+    if (target < 0) { check(false, "покупка системы двигает деньги и владельца", "нет чужой системы"); return; }
+
+    // Переставляем игрока в целевую систему: сделка требует стоянки на месте.
+    g.agents[pa].currentStar = target;
+    g.agents[pa].ship.enRoute = false;
+    const int seller = g.cluster.stars[target].ownerFaction;
+    const double price = g.systemPrice(target).total;
+
+    g.agents[pa].money = price * 0.5;
+    const bool poorRefused = !g.playerBuySystem();
+
+    g.agents[pa].money = price * 1.5;
+    const double sellerBefore = g.factions[seller].treasury;
+    const double playerBefore = g.agents[pa].money;
+    const bool bought = g.playerBuySystem();
+    const double spent = playerBefore - g.agents[pa].money;
+    const double gained = g.factions[seller].treasury - sellerBefore;
+
+    const bool ownerChanged = g.playerOwnsStar(target);
+    const bool hasColony = g.colonyLedgerAt(target) >= 0.0 && g.playerColonyCount() > 0;
+    const bool conserved = std::fabs(spent - gained) < std::max(1.0, price * 1e-9);
+    // Купленная система больше не продаётся.
+    const bool notTwice = !g.playerBuySystem();
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "цена %.3g, списано %.3g, продавцу %.3g; %s%s%s%s",
+        price, spent, gained,
+        poorRefused ? "" : "БЕДНЫЙ КУПИЛ ", bought ? "" : "ОТКАЗ ",
+        ownerChanged ? "" : "ВЛАДЕЛЕЦ НЕ СМЕНИЛСЯ ", notTwice ? "" : "КУПИЛ ДВАЖДЫ ");
+    check(poorRefused && bought && ownerChanged && conserved && notTwice && hasColony,
+          "покупка системы двигает деньги и владельца", buf);
+}
+
+// Свой рынок бесплатен, но НЕ бездонен: цена сделки 0, а запас склада тает и
+// цена элемента растёт ровно как при обычной покупке. Без этого дармовой товар
+// стал бы бесконечным станком денег через продажу в соседней системе.
+void testOwnedMarketIsFreeButFinite() {
+    Game g;
+    buildWorld(g, 42, 4);
+    const int pa = g.playerAgent;
+    int target = -1;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        if (g.cluster.stars[i].ownerFaction >= 0 && !g.playerOwnsStar(int(i))) { target = int(i); break; }
+    }
+    if (target < 0) { check(false, "свой рынок даром, но конечен", "нет чужой системы"); return; }
+    g.agents[pa].currentStar = target;
+    g.agents[pa].ship.enRoute = false;
+    g.agents[pa].money = g.systemPrice(target).total * 1.2;
+    if (!g.playerBuySystem()) { check(false, "свой рынок даром, но конечен", "покупка не прошла"); return; }
+
+    // Самый ходовой элемент этой системы.
+    int element = -1;
+    double bestSupply = 0.0;
+    for (size_t e = 0; e < g.markets[target].supply.size(); ++e) {
+        if (g.markets[target].supply[e].amount > bestSupply) {
+            bestSupply = g.markets[target].supply[e].amount;
+            element = int(e);
+        }
+    }
+    if (element < 0) { check(false, "свой рынок даром, но конечен", "пустой рынок"); return; }
+
+    g.agents[pa].ship.cargo.clear();
+    const double moneyBefore = g.agents[pa].money;
+    const double supplyBefore = g.markets[target].supply[element].amount;
+    const double priceBefore = g.markets[target].prices[element];
+    const bool took = g.agentBuyElementAmount(pa, element, 1.0e12);
+    const double moneyAfter = g.agents[pa].money;
+    const double supplyAfter = g.markets[target].supply[element].amount;
+    const double priceAfter = g.markets[target].prices[element];
+
+    const double cargoMass = shipCargoMass(g.agents[pa].ship);
+    const bool freeOfCharge = std::fabs(moneyAfter - moneyBefore) < 0.001;
+    const bool marketDrained = supplyAfter < supplyBefore - 0.01;
+    const bool priceRose = priceAfter > priceBefore * 1.0000001;
+    // Дармовой груз всё равно ограничен трюмом, а не размером склада.
+    const bool holdRespected = cargoMass <= g.agents[pa].ship.cargoCapacity + 0.01;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "деньги %+.4f, запас %.1f->%.1f, цена %.3f->%.3f, трюм %.1f/%.1f",
+        moneyAfter - moneyBefore, supplyBefore, supplyAfter, priceBefore, priceAfter,
+        cargoMass, g.agents[pa].ship.cargoCapacity);
+    check(took && freeOfCharge && marketDrained && priceRose && holdRespected,
+          "свой рынок даром, но конечен", buf);
+}
+
+// Касса колонии — перекладывание из кармана в карман: сколько ушло у игрока,
+// столько пришло в колонию, и обратно. Ни один кредит не создаётся.
+void testColonyVaultConserves() {
+    Game g;
+    buildWorld(g, 42, 4);
+    const int pa = g.playerAgent;
+    int target = -1;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        if (g.cluster.stars[i].ownerFaction >= 0 && !g.playerOwnsStar(int(i))) { target = int(i); break; }
+    }
+    if (target < 0) { check(false, "касса колонии сохраняет деньги", "нет чужой системы"); return; }
+    g.agents[pa].currentStar = target;
+    g.agents[pa].ship.enRoute = false;
+    g.agents[pa].money = g.systemPrice(target).total * 1.2;
+    if (!g.playerBuySystem()) { check(false, "касса колонии сохраняет деньги", "покупка не прошла"); return; }
+
+    g.agents[pa].money = 10000.0;
+    const double vaultBefore = g.colonyLedgerAt(target);
+    const double put = g.playerColonyDeposit(4000.0);
+    const bool deposited = std::fabs(put - 4000.0) < 0.001 &&
+                           std::fabs(g.agents[pa].money - 6000.0) < 0.001 &&
+                           std::fabs(g.colonyLedgerAt(target) - (vaultBefore + 4000.0)) < 0.001;
+    // Забрать больше, чем лежит, нельзя — вернётся ровно остаток.
+    const double vaultNow = g.colonyLedgerAt(target);
+    const double got = g.playerColonyWithdraw(vaultNow * 10.0);
+    const bool withdrawn = std::fabs(got - vaultNow) < 0.001 && g.colonyLedgerAt(target) < 0.001;
+
+    // Вдали от своей системы касса недоступна: империю надо облетать.
+    int elsewhere = -1;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        if (!g.playerOwnsStar(int(i))) { elsewhere = int(i); break; }
+    }
+    g.agents[pa].currentStar = elsewhere;
+    const bool remoteBlocked = g.playerColonyWithdraw(1.0) <= 0.0 && g.playerColonyDeposit(1.0) <= 0.0;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "положено %.1f, снято %.1f, удалённо %s",
+        put, got, remoteBlocked ? "закрыто" : "ОТКРЫТО");
+    check(deposited && withdrawn && remoteBlocked, "касса колонии сохраняет деньги", buf);
+}
+
 } // namespace
 
 int main() {
@@ -1060,6 +1256,10 @@ int main() {
     testEmergencyStopIsPhysical();
     testAdriftShipRoutesByCoordinates();
     testDriveSlotExclusive();
+    testSystemPriceOrder();
+    testBuySystemMovesMoneyAndOwner();
+    testOwnedMarketIsFreeButFinite();
+    testColonyVaultConserves();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;
 }

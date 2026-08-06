@@ -187,15 +187,3 @@ double colonyQueueProgress(const Colony& colony) {
     return std::max(0.0, std::min(1.0, item.progress / item.cost));
 }
 
-int colonyShipHiringCapacity(const Colony& colony) {
-    if (colony.shipyardLevel <= 0) return 0;
-    const double health = std::max(0.0, 1.0 - colony.damage);
-    const int levelSlots = colony.shipyardLevel * 2;
-    const int infrastructureSlots = int(std::max(0.0, colony.infrastructure) / 3.0);
-    const int energySlots = int(std::max(0.0, colony.energyCapacity) / 80.0);
-    return std::max(0, int((levelSlots + infrastructureSlots + energySlots) * health));
-}
-
-bool colonyHasShipyardCapacity(const Colony& colony) {
-    return colonyShipHiringCapacity(colony) > 0;
-}

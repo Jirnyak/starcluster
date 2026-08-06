@@ -110,12 +110,6 @@ bool contractNeedsTargetAgent(ContractType type) {
     return type == ContractType::Bounty || type == ContractType::Escort;
 }
 
-enum class MaterialNeed {
-    Structure,
-    Electronics,
-    Energy
-};
-
 double averageValue(const std::vector<double>& values) {
     if (values.empty()) return 1.0;
     double sum = 0.0;
@@ -153,102 +147,6 @@ double marketMemoryTau(const ElementDefinition& element) {
     const double stableGoods = element.nobleStability * 12.0 + element.structuralTrait * 8.0;
     const double volatileGoods = element.handlingRisk * 10.0 + element.demandWeight * 1.4;
     return std::max(4.0, std::min(42.0, 18.0 + stableGoods - volatileGoods));
-}
-
-double materialNeedTrait(MaterialNeed need, const ElementDefinition& element) {
-    if (need == MaterialNeed::Structure) {
-        return element.structuralTrait * 0.70 + element.metallicTrait * 0.25 + element.nuclearStability * 0.10;
-    }
-    if (need == MaterialNeed::Electronics) {
-        return element.conductorTrait * 0.70 + element.catalystTrait * 0.22 + element.nobleStability * 0.18;
-    }
-    const double fuelTrait = std::max(element.fusionFuelTrait, element.fissionFuelTrait);
-    return fuelTrait * 0.80 + element.activationCost * 0.05 + (1.0 - element.handlingRisk) * 0.12;
-}
-
-struct MaterialRequirement {
-    int element = -1;
-    double amount = 0.0;
-
-    MaterialRequirement() {}
-    MaterialRequirement(int element_, double amount_) : element(element_), amount(amount_) {}
-};
-
-int pickLocalMaterialElement(const Market& market, MaterialNeed need) {
-    const std::vector<ElementDefinition>& elements = elementDefinitions();
-    int best = -1;
-    double bestScore = 0.0;
-    const size_t count = std::min(elements.size(), market.supply.size());
-    for (size_t i = 0; i < count; ++i) {
-        const double trait = materialNeedTrait(need, elements[i]);
-        if (trait <= 0.04) continue;
-        const double availableMass = market.supply[i].amount * resourceUnitMassByIndex(int(i));
-        if (availableMass <= 0.05) continue;
-        const double reference = marketReferencePrice(int(i));
-        const double pressure = i < market.prices.size() && reference > 0.0 ?
-            market.prices[i] / reference : 1.0;
-        const double score = trait * (0.5 + std::sqrt(availableMass)) / std::sqrt(std::max(0.01, pressure));
-        if (score > bestScore) {
-            bestScore = score;
-            best = int(i);
-        }
-    }
-    return best;
-}
-
-void addMaterialRequirement(std::vector<MaterialRequirement>& requirements, int elementIndex, double mass) {
-    if (elementIndex < 0 || mass <= 0.0) return;
-    const double amount = mass / resourceUnitMassByIndex(elementIndex);
-    if (amount <= 0.0) return;
-    for (MaterialRequirement& requirement : requirements) {
-        if (requirement.element == elementIndex) {
-            requirement.amount += amount;
-            return;
-        }
-    }
-    requirements.push_back(MaterialRequirement(elementIndex, amount));
-}
-
-std::vector<MaterialRequirement> colonyFoundingRequirements(const Game& game, int starIndex) {
-    std::vector<MaterialRequirement> requirements;
-    if (!validStar(game, starIndex) || starIndex >= int(game.markets.size())) return requirements;
-    const ClusterStar& star = game.cluster.stars[starIndex];
-    const Market& market = game.markets[starIndex];
-    const double scale = 0.75 + std::max(0.0, 1.0 - star.habitability) * 0.55 + std::max(0.0, 1.0 - star.industry) * 0.10;
-    addMaterialRequirement(requirements, pickLocalMaterialElement(market, MaterialNeed::Structure), 26.0 * scale);
-    addMaterialRequirement(requirements, pickLocalMaterialElement(market, MaterialNeed::Electronics), 7.0 * scale);
-    addMaterialRequirement(requirements, pickLocalMaterialElement(market, MaterialNeed::Energy), 10.0 * scale);
-    return requirements;
-}
-
-std::vector<MaterialRequirement> shipBuildRequirements(const Game& game, int starIndex, const Colony& colony) {
-    std::vector<MaterialRequirement> requirements;
-    if (!validStar(game, starIndex) || starIndex >= int(game.markets.size())) return requirements;
-    const Market& market = game.markets[starIndex];
-    const double shipyardDiscount = colony.shipyardLevel > 0 ? 0.72 : 1.0;
-    addMaterialRequirement(requirements, pickLocalMaterialElement(market, MaterialNeed::Structure), 18.0 * shipyardDiscount);
-    addMaterialRequirement(requirements, pickLocalMaterialElement(market, MaterialNeed::Electronics), 5.5 * shipyardDiscount);
-    addMaterialRequirement(requirements, pickLocalMaterialElement(market, MaterialNeed::Energy), 6.0 * shipyardDiscount);
-    return requirements;
-}
-
-bool consumeMaterialRequirements(Game& game, int starIndex, const std::vector<MaterialRequirement>& requirements, std::string& missing) {
-    if (!validStar(game, starIndex) || starIndex >= int(game.markets.size())) return false;
-    Market& market = game.markets[starIndex];
-    for (const MaterialRequirement& requirement : requirements) {
-        if (requirement.element < 0 || requirement.element >= int(market.supply.size())) return false;
-        const double available = market.supply[requirement.element].amount;
-        if (available + 0.001 < requirement.amount) {
-            const ElementDefinition& element = elementDefinitions()[requirement.element];
-            missing = std::string("need ") + element.symbol + " " +
-                std::to_string(int(std::ceil(requirement.amount - available)));
-            return false;
-        }
-    }
-    for (const MaterialRequirement& requirement : requirements) {
-        market.supply[requirement.element].amount = std::max(0.0, market.supply[requirement.element].amount - requirement.amount);
-    }
-    return true;
 }
 
 double tariffFor(const Game& game, int starIndex, int ownerFaction, double externalRate);
@@ -1826,6 +1724,24 @@ const double REFINERY_MARKUP = 0.90;
 // Станционный макрос: купить расходник и сразу залить его в бак. Один поток
 // для игрока и для ИИ — правила общие (ship.md, «AI Requirements»).
 // bunker=true заливает топливо в реактор, иначе рабочее тело в бак.
+// --------------------------------------------------------- СВОЙ РЫНОК ДАРОМ --
+// В системе, которой владеет игрок, торговли как обмена деньгами нет: товар
+// просто переходит между трюмом и складом, потому что склад и так его. Цена — 0,
+// пошлины и лицензионный тариф — 0.
+//
+// Но ЗАПАС И ЦЕНА ДВИГАЮТСЯ ровно как при обычной сделке. Это не уступка балансу,
+// а та же физика: склад системы конечен, и владелец, вывозящий его подчистую,
+// поднимает себе же strain, душит рост населения и роняет собственный доход.
+// Ограничение встроено в модель, а не приделано лимитом из воздуха.
+//
+// Только для корабля ПОД УПРАВЛЕНИЕМ игрока: нанятые борта той же фракции живут
+// по общим правилам, иначе они возили бы дармовой товар на чужие рынки.
+bool freeMarketFor(const Game& game, const Agent& agent, int starIndex) {
+    return agent.playerControlled && validStar(game, starIndex) &&
+           validFaction(game, game.playerFaction) &&
+           game.cluster.stars[starIndex].ownerFaction == game.playerFaction;
+}
+
 bool buyConsumable(Game& game, Agent& agent, int starIndex, bool bunker, double targetMass) {
     if (!validStar(game, starIndex)) return false;
     Ship& ship = agent.ship;
@@ -1852,11 +1768,17 @@ bool buyConsumable(Game& game, Agent& agent, int starIndex, bool bunker, double 
     const double unitCost = market.prices[element] * (1.0 + REFINERY_MARKUP) * (1.0 + tariff);
     if (unitCost <= 0.0) return false;
 
-    const double amount = std::min(wantedUnits, std::min(market.supply[element].amount, agent.money / unitCost));
+    // Своя система заправляет даром: топливо — такой же товар со своего склада,
+    // и наценка за очистку своей же станции с владельца не берётся. Запас склада
+    // при этом тратится как обычно.
+    const bool freeMarket = freeMarketFor(game, agent, starIndex);
+    const double amount = freeMarket
+        ? std::min(wantedUnits, market.supply[element].amount)
+        : std::min(wantedUnits, std::min(market.supply[element].amount, agent.money / unitCost));
     if (amount <= 0.01) return false;
 
-    const double baseCost = amount * market.prices[element] * (1.0 + REFINERY_MARKUP);
-    const double fee = baseCost * tariff;
+    const double baseCost = freeMarket ? 0.0 : amount * market.prices[element] * (1.0 + REFINERY_MARKUP);
+    const double fee = freeMarket ? 0.0 : baseCost * tariff;
     const int owner = game.cluster.stars[starIndex].ownerFaction;
     market.applyTrade(element, -amount);
     agent.money -= baseCost + fee;
@@ -1916,10 +1838,12 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
     if (amount <= 0.01) return false;
     // Цена исполнения — СРЕДНЯЯ по сделке: сбрасывая большой груз в тонкий рынок,
     // продавец сам сбивает себе цену уже по ходу продажи, а не после неё.
-    const double gross = amount * market.executionPrice(resourceIndex, amount, true);
+    // В своей системе выручка нулевая: это передача на собственный склад.
+    const bool freeMarket = freeMarketFor(game, agent, starIndex);
+    const double gross = freeMarket ? 0.0 : amount * market.executionPrice(resourceIndex, amount, true);
     double tariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.026);
     if (agent.playerControlled) tariff /= std::max(1.0, game.tech.charisma);
-    const double fee = gross * tariff;
+    const double fee = freeMarket ? 0.0 : gross * tariff;
     const int owner = game.cluster.stars[starIndex].ownerFaction;
     const double costShare = agent.cargoCost * (amount / std::max(0.001, cargoAmount));
 
@@ -1944,7 +1868,7 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
     agent.lastProfit = gross - fee - licenceFee - costShare;
     agent.cargoCost = std::max(0.0, agent.cargoCost - costShare);
     agent.trades += 1;
-    agent.lastAction = "sold " + agent.ship.cargo[cargoIndex].element;
+    agent.lastAction = (freeMarket ? "gave " : "sold ") + agent.ship.cargo[cargoIndex].element;
     agent.ship.cargo[cargoIndex].amount -= amount;
     if (agent.ship.cargo[cargoIndex].amount <= 0.01) {
         agent.ship.cargo.erase(agent.ship.cargo.begin() + cargoIndex);
@@ -1961,19 +1885,29 @@ void buyCargo(Game& game, Agent& agent, int starIndex, const TradePlan& plan) {
     // Сколько влезет по ЦЕНЕ ДО СДЕЛКИ — только первая прикидка: скупая рынок,
     // покупатель сам разгоняет себе цену, поэтому уточняем объём по средней цене
     // исполнения. Две итерации сходятся: функция монотонна и пологая.
+    const bool freeMarket = freeMarketFor(game, agent, starIndex);
     const double capAmount = std::min(plan.amount, market.supply[plan.elementIndex].amount);
-    double amount = std::min(capAmount, agent.money / std::max(1e-9, market.prices[plan.elementIndex]));
-    for (int pass = 0; pass < 2 && amount > 0.0; ++pass) {
-        const double avg = market.executionPrice(plan.elementIndex, amount, false);
-        amount = std::min(capAmount, agent.money / std::max(1e-9, avg));
+    double amount = capAmount;
+    if (freeMarket) {
+        // Со своего склада берут даром, поэтому деньги больше не потолок — им
+        // становится трюм. Без этого запрошенный «максимум» вычерпал бы систему
+        // целиком в корабль, который столько не увезёт.
+        const double freeMass = std::max(0.0, agent.ship.cargoCapacity - shipCargoMass(agent.ship));
+        amount = std::min(capAmount, freeMass / std::max(1e-9, resourceUnitMassByIndex(plan.elementIndex)));
+    } else {
+        amount = std::min(capAmount, agent.money / std::max(1e-9, market.prices[plan.elementIndex]));
+        for (int pass = 0; pass < 2 && amount > 0.0; ++pass) {
+            const double avg = market.executionPrice(plan.elementIndex, amount, false);
+            amount = std::min(capAmount, agent.money / std::max(1e-9, avg));
+        }
     }
     if (amount <= 0.01) return;
 
-    const double unitCost = market.executionPrice(plan.elementIndex, amount, false);
+    const double unitCost = freeMarket ? 0.0 : market.executionPrice(plan.elementIndex, amount, false);
     const double baseCost = amount * unitCost;
     double tariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.014);
     if (agent.playerControlled) tariff /= std::max(1.0, game.tech.charisma);
-    const double fee = baseCost * tariff;
+    const double fee = freeMarket ? 0.0 : baseCost * tariff;
     const int owner = game.cluster.stars[starIndex].ownerFaction;
 
     market.applyTrade(plan.elementIndex, -amount);
@@ -1994,7 +1928,7 @@ void buyCargo(Game& game, Agent& agent, int starIndex, const TradePlan& plan) {
     } else {
         agent.ship.cargo[cargoIndex].amount += amount;
     }
-    agent.lastAction = "bought " + std::string(element.symbol);
+    agent.lastAction = (freeMarket ? "took " : "bought ") + std::string(element.symbol);
 }
 
 bool startJourney(Game& game, Agent& agent, int destStar) {
@@ -2108,7 +2042,6 @@ void settleCurrentStar(Game& game, Agent& agent) {
     if (colonyIndex < 0) {
         addColony(game, starIndex, factionIndex, false);
         colonyIndex = colonyIndexAt(game, starIndex);
-        game.foundedColonies += 1;
         game.lastEvent = game.factions[factionIndex].name + " chartered " + star.name;
     } else if (newOwner) {
         transferColonies(game, starIndex, factionIndex);
@@ -2855,7 +2788,7 @@ bool Game::saveToFile(const std::string& path) {
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
         << nextContractId << ' ' << playerAgent << ' ' << playerFaction << ' '
-        << foundedColonies << ' ' << capturedSystems << ' ' << nextSignalEventId << ' ' << saveToken(lastEvent) << '\n';
+        << boughtSystems << ' ' << capturedSystems << ' ' << nextSignalEventId << ' ' << saveToken(lastEvent) << '\n';
     out << "LICENCE " << licenceQuotaPaid << ' ' << licencePeriodEnd << ' ' << licenceTariffRate << ' '
         << licenceBuyback << ' ' << licenceCount << ' ' << (licenceRevoked ? 1 : 0) << ' '
         << licencePeriodsMet << ' ' << licenceQuotaBase << '\n';
@@ -3123,7 +3056,7 @@ bool Game::loadFromFile(const std::string& path) {
     if (!expectTag(in, "TIME") ||
         !(in >> loaded.time >> loaded.contractUpdateTimer >> loaded.factionUpdateTimer >>
             loaded.nextContractId >> loaded.playerAgent >> loaded.playerFaction >>
-            loaded.foundedColonies >> loaded.capturedSystems >> loaded.nextSignalEventId >> eventToken)) {
+            loaded.boughtSystems >> loaded.capturedSystems >> loaded.nextSignalEventId >> eventToken)) {
         lastEvent = "load failed: time";
         return false;
     }
@@ -3870,7 +3803,7 @@ void Game::init(size_t num_stars) {
     factionUpdateTimer = 0.0;
     playerAgent = -1;
     playerFaction = -1;
-    foundedColonies = 0;
+    boughtSystems = 0;
     capturedSystems = 0;
     tech = TechState();
     marketEvents.clear();
@@ -4696,13 +4629,15 @@ bool Game::buyShip(int agentIndex, int starIndex, int classId) {
     if (agentIndex < 0 || agentIndex >= int(agents.size()) || !validStar(*this, starIndex)) return false;
     Agent& agent = agents[agentIndex];
     if (agent.currentStar != starIndex || agent.ship.enRoute) return false;
-    const Colony& colony = colonies[starIndex];
-    if (colony.shipyardLevel <= 0 && colony.infrastructure < 1.0) return false;
-    
+    // Здесь стояло `colonies[starIndex]` — вектор колоний индексировался номером
+    // ЗВЕЗДЫ. Колоний единицы, звёзд тысячи, так что это было чтение за границей
+    // вектора (UB на объекте со string/vector внутри), а «проверка верфи» просто
+    // сравнивала мусор. Гейт по верфи живёт в модулях (`minShipyard`), корпус же
+    // продаётся везде — как оно фактически и работало.
     const auto& classes = shipClasses();
     if (classId < 0 || classId >= int(classes.size())) return false;
     const ShipClass& sc = classes[classId];
-    
+
     double currentHullPrice = 0.0;
     for (const auto& c : classes) {
         if (c.name == agent.ship.name) {
@@ -4724,9 +4659,7 @@ bool Game::buyShip(int agentIndex, int starIndex, int classId) {
 bool Game::buyAdditionalShip(int agentIndex, int starIndex, int classId) {
     if (agentIndex < 0 || agentIndex >= int(agents.size()) || !validStar(*this, starIndex)) return false;
     if (agents[agentIndex].currentStar != starIndex || agents[agentIndex].ship.enRoute) return false;
-    const Colony& colony = colonies[starIndex];
-    if (colony.shipyardLevel <= 0 && colony.infrastructure < 1.0) return false;
-    
+    // См. buyShip выше: та же ошибка индексации, тот же вывод.
     const auto& classes = shipClasses();
     if (classId < 0 || classId >= int(classes.size())) return false;
     const ShipClass& sc = classes[classId];
@@ -5477,62 +5410,147 @@ bool Game::agentAutoTrade(int agentIndex) {
     return startJourney(*this, agent, plan.destStar);
 }
 
-bool Game::playerFoundColony() {
+// ----------------------------------------------------- СОБСТВЕННОСТЬ НА СИСТЕМУ --
+// Цена — произведение независимых множителей, каждый из которых отвечает «во
+// сколько раз система ценнее пустого камня». Всё контекстно: ни одной константы,
+// приписанной конкретной звезде, — только то, что уже живёт в мире (люди, заводы,
+// обитаемость, годовой выпуск недр, построенное, владелец).
+SystemPrice Game::systemPrice(int starIndex) const {
+    SystemPrice price;
+    if (!validStar(*this, starIndex)) return price;
+    const ClusterStar& star = cluster.stars[starIndex];
+
+    price.population = 1.0 + std::max(0.0, star.population) / SYSTEM_PRICE_POP_REF;
+    price.industry = 1.0 + std::max(0.0, star.industry) / SYSTEM_PRICE_IND_REF;
+    price.habitability = 1.0 + std::max(0.0, star.habitability) * SYSTEM_PRICE_HAB_W;
+
+    // Недра — не «сколько тонн лежит», а СКОЛЬКО ЭТО СТОИТ В ГОД: годовой выпуск
+    // по местным ценам. Богатая иридием система дороже богатой песком ровно во
+    // столько раз, во сколько иридий дороже песка, и ни одной таблицы для этого
+    // не нужно — рынок уже всё посчитал.
+    double turnover = 0.0;
+    if (starIndex < int(markets.size())) {
+        const Market& market = markets[starIndex];
+        const size_t count = std::min(market.productionRate.size(), market.prices.size());
+        for (size_t i = 0; i < count; ++i) turnover += market.productionRate[i] * market.prices[i];
+    }
+    price.resources = 1.0 + std::max(0.0, turnover) / SYSTEM_PRICE_TURNOVER_REF;
+
+    const int colonyIndex = colonyIndexAt(*this, starIndex);
+    if (colonyIndex >= 0) {
+        const Colony& colony = colonies[colonyIndex];
+        price.development = 1.0 + std::max(0.0, colony.infrastructure) * SYSTEM_PRICE_INFRA_W +
+                            double(std::max(0, colony.shipyardLevel)) * SYSTEM_PRICE_SHIPYARD_W;
+    }
+
+    // Суверенная надбавка: выкуп у чужой фракции тем дороже, чем она сильнее.
+    if (star.ownerFaction >= 0 && star.ownerFaction != playerFaction &&
+        validFaction(*this, star.ownerFaction)) {
+        price.sovereignty = 1.0 + std::max(0.0, factions[star.ownerFaction].strength) * SYSTEM_PRICE_FOREIGN_W;
+    }
+
+    price.total = SYSTEM_PRICE_BASE * price.population * price.industry * price.habitability *
+                  price.resources * price.development * price.sovereignty;
+    return price;
+}
+
+bool Game::playerOwnsStar(int starIndex) const {
+    return validStar(*this, starIndex) && validFaction(*this, playerFaction) &&
+           cluster.stars[starIndex].ownerFaction == playerFaction;
+}
+
+// Покупка = смена владельца. Никакого «основания»: система как жила, так и живёт,
+// меняется только чья она. Если колонии на звезде не было, она заводится здесь же
+// из уже имеющегося населения и индустрии — чтобы у собственности была касса.
+bool Game::playerBuySystem() {
     if (playerAgent < 0 || playerAgent >= int(agents.size()) || !validFaction(*this, playerFaction)) return false;
     Agent& player = agents[playerAgent];
-    if (player.ship.enRoute || !validStar(*this, player.currentStar)) return false;
-
-    ClusterStar& star = cluster.stars[player.currentStar];
-    if (star.ownerFaction >= 0 && star.ownerFaction != playerFaction) {
-        player.lastAction = "foreign claim";
+    if (player.ship.enRoute || !validStar(*this, player.currentStar)) {
+        lastEvent = "buy blocked: dock in the system first";
+        return false;
+    }
+    const int starIndex = player.currentStar;
+    ClusterStar& star = cluster.stars[starIndex];
+    if (star.ownerFaction == playerFaction) {
+        player.lastAction = "already yours";
+        lastEvent = "buy blocked: " + star.name + " is already yours";
         return false;
     }
 
-    const int existingColony = colonyIndexAt(*this, player.currentStar);
-    if (existingColony < 0) {
-        const double cost = 7600.0 + std::max(0.0, 1.0 - star.habitability) * 1800.0;
-        if (player.money < cost) {
-            player.lastAction = "need " + std::to_string(int(std::ceil(cost)));
-            return false;
-        }
-        std::string missing;
-        const std::vector<MaterialRequirement> requirements = colonyFoundingRequirements(*this, player.currentStar);
-        if (!consumeMaterialRequirements(*this, player.currentStar, requirements, missing)) {
-            player.lastAction = missing.empty() ? "need materials" : missing;
-            lastEvent = "colony blocked: " + player.lastAction;
-            return false;
-        }
-        setStarOwner(*this, player.currentStar, playerFaction);
-        addColony(*this, player.currentStar, playerFaction, false);
-        observeStar(player.currentStar);
-        player.money -= cost;
-        foundedColonies += 1;
-        lastEvent = "player founded " + star.name;
-        player.lastAction = "founded colony";
-        return true;
-    }
-
-    Colony& colony = colonies[existingColony];
-    if (colony.ownerFaction != playerFaction) {
-        player.lastAction = "foreign colony";
-        return false;
-    }
-
-    const double cost = std::min(2500.0, player.money);
-    if (cost < 500.0) {
+    const double cost = systemPrice(starIndex).total;
+    if (player.money < cost) {
         player.lastAction = "need credits";
+        lastEvent = "buy blocked: need " + std::to_string((long long)std::ceil(cost)) + " Cr";
         return false;
     }
+
+    const int seller = star.ownerFaction;
     player.money -= cost;
-    colony.population += size_t(cost * 0.15);
-    colony.infrastructure += cost * 0.00016;
-    star.population += cost * 0.15;
-    star.industry += cost * 0.000012;
-    star.defense += cost * 0.00008;
-    observeStar(player.currentStar);
-    lastEvent = "player reinforced " + star.name;
-    player.lastAction = "reinforced colony";
+    // Деньги не исчезают из мира: прежний владелец получает всё и пустит их на
+    // свою экспансию и флот — ты буквально финансируешь соседа, у которого купил.
+    if (validFaction(*this, seller)) factions[seller].treasury += cost;
+
+    setStarOwner(*this, starIndex, playerFaction);
+    // Звезда и колония на ней — две записи, и владелец у них меняется РАЗНЫМИ
+    // вызовами (`setStarOwner` трогает только звезду). Забыть второй значит
+    // купить систему, чья касса продолжает работать на прежнего хозяина.
+    transferColonies(*this, starIndex, playerFaction);
+    if (colonyIndexAt(*this, starIndex) < 0) addColony(*this, starIndex, playerFaction, false);
+    observeStar(starIndex);
+    boughtSystems += 1;
+    player.lastAction = "bought system";
+    lastEvent = "player bought " + star.name;
     return true;
+}
+
+double Game::colonyLedgerAt(int starIndex) const {
+    const int colonyIndex = colonyIndexAt(*this, starIndex);
+    return colonyIndex < 0 ? 0.0 : colonies[colonyIndex].localLedger;
+}
+
+// Доход колонии в кредитах за год — тот же расчёт, что в updateColonies, но без
+// шага симуляции. Одна формула на два места: цифра в окне и есть то, что капает.
+double Game::colonyIncomeAt(int starIndex) const {
+    const int colonyIndex = colonyIndexAt(*this, starIndex);
+    if (colonyIndex < 0 || !validStar(*this, starIndex)) return 0.0;
+    const Colony& colony = colonies[colonyIndex];
+    const ClusterStar& star = cluster.stars[starIndex];
+    return (star.industry * 0.55 + double(colony.population) * 0.00002) * colony.marketAccess;
+}
+
+double Game::playerColonyDeposit(double amount) {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return 0.0;
+    Agent& player = agents[playerAgent];
+    if (player.ship.enRoute || !playerOwnsStar(player.currentStar)) {
+        lastEvent = "vault blocked: dock in your own system";
+        return 0.0;
+    }
+    const int colonyIndex = colonyIndexAt(*this, player.currentStar);
+    if (colonyIndex < 0) return 0.0;
+    const double moved = std::min(player.money, amount > 0.0 ? amount : player.money);
+    if (moved <= 0.0) return 0.0;
+    player.money -= moved;
+    colonies[colonyIndex].localLedger += moved;
+    player.lastAction = "funded colony";
+    return moved;
+}
+
+double Game::playerColonyWithdraw(double amount) {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return 0.0;
+    Agent& player = agents[playerAgent];
+    if (player.ship.enRoute || !playerOwnsStar(player.currentStar)) {
+        lastEvent = "vault blocked: dock in your own system";
+        return 0.0;
+    }
+    const int colonyIndex = colonyIndexAt(*this, player.currentStar);
+    if (colonyIndex < 0) return 0.0;
+    Colony& colony = colonies[colonyIndex];
+    const double moved = std::min(colony.localLedger, amount > 0.0 ? amount : colony.localLedger);
+    if (moved <= 0.0) return 0.0;
+    colony.localLedger -= moved;
+    player.money += moved;
+    player.lastAction = "drew colony profit";
+    return moved;
 }
 
 // ---------------------------------------------------------------- ЛИЦЕНЗИЯ --
@@ -5837,80 +5855,6 @@ bool Game::playerTradingBlocked() {
     if (!licenceRevoked) return false;
     lastEvent = "trading frozen: licence revoked (buy back for " +
                 std::to_string(int(std::ceil(licenceBuyback))) + " Cr)";
-    return true;
-}
-
-bool Game::playerHireShip() {
-    if (playerAgent < 0 || playerAgent >= int(agents.size()) || !validFaction(*this, playerFaction)) return false;
-    Agent& player = agents[playerAgent];
-    if (player.ship.enRoute || !validStar(*this, player.currentStar)) return false;
-
-    const int colonyIndex = colonyIndexAt(*this, player.currentStar);
-    if (colonyIndex < 0) {
-        player.lastAction = "need colony";
-        lastEvent = "hire blocked: no local colony";
-        return false;
-    }
-
-    Colony& colony = colonies[colonyIndex];
-    if (colony.ownerFaction != playerFaction) {
-        player.lastAction = "foreign colony";
-        lastEvent = "hire blocked: foreign colony";
-        return false;
-    }
-
-    const bool shipyard = colonyHasShipyardCapacity(colony);
-    if (!shipyard && colony.infrastructure < 1.15) {
-        player.lastAction = "need shipyard";
-        lastEvent = "hire blocked: colony needs shipyard";
-        return false;
-    }
-
-    const double baseCost = shipyard ? 4200.0 : 6100.0;
-    const double ledgerSpend = std::min(colony.localLedger, baseCost * (shipyard ? 0.42 : 0.24));
-    const double cashCost = baseCost - ledgerSpend;
-    if (player.money < cashCost) {
-        player.lastAction = "need " + std::to_string(int(std::ceil(cashCost)));
-        return false;
-    }
-
-    std::string missing;
-    const std::vector<MaterialRequirement> requirements = shipBuildRequirements(*this, player.currentStar, colony);
-    if (!consumeMaterialRequirements(*this, player.currentStar, requirements, missing)) {
-        player.lastAction = missing.empty() ? "need materials" : missing;
-        lastEvent = "ship blocked: " + player.lastAction;
-        return false;
-    }
-
-    ClusterStar& star = cluster.stars[player.currentStar];
-    const int fleetNumber = int(factions[playerFaction].fleetAgents.size()) + 1;
-    Ship ship("Freehold_Trader_" + std::to_string(fleetNumber), star.x, star.y, star.z, shipyard ? 0.17 : 0.13, playerFaction);
-    ship.cargoCapacity = shipyard ? 95.0 + colonyShipHiringCapacity(colony) * 8.0 : 72.0;
-    ship.acceleration = shipyard ? 0.19 + colonyShipHiringCapacity(colony) * 0.004 : 0.15;
-    shipAutofit(ship);
-
-    Agent hired(shipyard ? "trader" : "adventurer", ship);
-    hired.currentStar = player.currentStar;
-    hired.homeStar = player.currentStar;
-    hired.destStar = player.currentStar;
-    hired.money = shipyard ? 1300.0 : 900.0;
-    hired.tradeBias = 0.85;
-    hired.questBias = shipyard ? 0.28 : 0.45;
-    hired.scoutBias = shipyard ? 0.12 : 0.32;
-    hired.riskTolerance = 0.42;
-    hired.lastAction = "hired";
-    agents.push_back(hired);
-    registerFactionAgent(*this, int(agents.size()) - 1);
-
-    player.money -= cashCost;
-    colony.localLedger = std::max(0.0, colony.localLedger - ledgerSpend);
-    colony.infrastructure += shipyard ? 0.015 : 0.006;
-    factions[playerFaction].treasury += ledgerSpend;
-    factions[playerFaction].estimatedTreasury = std::max(factions[playerFaction].estimatedTreasury, factions[playerFaction].treasury);
-    observeStar(player.currentStar);
-
-    player.lastAction = "hired ship";
-    lastEvent = "hired " + agents.back().ship.name + " at " + star.name;
     return true;
 }
 

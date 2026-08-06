@@ -217,6 +217,72 @@ void testReopenRaisesExistingWindow() {
     UI::openSystemWindow(ui, here, SCREEN_W, SCREEN_H);
     UI::openShipFitWindow(ui, here, SCREEN_W, SCREEN_H);
     check(ui.windows.back().kind == UI::WindowKind::ShipFit, "reopening raised the shipfit window");
+
+    UI::openColonyWindow(ui, here, SCREEN_W, SCREEN_H);
+    UI::openSystemWindow(ui, here, SCREEN_W, SCREEN_H);
+    UI::openColonyWindow(ui, here, SCREEN_W, SCREEN_H);
+    check(ui.windows.back().kind == UI::WindowKind::Colony, "reopening raised the colony window");
+}
+
+// --- Окно колонии: покупка и касса -------------------------------------------
+// Кнопки этого окна двигают миллиарды, поэтому их геометрия проверяется кликами,
+// а не глазами: разъехавшаяся раскладка иначе просто молча съест клик.
+// Зеркалит UI::colonyLayout() — если разъедется, тест это и поймает.
+SDL_Rect colonyButton(const SDL_Rect& win, int slot) {   // 0 buy/deposit, 1 withdraw, 2 take all
+    const int TITLE = 24, PAD = 10, BW = 168;
+    SDL_Rect r;
+    r.x = win.x + win.w - PAD - BW;
+    r.y = win.y + TITLE + 46 + 40 + slot * 34;
+    r.w = BW;
+    r.h = slot == 0 ? 30 : 28;
+    return r;
+}
+
+void clickColony(UI::WindowState& ui, Game& game, const SDL_Rect& win, int slot) {
+    UI::HudSelection sel;
+    const SDL_Rect b = colonyButton(win, slot);
+    UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, b.x + b.w / 2, b.y + b.h / 2, SDL_BUTTON_LEFT);
+}
+
+void testColonyWindowBuysAndBanks() {
+    Game game;
+    game.init(400);
+    if (game.playerAgent < 0) { check(false, "player agent exists"); return; }
+
+    const int pa = game.playerAgent;
+    int target = -1;
+    for (int i = 0; i < int(game.cluster.stars.size()); ++i) {
+        if (game.cluster.stars[i].ownerFaction >= 0 && !game.playerOwnsStar(i)) { target = i; break; }
+    }
+    if (target < 0) { check(false, "a foreign system exists"); return; }
+    game.agents[pa].currentStar = target;
+    game.agents[pa].ship.enRoute = false;
+
+    UI::WindowState ui;
+    UI::openColonyWindow(ui, target, SCREEN_W, SCREEN_H);
+    const SDL_Rect win = ui.windows.back().rect;
+
+    // Без денег BUY SYSTEM не срабатывает — но и клик не проваливается мимо окна.
+    game.agents[pa].money = 10.0;
+    clickColony(ui, game, win, 0);
+    check(!game.playerOwnsStar(target), "BUY SYSTEM refuses an empty wallet");
+
+    game.agents[pa].money = game.systemPrice(target).total * 1.2;
+    clickColony(ui, game, win, 0);
+    check(game.playerOwnsStar(target), "BUY SYSTEM transfers the system");
+
+    // Теперь тот же слот — это DEPOSIT: касса пополняется из кошелька.
+    game.agents[pa].money = 5000.0;
+    const double vaultBefore = game.colonyLedgerAt(target);
+    ui.tradeAmount = "2000";
+    clickColony(ui, game, win, 0);
+    check(game.colonyLedgerAt(target) > vaultBefore + 1999.0 && game.agents[pa].money < 3001.0,
+          "DEPOSIT moves credits into the vault");
+
+    ui.tradeAmount = "";
+    clickColony(ui, game, win, 2);   // TAKE ALL
+    check(game.colonyLedgerAt(target) < 0.001 && game.agents[pa].money > 4999.0,
+          "TAKE ALL empties the vault into the wallet");
 }
 
 }  // namespace
@@ -363,6 +429,7 @@ int main() {
     testGoButtonGoesToTopWindow();
     testUncoveredLowerWindowStillReceivesClicks();
     testReopenRaisesExistingWindow();
+    testColonyWindowBuysAndBanks();
     testHoldArrowsMoveMatter();
     std::printf("%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAILED", gFailures);
     return gFailures == 0 ? 0 : 1;

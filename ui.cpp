@@ -112,6 +112,11 @@ SDL_Rect defaultWindowRect(WindowKind kind, int screenW, int screenH, int cascad
         rect.h = std::min(560, std::max(420, screenH - 200));
         rect.x = std::max(280, (screenW - rect.w) / 2 + cascade * 18);
         rect.y = std::max(80, screenH - rect.h - 60 - cascade * 10);
+    } else if (kind == WindowKind::Colony) {
+        rect.w = 520;
+        rect.h = 356;
+        rect.x = std::max(300, (screenW - rect.w) / 2 + cascade * 18);
+        rect.y = std::max(90, screenH - rect.h - 56 - cascade * 10);
     } else if (kind == WindowKind::ShipFit) {
         rect.w = 400;
         rect.h = 420;
@@ -154,6 +159,31 @@ SystemLayout systemLayout(const Window& window) {
     // Биржа — в тот же ряд. Вторым этажом кнопка легла поверх текста системы;
     // окно расширено (см. defaultWindowRect), чтобы ряд поместился целиком.
     layout.exchange = {window.rect.x + WINDOW_PAD + 430, y, 95, 24};
+    return layout;
+}
+
+// Окно собственности. Слева — из чего сложилась цена (или как живёт колония),
+// справа — единственный столбец действий: поле суммы и кнопки над кассой.
+struct ColonyLayout {
+    SDL_Rect amount = {0, 0, 0, 0};
+    SDL_Rect buy = {0, 0, 0, 0};
+    SDL_Rect deposit = {0, 0, 0, 0};
+    SDL_Rect withdraw = {0, 0, 0, 0};
+    SDL_Rect withdrawAll = {0, 0, 0, 0};
+    int columnX = 0;
+};
+
+ColonyLayout colonyLayout(const Window& window) {
+    ColonyLayout layout;
+    const int bw = 168;
+    const int bx = window.rect.x + window.rect.w - WINDOW_PAD - bw;
+    const int by = window.rect.y + TITLE_H + 46;
+    layout.columnX = bx;
+    layout.amount = {bx, by, bw, 28};
+    layout.buy = {bx, by + 40, bw, 30};
+    layout.deposit = {bx, by + 40, bw, 28};
+    layout.withdraw = {bx, by + 74, bw, 28};
+    layout.withdrawAll = {bx, by + 108, bw, 28};
     return layout;
 }
 
@@ -709,8 +739,8 @@ void drawControlsCard(SDL_Renderer* renderer, int screenW, int screenH) {
                       "O    CARGO", "I    TRANSACTION LOG", "F2   BUY BACK LICENCE",
                       "[ ]  CYCLE ELEMENT", NULL, NULL } },
         { "SHIP",   { "U    SHIPYARD / FIT", "M    MINE ORE", "J    REPAIR HULL",
-                      "K    SCAN ANOMALY", "H    HIRE SHIP", "W    SWITCH SHIP",
-                      "C    COLONY / REINFORCE", "R    ROB", NULL, NULL } },
+                      "K    SCAN ANOMALY", "C    COLONY / BUY SYSTEM", "W    SWITCH SHIP",
+                      "R    ROB", NULL, NULL, NULL } },
         { "VIEW",   { "LMB  SELECT", "RMB  SET ROUTE", "WHEEL ZOOM", "MMB  DRAG PAN",
                       "ARROWS PAN", "WASD ROTATE", "P    PLAYER SHIP", "0    RESET VIEW",
                       NULL, NULL } },
@@ -773,11 +803,12 @@ void drawLiveColonySummary(SDL_Renderer* renderer, const Game& game, int starInd
     if (!colony) return;
 
     char line[128];
-    std::snprintf(line, sizeof(line), "COLONY LEDGER %.0F SHIPYARD %d Q %zu",
+    const bool owned = game.playerOwnsStar(starIndex);
+    std::snprintf(line, sizeof(line), "COLONY VAULT %.0F INCOME %.0F/Y%s",
         colony->localLedger,
-        colonyShipHiringCapacity(*colony),
-        colonyQueueCount(*colony));
-    drawText(renderer, x, y, line, P.green, 1);
+        game.colonyIncomeAt(starIndex),
+        owned ? " - YOURS" : "");
+    drawText(renderer, x, y, line, owned ? P.green : P.dim, 1);
     y += 15;
 
     if (colonyQueueCount(*colony) > 0) {
@@ -788,7 +819,7 @@ void drawLiveColonySummary(SDL_Renderer* renderer, const Game& game, int starInd
         drawText(renderer, x, y, line, P.amber, 1);
         y += 15;
     } else {
-        drawText(renderer, x, y, "QUEUE EMPTY / H HIRE-BUILD SHIP", P.dim, 1);
+        drawText(renderer, x, y, "QUEUE EMPTY / C COLONY", P.dim, 1);
         y += 15;
     }
 }
@@ -869,7 +900,9 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
 void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& window, const HudSelection& selection, const WindowState& state, bool active);
 void drawContractsWindow(SDL_Renderer* renderer, const Game& game, const Window& window, const HudSelection& selection, bool active);
 void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& window, const WindowState& state, bool active);
+void drawColonyWindow(SDL_Renderer* renderer, const Game& game, const Window& window, const WindowState& state, bool active);
 bool handleExchangeWindowMouseDown(WindowState& state, Game& game, const Window& window, int mouseX, int mouseY);
+bool handleColonyWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int mouseX, int mouseY, int button);
 
 bool handleSystemWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int screenW, int screenH, int mouseX, int mouseY);
 bool handleTradeWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int mouseX, int mouseY, int button, int screenW, int screenH);
@@ -899,10 +932,8 @@ bool handleSystemWindowMouseDown(WindowState& state, Game& game, const Window& w
         return true;
     }
     if (contains(layout.colony, mouseX, mouseY)) {
-        if (game.playerAtStar(window.star) && game.playerFoundColony()) {
-            selection.star = window.star;
-            selection.agent = game.playerAgent;
-        }
+        openColonyWindow(state, window.star, screenW, screenH);
+        selection.star = window.star;
         return true;
     }
     if (contains(layout.cargo, mouseX, mouseY)) {
@@ -1261,6 +1292,46 @@ bool handleTradeWindowMouseDown(WindowState& state, Game& game, const Window& wi
     return true;
 }
 
+bool handleColonyWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int mouseX, int mouseY, int button) {
+    const ColonyLayout layout = colonyLayout(window);
+    // Всё в этом окне требует физического присутствия: и сделка на миллиард, и
+    // касса. Империю приходится облетать — она маршрут, а не строка в меню.
+    const bool onSite = game.playerAtStar(window.star);
+    const bool owned = game.playerOwnsStar(window.star);
+    const double amount = tradeRequestedAmount(state);
+
+    if (button == SDL_BUTTON_LEFT && contains(layout.amount, mouseX, mouseY)) {
+        state.tradeAmountEditing = true;
+        SDL_StartTextInput();
+        return true;
+    }
+    if (state.tradeAmountEditing) {
+        state.tradeAmountEditing = false;
+        SDL_StopTextInput();
+    }
+
+    if (!owned) {
+        if (contains(layout.buy, mouseX, mouseY) && onSite && game.playerBuySystem()) {
+            selection.star = window.star;
+            selection.agent = game.playerAgent;
+        }
+        return true;
+    }
+    if (contains(layout.deposit, mouseX, mouseY) && onSite) {
+        if (game.playerColonyDeposit(amount) > 0.0) selection.agent = game.playerAgent;
+        return true;
+    }
+    if (contains(layout.withdraw, mouseX, mouseY) && onSite) {
+        if (game.playerColonyWithdraw(amount) > 0.0) selection.agent = game.playerAgent;
+        return true;
+    }
+    if (contains(layout.withdrawAll, mouseX, mouseY) && onSite) {
+        if (game.playerColonyWithdraw(0.0) > 0.0) selection.agent = game.playerAgent;
+        return true;
+    }
+    return true;
+}
+
 bool handleMouseDown(WindowState& state, Game& game, HudSelection& selection, int screenW, int screenH, int mouseX, int mouseY, int button) {
     int hitIndex = -1;
     for (int i = int(state.windows.size()) - 1; i >= 0; --i) {
@@ -1328,6 +1399,9 @@ bool handleMouseDown(WindowState& state, Game& game, HudSelection& selection, in
             break;
         case WindowKind::Exchange:
             handleExchangeWindowMouseDown(state, game, w, mouseX, mouseY);
+            break;
+        case WindowKind::Colony:
+            handleColonyWindowMouseDown(state, game, w, selection, mouseX, mouseY, button);
             break;
         case WindowKind::Transactions:
             break;
@@ -1426,6 +1500,24 @@ void openShipyardWindow(WindowState& state, int starIndex, int screenW, int scre
     int ww = 600;
     int wh = 700;
     w.rect = {(screenW - ww) / 2, std::max(20, (screenH - wh) / 2), ww, wh};
+    state.windows.push_back(w);
+    state.activeId = w.id;
+}
+
+void openColonyWindow(WindowState& state, int starIndex, int screenW, int screenH) {
+    int cascade = 0;
+    for (auto& w : state.windows) {
+        if (w.kind == WindowKind::Colony && w.star == starIndex) {
+            bringWindowToFront(state, w.id);
+            return;
+        }
+        cascade++;
+    }
+    Window w;
+    w.id = state.nextId++;
+    w.kind = WindowKind::Colony;
+    w.star = starIndex;
+    w.rect = defaultWindowRect(WindowKind::Colony, screenW, screenH, cascade);
     state.windows.push_back(w);
     state.activeId = w.id;
 }
@@ -1818,6 +1910,153 @@ bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window&
     return true;
 }
 
+// Кредиты на шкале от сотни до триллиона в одну строку 5x7-шрифта: миллиард
+// цифрами читается как шум, а «1.84 B» — как цена.
+std::string creditsLabel(double value) {
+    char buf[32];
+    const double v = std::fabs(value);
+    if (v >= 1.0e12) std::snprintf(buf, sizeof(buf), "%.2F T", value / 1.0e12);
+    else if (v >= 1.0e9) std::snprintf(buf, sizeof(buf), "%.2F B", value / 1.0e9);
+    else if (v >= 1.0e6) std::snprintf(buf, sizeof(buf), "%.2F M", value / 1.0e6);
+    else if (v >= 1.0e3) std::snprintf(buf, sizeof(buf), "%.1F K", value / 1.0e3);
+    else std::snprintf(buf, sizeof(buf), "%.0F", value);
+    return std::string(buf);
+}
+
+// Строка разбора цены: что за характеристика, чему она равна и во сколько раз
+// она умножает цену. Игрок должен видеть НЕ число, а из чего оно собрано.
+void drawPriceFactor(SDL_Renderer* renderer, int x, int y, int width,
+                     const char* label, const std::string& value, double factor) {
+    drawText(renderer, x, y, label, P.dim, 1);
+    drawText(renderer, x + 96, y, value, P.text, 1);
+    char mul[16];
+    std::snprintf(mul, sizeof(mul), "X%.2F", factor);
+    const SDL_Color tint = factor >= 1.60 ? P.green : (factor <= 1.08 ? P.dim : P.text);
+    drawText(renderer, x + width - int(std::strlen(mul)) * 6, y, mul, tint, 1);
+}
+
+void drawColonyWindow(SDL_Renderer* renderer, const Game& game, const Window& window, const WindowState& state, bool active) {
+    const ClusterStar* star = starAt(game, window.star);
+    const bool owned = game.playerOwnsStar(window.star);
+    const bool onSite = game.playerAtStar(window.star);
+    drawWindowFrame(renderer, window,
+        star ? (std::string(owned ? "COLONY / " : "SYSTEM FOR SALE / ") + star->name) : "COLONY / NO SYSTEM",
+        active);
+    if (!star) return;
+
+    const ColonyLayout layout = colonyLayout(window);
+    const int x = window.rect.x + WINDOW_PAD;
+    const int columnW = layout.columnX - x - 14;
+    int y = window.rect.y + TITLE_H + 12;
+
+    const double cash = (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()))
+                            ? game.agents[game.playerAgent].money : 0.0;
+    drawStat(renderer, x, y, "CREDITS ", creditsLabel(cash), P.dim, P.green);
+    y += 16;
+    if (!onSite) {
+        drawText(renderer, x, y, "NOT ON SITE - DOCK HERE TO ACT", P.red, 1);
+    } else if (owned) {
+        drawText(renderer, x, y, "FREE MARKET - TAKE AND GIVE AT ZERO", P.green, 1);
+    } else {
+        drawText(renderer, x, y, "BUY THE SYSTEM WHOLE - IT KEEPS LIVING", P.amber, 1);
+    }
+    y += 20;
+
+    const Colony* colony = colonyAtStar(game, window.star);
+    char buf[64];
+
+    if (!owned) {
+        const SystemPrice price = game.systemPrice(window.star);
+        std::snprintf(buf, sizeof(buf), "%.0F", star->population);
+        drawPriceFactor(renderer, x, y, columnW, "POPULATION", buf, price.population); y += 14;
+        std::snprintf(buf, sizeof(buf), "%.2F", star->industry);
+        drawPriceFactor(renderer, x, y, columnW, "INDUSTRY", buf, price.industry); y += 14;
+        std::snprintf(buf, sizeof(buf), "%.2F", star->habitability);
+        drawPriceFactor(renderer, x, y, columnW, "HABITABLE", buf, price.habitability); y += 14;
+        // Недра оценены не тоннами, а годовым выпуском в кредитах: рынок уже
+        // знает, что иридий дороже песка, и таблица для этого не нужна.
+        drawPriceFactor(renderer, x, y, columnW, "RESOURCES",
+            creditsLabel(std::max(0.0, (price.resources - 1.0) * SYSTEM_PRICE_TURNOVER_REF)) + "/Y",
+            price.resources); y += 14;
+        if (colony) {
+            std::snprintf(buf, sizeof(buf), "INF %.2F SY %d", colony->infrastructure, colony->shipyardLevel);
+        } else {
+            std::snprintf(buf, sizeof(buf), "NONE");
+        }
+        drawPriceFactor(renderer, x, y, columnW, "BUILT", buf, price.development); y += 14;
+        const int owner = star->ownerFaction;
+        const std::string ownerName = (owner >= 0 && owner < int(game.factions.size()))
+                                          ? game.factions[owner].name : std::string("UNCLAIMED");
+        drawPriceFactor(renderer, x, y, columnW, "OWNER", ownerName, price.sovereignty); y += 20;
+
+        drawText(renderer, x, y, "ASKING PRICE", P.dim, 1);
+        drawText(renderer, x + 96, y, creditsLabel(price.total) + " CR",
+                 cash >= price.total ? P.green : P.red, 1);
+        y += 18;
+        if (owner >= 0 && owner < int(game.factions.size())) {
+            drawText(renderer, x, y, "PAID IN FULL TO THE SELLING FACTION", P.dim, 1);
+            y += 13;
+        }
+        if (cash < price.total) {
+            drawText(renderer, x, y, "SHORT BY " + creditsLabel(price.total - cash) + " CR", P.red, 1);
+        }
+
+        drawButton(renderer, layout.buy, "BUY SYSTEM", P.amber, onSite && cash >= price.total);
+        return;
+    }
+
+    // --- Своя система: как она живёт и что в кассе ---
+    std::snprintf(buf, sizeof(buf), "%.0F", star->population);
+    drawStat(renderer, x, y, "POPULATION ", buf); y += 14;
+    std::snprintf(buf, sizeof(buf), "%.2F", star->industry);
+    int cx = drawStat(renderer, x, y, "INDUSTRY ", buf);
+    std::snprintf(buf, sizeof(buf), "%d", game.shipyardLevelAtStar(window.star));
+    drawStat(renderer, cx, y, "SHIPYARD ", buf); y += 14;
+    if (colony) {
+        std::snprintf(buf, sizeof(buf), "%.2F", colony->infrastructure);
+        cx = drawStat(renderer, x, y, "INFRA ", buf);
+        std::snprintf(buf, sizeof(buf), "%.2F", colony->automation);
+        drawStat(renderer, cx, y, "AUTOMATION ", buf); y += 14;
+    }
+    if (window.star >= 0 && window.star < int(game.markets.size())) {
+        const double strain = game.markets[window.star].strain;
+        std::snprintf(buf, sizeof(buf), "%.0F%%", strain * 100.0);
+        drawStat(renderer, x, y, "UNMET NEEDS ", buf, P.dim,
+                 strain > 0.35 ? P.red : (strain > 0.15 ? P.amber : P.green));
+        y += 18;
+    }
+
+    drawStat(renderer, x, y, "INCOME ", creditsLabel(game.colonyIncomeAt(window.star)) + " CR/Y", P.dim, P.green);
+    y += 14;
+    drawStat(renderer, x, y, "VAULT ", creditsLabel(game.colonyLedgerAt(window.star)) + " CR", P.dim, P.amber);
+    y += 18;
+
+    // Очередь стройки — это и есть «колония развивает себя сама»: касса тратится
+    // без участия игрока, поэтому забирать всё до копейки значит замораживать рост.
+    if (colony && colonyQueueCount(*colony) > 0) {
+        const ConstructionItem& item = colony->constructionQueue.front();
+        std::snprintf(buf, sizeof(buf), "%s %.0F%% OF %s", colonyQueueLabel(*colony).c_str(),
+            colonyQueueProgress(*colony) * 100.0, creditsLabel(item.cost).c_str());
+        drawStat(renderer, x, y, "BUILDING ", buf, P.dim, P.cyan);
+        y += 14;
+        drawText(renderer, x, y, "THE COLONY SPENDS ITS OWN VAULT", P.dim, 1);
+    } else {
+        drawText(renderer, x, y, "IDLE - IT WILL START A BUILD WHEN FUNDED", P.dim, 1);
+    }
+
+    drawText(renderer, layout.amount.x, layout.amount.y - 12, "AMOUNT", P.dim, 1);
+    fillRect(renderer, layout.amount.x, layout.amount.y, layout.amount.w, layout.amount.h, {9, 14, 26, 245});
+    strokeRect(renderer, layout.amount.x, layout.amount.y, layout.amount.w, layout.amount.h,
+        state.tradeAmountEditing && active ? P.cyan : P.border);
+    drawText(renderer, layout.amount.x + 10, layout.amount.y + 10, tradeAmountLabel(state),
+        state.tradeAmount.empty() ? P.dim : P.text, 1);
+
+    const double vault = game.colonyLedgerAt(window.star);
+    drawButton(renderer, layout.deposit, "DEPOSIT", P.green, onSite && cash > 0.0);
+    drawButton(renderer, layout.withdraw, "WITHDRAW", P.amber, onSite && vault > 0.0);
+    drawButton(renderer, layout.withdrawAll, "TAKE ALL", P.amber, onSite && vault > 0.0);
+}
+
 void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& window, const WindowState& state, bool active) {
     const int dockedStar = playerMarketStar(game);
     const bool liveShipyard = dockedStar == window.star && dockedStar >= 0 && dockedStar < int(game.markets.size());
@@ -2007,7 +2246,7 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
         drawButton(renderer, layout.route, label, color, game.playerAgent >= 0);
         drawButton(renderer, layout.trade, "TRADE", P.green, false);
         drawButton(renderer, layout.contracts, "JOBS", P.cyan, game.playerCanOpenContractsAt(window.star));
-        drawButton(renderer, layout.colony, "C COL/RE", P.amber, false);
+        drawButton(renderer, layout.colony, "C COLONY", P.amber, true);
         drawButton(renderer, layout.cargo, "CARGO", P.cyan, game.playerAgent >= 0);
         return;
     }
@@ -2086,7 +2325,10 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
     drawButton(renderer, layout.route, label, color, game.playerAgent >= 0);
     drawButton(renderer, layout.trade, "TRADE", P.green, playerMarketStar(game) == window.star);
     drawButton(renderer, layout.contracts, "JOBS", P.cyan, game.playerCanOpenContractsAt(window.star));
-    drawButton(renderer, layout.colony, "COLONY", P.amber, game.playerAtStar(window.star));
+    // Окно собственности открывается всегда — оно и есть витрина с ценой; сделка
+    // и касса внутри уже требуют стоянки. Зелёный = система уже твоя.
+    drawButton(renderer, layout.colony, game.playerOwnsStar(window.star) ? "MY SYS" : "COLONY",
+               game.playerOwnsStar(window.star) ? P.green : P.amber, true);
     drawButton(renderer, layout.cargo, "CARGO", P.cyan, game.playerAgent >= 0);
     drawButton(renderer, layout.shipyard, "YARD", P.cyan, true);
     // Свободная лицензия — условие покупки нового борта, поэтому кнопка светится,
@@ -2221,7 +2463,12 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     const TradeLayout layout = tradeLayoutForWindow(window);
     const int topX = window.rect.x + WINDOW_PAD;
     const int topY = window.rect.y + TITLE_H + 12;
-    if (liveMarket && star) {
+    // Свой рынок — не отдельный режим торговли, а тот же рынок с ценой 0. Всё
+    // отличие в интерфейсе — этот флажок и подписи на кнопках.
+    const bool freeMarket = game.playerOwnsStar(window.star);
+    if (liveMarket && star && freeMarket) {
+        drawText(renderer, topX, topY, star->name + " - YOUR COLONY, ALL PRICES 0", P.green, 1);
+    } else if (liveMarket && star) {
         drawText(renderer, topX, topY, star->name + " LOCAL MARKET", P.green, 1);
     } else {
         drawText(renderer, topX, topY, "NO LIVE MARKET - DOCK IN THIS SYSTEM", P.red, 1);
@@ -2290,10 +2537,10 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     drawText(renderer, layout.amount.x + 10, layout.amount.y + 10, tradeAmountLabel(state),
         state.tradeAmount.empty() ? P.dim : P.text, 1);
 
-    drawButton(renderer, layout.buy, "BUY", P.green, liveMarket);
-    drawButton(renderer, layout.sell, "SELL", P.amber, liveMarket);
+    drawButton(renderer, layout.buy, freeMarket ? "TAKE" : "BUY", P.green, liveMarket);
+    drawButton(renderer, layout.sell, freeMarket ? "GIVE" : "SELL", P.amber, liveMarket);
     drawButton(renderer, layout.autoTrade, "AUTO", P.cyan, liveMarket);
-    drawButton(renderer, layout.refuel, "BUY FUEL+PROP", P.amber, liveMarket);
+    drawButton(renderer, layout.refuel, freeMarket ? "FILL FUEL+PROP" : "BUY FUEL+PROP", P.amber, liveMarket);
     drawButton(renderer, layout.hold, "HOLD / TANKS", P.cyan, true);
 
 
@@ -2629,6 +2876,8 @@ void drawWindows(SDL_Renderer* renderer, const Game& game, int, int, const HudSe
             drawCargoWindow(renderer, game, window, active, state);
         } else if (window.kind == WindowKind::Transactions) {
             drawTransactionsWindow(renderer, game, window, active);
+        } else if (window.kind == WindowKind::Colony) {
+            drawColonyWindow(renderer, game, window, state, active);
         } else if (window.kind == WindowKind::Exchange) {
             drawExchangeWindow(renderer, game, window, state, active);
         } else {

@@ -1,115 +1,97 @@
-# Colonies And Control Plan
+# Owning Systems
 
-Colonies connect local markets, faction ownership, system control, and the
-player's long-term sandbox progression.
+A colony is not a separate subsystem. It is **ownership of a system**, and the
+system keeps living exactly as it lived before the deal.
 
-## Goal
+## The whole mechanic
 
-The player starts as one ship, then can:
+One button, `COLONY` (key `C`), opens the ownership window for the system the
+player is looking at:
 
-- found a colony;
-- reinforce it;
-- build infrastructure;
-- hire/build fleets;
-- control local markets;
-- capture other colonies;
-- eventually control large parts of the cluster.
+- the system is not yours: the window is a price tag with its full breakdown
+  and a `BUY SYSTEM` button;
+- the system is yours: the window is the colony vault, with `DEPOSIT`,
+  `WITHDRAW` and `TAKE ALL`.
 
-The same rules apply to factions.
+Nothing else. Founding, settler cargo, material requirements and colony ship
+hiring were removed: they were a second, parallel way of doing what buying a
+system already does.
 
-## Colony Data
+## Price
 
-Current `Colony` has:
+Order of magnitude: **a billion credits** — the tier of capital hulls
+(Battlecruiser 5e9). Owning a system is a whole-campaign goal, not a purchase
+between runs. Measured over generated clusters the median lands at ~1e9, cheap
+frontier rocks at ~2e8, the richest systems at ~1.2e10.
 
-```text
-name
-population
-role
-starIndex
-ownerFaction
-infrastructure
-```
-
-Target additions:
+The price is a product of independent factors, each answering "how many times
+more valuable is this system than an empty rock":
 
 ```text
-automation
-energyCapacity
-defense
-shipyardLevel
-marketAccess
-damage
-localLedger
-stockpileValue
-constructionQueue[]
+price = SYSTEM_PRICE_BASE
+      * (1 + population   / SYSTEM_PRICE_POP_REF)
+      * (1 + industry     / SYSTEM_PRICE_IND_REF)
+      * (1 + habitability * SYSTEM_PRICE_HAB_W)
+      * (1 + turnover     / SYSTEM_PRICE_TURNOVER_REF)   // elements in the system
+      * (1 + infrastructure * W + shipyardLevel * W)     // what is already built
+      * (1 + ownerStrength * SYSTEM_PRICE_FOREIGN_W)     // sovereignty premium
 ```
 
-## Founding Cost
+`turnover` is the system's annual raw output priced by its own market
+(`Σ productionRate[i] * prices[i]`). This is why "what elements are in the
+system" is contextual and needs no table: a system rich in iridium is worth
+more than one rich in sand by exactly the ratio the market already knows.
 
-Founding a colony should require:
+The window shows every factor, so the player reads *why* the number is what it
+is. Constants live in `game.h`; `Game::systemPrice` returns the breakdown.
 
-- credits;
-- construction materials;
-- fuel/energy stock;
-- local habitability or sufficient infrastructure;
-- time.
+## Money flows
 
-First implementation can keep a credit cost, then add material requirements.
+- the price is paid **in full to the previous owner faction**, which spends it
+  on its own expansion and fleet — you are financing the neighbour you bought
+  from. Unclaimed systems have no seller and no sovereignty premium;
+- the colony accumulates its own profit in `Colony::localLedger` and spends it
+  on its own construction queue without the player;
+- the player deposits into and withdraws from that vault, but **only while
+  docked in that system**. The empire is a route, not a menu line.
 
-## Growth
+## Free market
 
-```text
-populationGrowth =
-    population
-  * habitability
-  * infrastructure
-  * supplySatisfaction
-  * growthRate
-```
+In a system the player owns, trade with the local market costs nothing: goods,
+fuel and propellant are taken and given at price 0, with no tariff and no
+licence fee. The trade window says `YOUR COLONY, ALL PRICES 0` and its buttons
+read `TAKE` / `GIVE`.
 
-Infrastructure growth:
+**Supply and price still move.** This is not a balance concession, it is the
+same physics: the warehouse is finite, so an owner who strips it raises the
+system's `strain`, chokes population growth and cuts their own income. The
+limit is built into the model, not bolted on as a cap.
 
-```text
-infrastructure += constructionInvestment * efficiency
-```
+Free trade applies only to the ship the player is flying. Hired ships of the
+same faction trade under normal rules — otherwise they would haul free goods
+to foreign markets.
 
-Supply satisfaction comes from local market shortages.
+Two consequences worth knowing:
 
-## Ownership
+- a free purchase is bounded by the **hold**, not by money — otherwise asking
+  for "max" would drain the system into a ship that cannot carry it;
+- a sale at price 0 pays no licence tariff, so **the turnover quota cannot be
+  closed through your own colony**. Trading outside stays mandatory. That is why
+  the first-period quota was raised to 10 000 Cr: it has to be a real obligation
+  rather than something a settled player never notices (see README, "Trading
+  Licence And Quota").
 
-`ClusterStar.ownerFaction` is truth for system control. `Colony.ownerFaction`
-must match unless there is a contested state.
+## What is still simulated (unchanged)
 
-Contested system:
+`Game::updateColonies` runs for every colony, player-owned or not: population
+growth against market strain, industry, infrastructure, defense, income into
+the local ledger, and a self-managed construction queue that starts a build
+whenever the vault is funded. Colony stockpiles and `ColonySupply` contracts
+are untouched.
 
-```text
-ownerFaction = current administrative owner
-occupyingFaction = military occupier
-captureProgress = -1..1
-```
+## Regression cover
 
-Add contested state only when combat capture begins.
-
-## Player Progression
-
-Player faction unlocks:
-
-- colony founded: first controlled star;
-- local taxes/tariffs;
-- ship hiring;
-- construction queue;
-- faction influence overlay;
-- patrol orders.
-
-No separate "empire mode" code. The player faction is just a faction.
-
-## Implementation Steps
-
-1. Separate founding from reinforcement UI.
-2. Add material requirements using element/resource traits.
-3. Add local ledger and colony income.
-4. Add construction queue.
-5. Add ship hiring/building at shipyard systems.
-6. Add capture/contested state after combat.
-7. Add colony supply contracts.
-
+`make balance` — `SYSTEM PRICE` (median stays a billion, every factor >= 1),
+purchase moves owner and conserves credits, owned market is free but finite,
+vault conserves money and is refused from afar.
+`make uiclick` — the colony window's buttons actually hit.

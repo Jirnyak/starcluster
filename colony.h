@@ -61,6 +61,3 @@ void colonyApplyRaidDamage(Colony& colony, double severity);
 size_t colonyQueueCount(const Colony& colony);
 std::string colonyQueueLabel(const Colony& colony);
 double colonyQueueProgress(const Colony& colony);
-
-int colonyShipHiringCapacity(const Colony& colony);
-bool colonyHasShipyardCapacity(const Colony& colony);

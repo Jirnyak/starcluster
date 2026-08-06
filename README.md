@@ -87,7 +87,7 @@ The current executable prototype contains:
 - 3D ship positions, velocity, acceleration, fuel, mass, cargo, and route travel;
 - local market memory, faction knowledge, and light-speed signal packets;
 - delivery, courier, scout, bounty, escort, raid, and colony supply contracts;
-- player colony founding, reinforcement, construction queues, and ship hiring;
+- buying whole systems outright, colony vaults, and a free market at home;
 - faction relation drift, strategic orders, budgets, and influence overlay;
 - a trading licence with a millennial turnover quota (see below);
 - a first-person local flight mode inside any star system (`L`);
@@ -190,8 +190,8 @@ still reference `uni.cpp`; they are not the current project build path.
 - `B`: buy selected element at the player ship's current system.
 - `V`: sell current cargo.
 - `T`: run auto-trade for the player ship.
-- `C`: found a colony at the current system, or reinforce an owned local colony.
-- `H`: hire/build a ship at an owned local colony.
+- `C`: open the ownership window for the current system (price breakdown and
+  `BUY SYSTEM`, or the colony vault once it is yours).
 - `M`: mine ore at the current system.
 - `J`: repair hull. `K`: scan a local anomaly.
 - `F2`: buy back a revoked trading licence.
@@ -347,8 +347,12 @@ apart for centuries and can only be reconciled by a relativistic correction once
 every thousand years. Quotas are revised at the same moment. At one simulated
 year per real second this is roughly seventeen minutes of play at `1x`.
 
-- the first period's quota is 1000 Cr and grows by 1% every period, so a single
-  worked-out route cannot support the player forever;
+- the first period's quota is 10 000 Cr and grows by 1% every period, so a single
+  worked-out route cannot support the player forever. Measured with the starting
+  hull on short hauls (~105 Cr of tariff per run, ~47 years per run), that is a
+  whole-millennium obligation rather than something closed in the first fifth of
+  the period — expect the first period to end with a credit settlement and later
+  ones to be traded off as hull capacity grows;
 - the tariff rate tracks the cluster-wide money level (`marketClusterLevel()`,
   a slow average with a ~250 year time constant), clamped to 5%..14%;
 - missing the quota freezes buying and selling until the licence is bought back
@@ -499,9 +503,19 @@ state includes:
 - shipyard level, market access, damage, local ledger, stockpile value;
 - stockpile and construction queue.
 
-The player can found a colony at a free/current system if credits and generated
-material requirements are available. Reusing `C` on an owned local colony
-reinforces it. Owned colonies can support ship hiring/building through `H`.
+For the player a colony is not a separate mechanic: it is **ownership of a
+system**, bought whole with `C` / the `COLONY` button. The price is on the order
+of a billion credits (capital-hull tier) and is a product of population,
+industry, habitability, the annual credit value of the system's own output,
+what is already built there, and a sovereignty premium if a faction has to be
+bought out. The full breakdown is shown in the window, and the price is paid in
+full into the previous owner's treasury.
+
+An owned system keeps being simulated exactly as before — it grows, earns into
+its local ledger and runs its own construction queue. The player deposits into
+and withdraws from that vault, but only while docked there, and trades on its
+market at price 0 (supply and price still move, so stripping your own colony
+starves it). See `colonies.md`.
 
 ### Rendering And UI
 

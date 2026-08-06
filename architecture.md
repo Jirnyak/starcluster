@@ -47,7 +47,7 @@ Detailed implementation plans for future subsystem work:
 - `events.md`: relativistic events and signal propagation.
 - `quests.md`: player and AI contracts.
 - `combat.md`: piracy, combat, capture.
-- `colonies.md`: founding, construction, control.
+- `colonies.md`: buying whole systems, colony vaults, free home market.
 - `expansion_roadmap.md`: suggested subagent split and integration order.
 
 ## Architecture Levels
