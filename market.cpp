@@ -1,4 +1,5 @@
 #include "market.h"
+#include "cluster.h"   // POPULATION_TYPICAL
 #include "econ.h"
 #include <algorithm>
 #include <cmath>
@@ -18,7 +19,17 @@ double clamp01(double v) { return clamp(v, 0.0, 1.0); }
 // Закрепляем его ОДИН раз на всю валюту — медленным средним по рынкам, — а не
 // притяжением каждого элемента к «справедливой цене»: иначе такая привязка
 // затирает главное, что должно двигать цену, — РЕДКОСТЬ.
-double gClusterServiceCost = -1.0;
+//
+// Здесь только КЭШ. Уровень принадлежит партии (`Game::clusterPriceLevel`),
+// идёт в сейв и проталкивается сюда каждый такт; рынок его не наблюдает и не
+// копит — иначе состояние симуляции жило бы вне `Game` (§2.3).
+//
+// Раньше здесь стоял накопитель с шагом 0.4% на каждое обновление рынка. Он
+// НИКОГДА не сходился: показывал 0.409, когда медиана по реальным рынкам была
+// 0.348, а стартовое значение ему задавали синтетические рынки
+// `buildReferencePrices` (450 обновлений до первого настоящего). То есть
+// обратная связь контура была разорвана — он не отвечал на то, что делают цены.
+double gClusterLevel = 1.0;
 double gLevelDrive = 0.0;
 bool gBuildingReference = false;   // защита от рекурсии при построении опорных цен
 
@@ -37,13 +48,6 @@ double importBandDrive(size_t elementIndex, double price, double tradeAccess) {
     if (price > ceilingPrice) return clamp(std::log(ceilingPrice / price), -2.5, 0.0);
     if (price < floorPrice) return clamp(std::log(floorPrice / price), 0.0, 2.5);
     return 0.0;
-}
-
-void observeServiceLevel(double marketServiceCost) {
-    if (marketServiceCost <= 0.0) return;
-    if (gClusterServiceCost < 0.0) gClusterServiceCost = marketServiceCost;
-    else gClusterServiceCost += (marketServiceCost - gClusterServiceCost) * 0.004;
-    gLevelDrive = clamp(std::log(ECON_CREDITS_PER_SERVICE / std::max(0.01, gClusterServiceCost)), -1.2, 1.2);
 }
 
 // Пределы — только страховка от вырождения, не инструмент баланса.
@@ -147,9 +151,19 @@ void Market::seed(const std::vector<Resource>& localResources, const std::vector
     pref.reserve(n);
 
     // Масштаб хозяйства: столько услуг в год потребляет система.
-    const double scale = std::max(0.5, population * 0.0015 + industry * 24.0);
+    // Хозяйство системы — это её ЛЮДИ, а индустриализация лишь поднимает
+    // потребление на душу. Раньше два слагаемых складывались (`pop*0.0015 +
+    // industry*24`), и на прежнем масштабе населения побеждало второе: размер
+    // экономики определялся безразмерным «уровнем индустрии», а не тем, сколько
+    // народу в системе живёт. Множитель честнее: миллиард человек с плохими
+    // заводами всё равно потребляет больше, чем посёлок с хорошими.
+    const double scale = std::max(0.5, population * (0.0015 + industry * 0.0024));
     // Крупную обжитую систему чужие торговцы обслуживают плотно, глухую — редко.
-    tradeAccess = clamp(0.10 + 0.90 * std::min(1.0, scale / 85.0), 0.10, 1.0);
+    // Порог задан так, чтобы ТИПИЧНАЯ система села в середину шкалы: если он
+    // ниже, доступ у всех упирается в 1.0, «глухой фронтир» исчезает как класс
+    // и вместе с ним — широкая ценовая вилка, ради которой на отшиб и летают.
+    const double saturationScale = POPULATION_TYPICAL * 0.005;
+    tradeAccess = clamp(0.10 + 0.90 * std::min(1.0, scale / saturationScale), 0.10, 1.0);
     const double* profile = econRoleNeedProfile(role);
     needs.assign(EF_COUNT, 0.0);
     for (int f = 0; f < EF_COUNT; ++f) needs[f] = scale * profile[f];
@@ -255,7 +269,6 @@ void Market::update(double dt) {
         servedTotal += served[f];
     }
     strain = needTotal > EPSV ? clamp01(1.0 - servedTotal / needTotal) : 0.0;
-    observeServiceLevel(serviceCostAvg);
 
     // 2. Добыча/производство пополняет запас.
     for (size_t i = 0; i < n; ++i) supply[i].amount += productionRate[i] * dt;
@@ -396,6 +409,12 @@ std::vector<double> buildReferencePrices() {
     // разная насыщенность недр, разная металличность. Отклонение местной цены
     // от этой медианы и есть сигнал арбитража для игрока.
     gBuildingReference = true;
+    // ⚠️ Синтетические рынки этой функции ТОЖЕ кормят накопитель уровня — и
+    // именно они задают его стартовое значение, потому что `buildReferencePrices`
+    // отрабатывает раньше первого настоящего рынка. Это ЗАМЕТЕНО в аудите (§15.2)
+    // и НЕ исправлено здесь: убрать эту подпитку значит сдвинуть номинальный
+    // уровень цен всего скопления примерно на треть (замер там же). Отдельное
+    // решение по балансу, а не побочный эффект правки детерминизма.
     std::vector<std::vector<double> > samples(n);
     std::vector<double> flatBias(n, 1.0);
 
@@ -417,7 +436,10 @@ std::vector<double> buildReferencePrices() {
             }
 
             Market m;
-            m.seed(reservoir, flatBias, roles[r], 7000.0 + variant * 8000.0, 0.7 + variant * 1.0);
+            // Типовая система опорных цен обязана быть ТИПИЧНОЙ по нынешнему
+            // масштабу: иначе опорная цена считалась бы по деревне, а живые
+            // рынки были бы метрополиями, и полоса импорта поехала бы вся.
+            m.seed(reservoir, flatBias, roles[r], POPULATION_TYPICAL * (0.5 + variant * 0.5), 0.7 + variant * 1.0);
             for (int year = 0; year < 25; ++year) m.update(1.0);
             for (size_t i = 0; i < n; ++i) samples[i].push_back(m.prices[i]);
         }
@@ -455,7 +477,13 @@ double marketExecutionFactor(double units, double depth, bool selling) {
     return (std::exp(zc) - 1.0) / zc;
 }
 
+void marketSetClusterLevel(double level) {
+    gClusterLevel = level > 0.0 ? level : 1.0;
+    // Дороже услуга относительно якоря — ниже покупательная способность
+    // кредита, значит цены тянет вверх. Кламп — страховка от вырождения.
+    gLevelDrive = clamp(-std::log(gClusterLevel), -1.2, 1.2);
+}
+
 double marketClusterLevel() {
-    if (gClusterServiceCost <= 0.0) return 1.0;
-    return gClusterServiceCost / ECON_CREDITS_PER_SERVICE;
+    return gClusterLevel;
 }

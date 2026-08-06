@@ -8,6 +8,10 @@
 ClusterStar::ClusterStar(double x_, double y_, double z_, const std::string& name_)
     : x(x_), y(y_), z(z_), name(name_) {}
 
+double starPopulationWeight(const ClusterStar& star) {
+    return std::max(0.0, star.population) / POPULATION_TYPICAL;
+}
+
 // Генерация звёзд для симуляции
 void Cluster::generate(size_t num_stars, unsigned int seed) {
     stars.clear();
@@ -40,13 +44,23 @@ void Cluster::generate(size_t num_stars, unsigned int seed) {
 
         ClusterStar& star = stars.back();
         star.economyRole = roles[i % (sizeof(roles) / sizeof(roles[0]))];
-        star.population = 500.0 + unit(rng) * 25000.0;
+        // Тираж населения берётся ЗДЕСЬ (порядок обращений к rng не меняется),
+        // а само население считается ниже — когда известна обитаемость.
+        const double populationRoll = unit(rng);
         star.industry = 0.4 + unit(rng) * 2.2;
         star.habitability = 0.18 + unit(rng) * 0.74;
         if (star.economyRole == "habitat") star.habitability += 0.18;
         if (star.economyRole == "frontier") star.habitability -= 0.08;
         star.habitability = std::max(0.05, std::min(1.0, star.habitability));
-        star.defense = 0.8 + star.industry * 1.4 + star.population * 0.00008;
+        // Население — ЛОГАРИФМИЧЕСКИ равномерное по четырём порядкам и тем
+        // сильнее, чем пригоднее система для жизни. Равномерное распределение
+        // (было `500 + u*25000`) давало одинаково унылые посёлки везде; на
+        // логарифме появляется то, ради чего в скопление и летят: редкие
+        // метрополии на миллиарды рядом с фронтиром на сотни тысяч.
+        star.population = std::pow(10.0, 6.0 + 3.5 * populationRoll) * (0.25 + star.habitability);
+        // Оборона отсчитывается от ТИПИЧНОЙ системы, а не от абсолютного числа
+        // людей: иначе метрополия получала бы четырёхзначную оборону.
+        star.defense = 0.8 + star.industry * 1.4 + starPopulationWeight(star) * 2.0;
         if (star.economyRole == "military") star.defense += 2.6;
         if (star.economyRole == "shipyard") star.defense += 1.1;
 
@@ -190,5 +204,19 @@ void Cluster::generate(size_t num_stars, unsigned int seed) {
             amount *= supplyBias[e];
             star.resources.emplace_back(element.symbol, std::max(0.001, amount));
         }
+    }
+
+    // Центр и радиус скопления — производные от уже сгенерированных координат,
+    // поэтому в сейв не идут: восстанавливаются вместе с миром из seed.
+    centreX = centreY = centreZ = 0.0;
+    radiusLy = 0.0;
+    if (stars.empty()) return;
+    for (const ClusterStar& s : stars) { centreX += s.x; centreY += s.y; centreZ += s.z; }
+    centreX /= double(stars.size());
+    centreY /= double(stars.size());
+    centreZ /= double(stars.size());
+    for (const ClusterStar& s : stars) {
+        const double dx = s.x - centreX, dy = s.y - centreY, dz = s.z - centreZ;
+        radiusLy = std::max(radiusLy, std::sqrt(dx * dx + dy * dy + dz * dz));
     }
 }

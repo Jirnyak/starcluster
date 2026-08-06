@@ -565,8 +565,9 @@ the active code path draws text with its own bitmap glyphs and links only SDL2.
 | `agents.md`, `merge_plan.md` | Early project identity and migration notes. |
 | `elements.md`, `ship.md`, `economy.md`, `factions.md`, `ai.md`, `events.md`, `quests.md`, `combat.md`, `colonies.md`, `expansion_roadmap.md` | Subsystem plans with current status and future work. |
 
-`civ.*`, `galaxy.*`, and `graphic.*` are legacy or inactive paths according to
-`architecture.md`.
+A 2D prototype (`civ.*`, `galaxy.*`, `graphic.*`) that predated this
+architecture was deleted in the 2026-08-06 audit: it was never in `SOURCES`, so
+it never compiled.
 
 ## Save Files
 
@@ -579,15 +580,16 @@ back to the working directory so older saves still open.
 The file is text and begins with:
 
 ```text
-STARCLUSTER_SAVE 12
+STARCLUSTER_SAVE 13
 ```
 
 The save stores the world seed, RNG state, time, stars, markets, factions,
 relations, colonies, contracts, agents, faction knowledge, player knowledge,
 pending signals, signal memory, and trading licence state. `F9` loads the same
-file and rebuilds runtime caches. Only version 12 loads: the propulsion rework
-changed the ship record beyond migrating, so older saves are rejected with a
-clear message rather than opening corrupt.
+file and rebuilds runtime caches. Only version 13 loads: the ship record still changes with the
+simulation (v13 added the hull's upgrade-slot count, which used to be lost on
+load), so older saves are rejected with a clear message rather than opening
+corrupt.
 
 ## Design Constraints
 

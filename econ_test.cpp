@@ -2,6 +2,7 @@
 // Печатает матрицу способностей, опорные цены, поведение рынка и волну
 // замещения. Никакого SDL — чистые числа, чтобы судить о модели до плейтеста.
 #include "econ.h"
+#include "cluster.h"
 #include "market.h"
 #include "resource.h"
 #include <algorithm>
@@ -121,7 +122,7 @@ void printSubstitutionWave() {
 
     Market m;
     std::vector<double> bias(elements.size(), 1.0);
-    m.seed(makeResources(1.0, 0.6, -1, 1.0), bias, "shipyard", 12000.0, 1.6);
+    m.seed(makeResources(1.0, 0.6, -1, 1.0), bias, "shipyard", POPULATION_TYPICAL * 0.8, 1.6);
 
     std::vector<Row> rows;
     for (size_t i = 0; i < elements.size(); ++i) {
@@ -168,7 +169,7 @@ void printSpatialSpread() {
             const double richness = 0.5 + variant * 0.8;
             const double metallicity = 0.25 + variant * 0.3;
             const int rich = variant == 0 ? 25 : (variant == 1 ? 7 : 78);
-            m.seed(makeResources(richness, metallicity, rich, 22.0), bias, roles[r], 6000.0 + variant * 9000.0, 0.6 + variant * 1.1);
+            m.seed(makeResources(richness, metallicity, rich, 22.0), bias, roles[r], POPULATION_TYPICAL * (0.4 + variant * 0.6), 0.6 + variant * 1.1);
             for (int y = 0; y < 30; ++y) m.update(1.0);
             markets.push_back(m);
         }
@@ -220,14 +221,14 @@ int main() {
     {
         Market m;
         std::vector<double> bias(elements.size(), 1.0);
-        m.seed(makeResources(1.2, 0.75, 25, 30.0), bias, "shipyard", 14000.0, 1.8);
+        m.seed(makeResources(1.2, 0.75, 25, 30.0), bias, "shipyard", POPULATION_TYPICAL * 0.9, 1.8);
         for (int y = 0; y < 40; ++y) m.update(1.0);
         printMarketSnapshot("ВЕРФЬ, БОГАТАЯ ЖЕЛЕЗОМ", m);
     }
     {
         Market m;
         std::vector<double> bias(elements.size(), 1.0);
-        m.seed(makeResources(0.6, 0.2, 7, 12.0), bias, "habitat", 20000.0, 0.7);
+        m.seed(makeResources(0.6, 0.2, 7, 12.0), bias, "habitat", POPULATION_TYPICAL * 1.3, 0.7);
         for (int y = 0; y < 40; ++y) m.update(1.0);
         printMarketSnapshot("ЖИЛАЯ СИСТЕМА, БЕДНАЯ МЕТАЛЛАМИ", m);
     }

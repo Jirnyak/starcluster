@@ -29,7 +29,11 @@ Local flight mode ("microworld") — a first-person / chase flight inside one st
 - `localsim.cpp`: local flight simulation (flight, thrust, projectiles, mining/docking, NPC behavior).
 - `localdraw.cpp`: local rendering, including the per-pixel ray-sphere software star shader.
 
-Legacy `civ.*`, `galaxy.*`, and `graphic.*` are not the active simulation path.
+A 2D prototype (`civ.*`, `galaxy.*`, `graphic.*`) predated this architecture and
+was deleted in the 2026-08-06 audit: it was excluded from `SOURCES`, so it never
+compiled, yet it still declared `class Civ`/`class Galaxy` with methods — the
+exact shape the data-oriented rule forbids, sitting in the tree for the next
+reader to copy.
 
 ## Expansion Planning Documents
 
@@ -126,17 +130,31 @@ Agents own ship state and orders. Fleets are agents with larger military/cargo c
 
 Agents move between stars at physical speeds. Travel takes years. Acceleration and deceleration matter enough for gameplay and route choice, but the model should stay minimal and stable.
 
-Current movement math is 3D:
+Current movement math is 3D and relativistic, and every change of speed is paid
+for out of the tanks (`moveShipToward`, see `ship.md` and master prompt §12):
 
 ```text
-dist3d = sqrt(dx*dx + dy*dy + dz*dz)
-speed3d = sqrt(vx*vx + vy*vy + vz*vz)
-stopping_distance = speed3d^2 / (2 * acceleration)
-velocity += direction3d * acceleration * dt
-if speed3d > max_speed:
-    velocity *= max_speed / speed3d
+dist3d      = sqrt(dx*dx + dy*dy + dz*dz)
+speed3d     = sqrt(vx*vx + vy*vy + vz*vz)
+accel       = min(hull limit, thrust * thrustCoeff / totalMass)
+stopping    = speed3d^2 / (2 * accel)
+
+# rapidity, not velocity: dw = dv / (1 - v^2). Near c the same gain costs more.
+rapidityCost = 1 / (1 - speed3d^2)
+
+if stopping + speed3d*dt*0.5 >= dist3d:      # brake
+    dv = consume(min(accel*dt, speed3d) * rapidityCost) / rapidityCost
+    velocity -= unit(velocity) * dv
+elif speed3d < cruiseSpeed:                  # accelerate, never past cruise
+    dv = consume(min(accel*dt, cruiseSpeed - speed3d) * rapidityCost) / rapidityCost
+    velocity += direction3d * dv
+# cruising costs nothing: in vacuum you only pay to change speed
 position += velocity * dt
 ```
+
+`consume()` is `shipConsumeForDeltaV`: it burns propellant out of the nozzle and
+fuel in the core, returns the delta-V actually delivered (which is smaller than
+asked when a tank runs dry), and drops the burnt fuel back into the hold as ash.
 
 Agents can:
 
@@ -332,7 +350,6 @@ Rules:
 
 - no backward compatibility guarantee for old saves;
 - no migration burden for obsolete save shapes;
-- legacy systems such as `civ.*`, `galaxy.*`, and `graphic.*` are not saved;
 - only the active simulation path is serialized;
 - when state layout changes, it is acceptable to bump the save version and
   invalidate older saves;

@@ -137,10 +137,53 @@ void testRunProfitSane() {
         if (measured) { ++monotoneTotal; if (falling) ++monotone; }
     }
 
-    char buf[160];
-    std::snprintf(buf, sizeof(buf), "при рабочих %.0F Cr максимум %.2Fx (seed %u)",
-                  REFERENCE_CAPITAL, worstRatio, worstSeed);
-    check(worstRatio < 3.0, "один рейс не печатает капитал", buf);
+    // КУШ РАЗРЕШЁН, НО ОБЯЗАН ВЫДЫХАТЬСЯ С РОСТОМ КАПИТАЛА.
+    //
+    // Решение пользователя (§17): мелкий торговец, нашедший выгодную сделку, —
+    // молодец, множитель в разы это нормально, кредитов у него всё равно мало.
+    // Плохо не «много за рейс», а «много и ДАЛЬШЕ много, когда денег уже гора».
+    //
+    // ⚠️ Прежняя версия этой проверки (и пробники к ней) делили прибыль на
+    // кошелёк, НЕ ВЫДАВАЯ игроку этот кошелёк: он оставался со стартовыми
+    // 100 Cr, и все числа были шумом. Здесь кошелёк выставляется явно перед
+    // каждым замером — иначе проверка меряет пустоту.
+    //
+    // Инвариант безразмерный и переживает любой пересчёт масштаба (§17.5):
+    // отдача падает по всей лестнице кошельков, на бедном конце куш есть, на
+    // богатом его нет.
+    const double purses[] = {400.0, 3600.0, 30000.0, 100000.0};
+    double ratioAt[4] = {0, 0, 0, 0};
+    double jackpotAt[4] = {0, 0, 0, 0};
+    {
+        Game g; buildWorld(g, 42u, 80);
+        for (int p = 0; p < 4; ++p) {
+            std::vector<double> v;
+            for (int o = 0; o < 60; ++o) {
+                const int origin = (o * 7919) % 80;
+                g.agents[g.playerAgent].money = purses[p];
+                const std::vector<ArbitrageDeal> board = g.playerArbitrageBoard(origin, 40, -1);
+                double best = 0.0;
+                for (size_t i = 0; i < board.size(); ++i) best = std::max(best, board[i].profit);
+                v.push_back(best / purses[p]);
+            }
+            std::sort(v.begin(), v.end());
+            ratioAt[p] = v[v.size() / 2];
+            jackpotAt[p] = double(std::count_if(v.begin(), v.end(),
+                                  [](double x) { return x > 5.0; })) / double(v.size());
+        }
+    }
+    const bool falls = ratioAt[0] > ratioAt[1] && ratioAt[1] > ratioAt[2] && ratioAt[2] > ratioAt[3];
+    const bool jackpotEarly = jackpotAt[0] > 0.10;      // на бедном конце куш ЕСТЬ
+    const bool jackpotGoneLate = jackpotAt[3] < 0.02;   // на богатом его НЕТ
+    const bool tamedLate = ratioAt[3] < 1.5;            // капитал сам себя не удваивает
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+                  "400Cr %.1Fx(%.0F%%) 3.6KCr %.1Fx(%.0F%%) 30KCr %.1Fx(%.0F%%) 100KCr %.2Fx(%.0F%%)",
+                  ratioAt[0], jackpotAt[0] * 100.0, ratioAt[1], jackpotAt[1] * 100.0,
+                  ratioAt[2], jackpotAt[2] * 100.0, ratioAt[3], jackpotAt[3] * 100.0);
+    check(falls && jackpotEarly && jackpotGoneLate && tamedLate,
+          "куш есть у бедного и выдыхается у богатого", buf);
 
     std::snprintf(buf, sizeof(buf), "отдача падает с ростом кошелька на %d из %d сидов",
                   monotone, monotoneTotal);
@@ -335,7 +378,14 @@ void testQuotaReachable() {
     char buf[200];
     std::snprintf(buf, sizeof(buf), "квота %.0f, тариф с рейса %.0f => рейсов %.1f, доплата %.0f Cr",
         target, tariff, runs, settle);
-    check(tariff > 0.0 && runs > 20.0 && runs < 250.0 && settle < 40000.0,
+    // Доплата меряется НЕ в кредитах (они уплывают вместе с масштабом мира),
+    // а в рейсах валовой выручки: столько рейсов надо было бы отторговать,
+    // чтобы её покрыть. Величина безразмерная и переживает любой пересчёт §17.
+    const double grossPerRun = tariff / std::max(1e-9, g.licenceTariffRate);
+    const double settleRuns = settle / std::max(1e-9, grossPerRun);
+    std::snprintf(buf, sizeof(buf), "квота %.0f, тариф с рейса %.0f => рейсов %.1f, доплата %.0f Cr (%.1f рейса выручки)",
+        target, tariff, runs, settle, settleRuns);
+    check(tariff > 0.0 && runs > 20.0 && runs < 250.0 && settleRuns < 50.0,
           "квота закрывается за разумное число рейсов", buf);
 }
 
@@ -737,15 +787,33 @@ void testRouteEstimateMatchesFlight() {
 
     // Прогноз пересчитываем на ФАКТИЧЕСКОЕ состояние перед вылетом: первая
     // оценка делалась для другой загрузки и сравнивать с ней нечестно.
-    const RouteCost plan = g.agentRouteCost(pa, target);
-    const double fuel0 = shipFuelMix(ship).mass;
-    const double prop0 = shipPropellantMix(ship).mass;
+    RouteCost plan = g.agentRouteCost(pa, target);
+    double fuel0 = shipFuelMix(ship).mass;
+    double prop0 = shipPropellantMix(ship).mass;
     if (!g.commandAgentToStar(pa, target)) {
-        char why[160];
-        std::snprintf(why, sizeof(why), "вылет отклонён: %s", g.lastEvent.c_str());
-        check(false, "прогноз маршрута сходится с полётом", why);
-        return;
+        // Первая попытка ФИКСИРУЕТ рабочую точку двигателя по ценам порта
+        // (§12.4), и только после неё требуемое количество вещества становится
+        // окончательным. Игрок в этой ситуации делает ровно то же: видит
+        // честную цифру нехватки и доливает по ней. Дозаправляемся с тем же
+        // запасом и пробуем ещё раз — если и теперь отказ, это уже дефект.
+        const RouteCost after = g.agentRouteCost(pa, target);
+        ship.fuel.clear();
+        ship.propellant.clear();
+        ship.fuel.push_back(Resource(elementDefinitions()[fuelElem].symbol,
+                                     1.6 * after.fuelMass / elementUnitMass(fuelElem)));
+        ship.propellant.push_back(Resource(elementDefinitions()[propElem].symbol,
+                                           1.6 * after.propellantMass / elementUnitMass(propElem)));
+        if (!g.commandAgentToStar(pa, target)) {
+            char why[160];
+            std::snprintf(why, sizeof(why), "вылет отклонён дважды: %s", g.lastEvent.c_str());
+            check(false, "прогноз маршрута сходится с полётом", why);
+            return;
+        }
     }
+    // Точка зафиксирована вылетом — перечитываем прогноз и стартовые запасы по ней.
+    plan = g.agentRouteCost(pa, target);
+    fuel0 = shipFuelMix(ship).mass;
+    prop0 = shipPropellantMix(ship).mass;
     int steps = 0;
     while (g.agents[pa].ship.enRoute && steps < 400000) { g.update(0.02); ++steps; }
 

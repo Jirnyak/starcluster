@@ -1,4 +1,5 @@
 #include "colony.h"
+#include "cluster.h"   // POPULATION_TYPICAL
 #include <algorithm>
 
 namespace {
@@ -45,14 +46,16 @@ ColonyConstructionEffect preferredConstructionEffect(const Colony& colony) {
 }
 
 void initializeColonyState(Colony& colony) {
-    const double populationScale = double(colony.population) * 0.00002;
+    // Население колонии в долях типичной системы (см. POPULATION_TYPICAL):
+    // энергия и оборона должны расти с людьми, но не на четыре порядка.
+    const double populationScale = double(colony.population) / (POPULATION_TYPICAL * 0.16);
     colony.automation = std::max(0.0, colony.infrastructure * 0.06 + roleAutomationBonus(colony.role));
     colony.energyCapacity = std::max(1.0, colony.infrastructure * 28.0 + populationScale * 12.0 + colony.automation * 18.0);
     colony.defense = std::max(0.0, colony.infrastructure * 0.45 + populationScale + roleDefenseBonus(colony.role));
     colony.shipyardLevel = initialShipyardLevel(colony.role, colony.infrastructure);
     colony.marketAccess = roleMarketAccess(colony.role);
     colony.damage = 0.0;
-    colony.localLedger = std::max(0.0, colony.infrastructure * 120.0 + double(colony.population) * 0.01);
+    colony.localLedger = std::max(0.0, colony.infrastructure * 120.0 + populationScale * 130.0);
     colony.stockpileValue = 0.0;
 }
 

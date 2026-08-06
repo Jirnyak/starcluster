@@ -571,9 +571,16 @@ double shipConsumeForDeltaV(Ship& ship, double desiredDeltaV, std::vector<Resour
     }(desiredDeltaV);
 
     // Сколько массы вообще можно выбросить с текущими запасами.
+    //
+    // Энергия струи здесь ОБЯЗАНА считаться той же формулой, что и ниже, где
+    // топливо реально списывается: `exhaustSpecificEnergy(ve)` = (gamma - 1).
+    // Раньше тут стоял классический `ve^2/2` — на рабочих скоростях истечения
+    // (до 0.32c на форсаже) он занижает энергию на 8.5%, то есть ограничитель
+    // разрешал выбросить больше рабочего тела, чем оплачено топливом, и в
+    // урезанном манёвре корабль получал delta-V из ниоткуда.
     const double fuelLimitedBurn = torch
         ? fuelAvail
-        : fuelAvail * 2.0 * energyPerMass / std::max(1e-12, ve * ve);
+        : fuelAvail * energyPerMass / std::max(1e-12, exhaustSpecificEnergy(ve));
     const double maxBurn = std::min(torch ? fuelAvail : propAvail, fuelLimitedBurn);
     const double burn = std::min(burnForDeltaV, std::min(maxBurn, m0 * 0.999));
     if (burn <= 1e-12) return 0.0;

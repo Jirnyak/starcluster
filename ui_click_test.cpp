@@ -422,6 +422,123 @@ void testHoldArrowsMoveMatter() {
     }
     check(game.lastEvent.find("no destination") != std::string::npos,
           "OPTIMAL without a destination explains itself");
+
+    // --- Кредиты между своими бортами (зеркалит UI::holdGiveRect/holdTakeRect) ---
+    // Кошелёк лежит НА БОРТУ, поэтому второй корабль рождается пустым, и деньги
+    // на него надо переложить руками, пока оба стоят в одной системе.
+    SDL_Rect give = opt;
+    give.x -= 196;
+    give.w = 92;
+    SDL_Rect take = give;
+    take.x += 96;
+
+    // Кнопки мертвы, пока второго борта рядом нет.
+    game.lastEvent.clear();
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, give.x + give.w / 2, give.y + give.h / 2, SDL_BUTTON_LEFT);
+    }
+    check(game.lastEvent.find("no second ship") != std::string::npos,
+          "credit transfer explains itself with no second ship");
+
+    // Заводим второй борт в той же системе (как это делает buyAdditionalShip).
+    const int pa = game.playerAgent;
+    const int dockedStar = game.agents[pa].currentStar;
+    game.agents[pa].money = 5000.0;
+    {
+        Agent mate = game.agents[pa];
+        mate.money = 0.0;
+        mate.lastAction = "idle";
+        game.agents.push_back(mate);
+    }
+    check(game.playerOtherShipHere() == int(game.agents.size()) - 1 &&
+          game.agents.back().currentStar == dockedStar,
+          "the second hull is seen docked alongside");
+
+    ui.tradeAmount = "1200";
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, give.x + give.w / 2, give.y + give.h / 2, SDL_BUTTON_LEFT);
+    }
+    check(std::fabs(game.agents[pa].money - 3800.0) < 0.01 &&
+          std::fabs(game.agents.back().money - 1200.0) < 0.01,
+          "GIVE CR moves credits to the ship alongside");
+
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, take.x + take.w / 2, take.y + take.h / 2, SDL_BUTTON_LEFT);
+    }
+    check(std::fabs(game.agents[pa].money - 5000.0) < 0.01 &&
+          std::fabs(game.agents.back().money) < 0.01,
+          "TAKE CR draws them back");
+
+    // Улетел — перевод закрыт: деньги ездят вместе с кораблём, а не по эфиру.
+    game.agents.back().ship.enRoute = true;
+    game.lastEvent.clear();
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, give.x + give.w / 2, give.y + give.h / 2, SDL_BUTTON_LEFT);
+    }
+    check(game.lastEvent.find("no second ship") != std::string::npos &&
+          std::fabs(game.agents[pa].money - 5000.0) < 0.01,
+          "a departed hull cannot be funded from afar");
+}
+
+// Счёт фракции ходит СВЕТОМ: внесённое становится доступно к трате только
+// когда известие покрыло всё скопление. Тест бьёт по геометрии кнопок биржи и
+// по самому правилу.
+void testFactionAccountClearsAtLightSpeed() {
+    Game game;
+    game.init(200);
+    if (game.playerAgent < 0) { check(false, "player agent exists"); return; }
+    const int here = game.agents[game.playerAgent].currentStar;
+
+    UI::WindowState ui;
+    UI::openExchangeWindow(ui, here, SCREEN_W, SCREEN_H);
+    const SDL_Rect win = ui.windows.back().rect;
+
+    // Зеркалит UI::exchangeLayout(): accountIn/accountOut над нижним рядом.
+    const int bx = win.x + 12;
+    const int by = win.y + win.h - 32 - 28;
+    SDL_Rect toAcct = {bx, by, 170, 24};
+    SDL_Rect fromAcct = {bx + 178, by, 190, 24};
+
+    game.agents[game.playerAgent].money = 9000.0;
+    const double treasuryBefore = game.factionTreasuryAt(game.playerFaction);
+    ui.tradeAmount = "4000";
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, toAcct.x + toAcct.w / 2, toAcct.y + toAcct.h / 2, SDL_BUTTON_LEFT);
+    }
+    check(std::fabs(game.agents[game.playerAgent].money - 5000.0) < 0.01 &&
+          std::fabs(game.factionTreasuryAt(game.playerFaction) - (treasuryBefore + 4000.0)) < 0.01,
+          "TO ACCOUNT moves the wallet into the faction account");
+    check(std::fabs(game.factionCreditsInFlight(game.playerFaction) - 4000.0) < 0.01,
+          "the deposit is in flight, not yet spendable");
+
+    // Снять нельзя — свет ещё не обошёл скопление.
+    game.lastEvent.clear();
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, fromAcct.x + fromAcct.w / 2, fromAcct.y + fromAcct.h / 2, SDL_BUTTON_LEFT);
+    }
+    check(std::fabs(game.agents[game.playerAgent].money - 5000.0) < 0.01 &&
+          game.lastEvent.find("in flight") != std::string::npos,
+          "FROM ACCOUNT refuses credits that light has not covered yet");
+
+    // Ждём, пока известие обойдёт скопление, — и те же кнопки работают.
+    const double need = game.creditClearYears(here);
+    check(need > 0.0 && need <= 2.0 * game.cluster.radiusLy + 1e-9,
+          "clearing time is bounded by the cluster light-crossing time");
+    for (int y = 0; y < int(need) + 2; ++y) game.update(1.0);
+    check(std::fabs(game.factionCreditsInFlight(game.playerFaction)) < 0.01,
+          "the deposit clears once light has crossed the cluster");
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H, fromAcct.x + fromAcct.w / 2, fromAcct.y + fromAcct.h / 2, SDL_BUTTON_LEFT);
+    }
+    check(game.agents[game.playerAgent].money > 5000.0,
+          "FROM ACCOUNT pays out once the account is cleared");
 }
 
 int main() {
@@ -431,6 +548,7 @@ int main() {
     testReopenRaisesExistingWindow();
     testColonyWindowBuysAndBanks();
     testHoldArrowsMoveMatter();
+    testFactionAccountClearsAtLightSpeed();
     std::printf("%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAILED", gFailures);
     return gFailures == 0 ? 0 : 1;
 }

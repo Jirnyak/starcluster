@@ -1,5 +1,7 @@
 #include "game.h"
 #include "drive.h"
+#include "econ.h"
+#include "modules.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -321,7 +323,7 @@ int pickFactionHome(const Cluster& cluster, const std::vector<int>& used) {
             }
         }
 
-        const double score = (star.population * 0.0005 + star.industry * 14.0 + star.habitability * 18.0) * (0.4 + spacing);
+        const double score = (starPopulationWeight(star) * 6.6 + star.industry * 14.0 + star.habitability * 18.0) * (0.4 + spacing);
         if (score > bestScore) {
             bestScore = score;
             best = int(i);
@@ -348,7 +350,7 @@ void claimInitialHoldings(Game& game, int factionIndex) {
             if (star.ownerFaction >= 0) continue;
 
             const double distance = distanceBetween(game.cluster.stars[home], star);
-            const double score = star.habitability * 10.0 + star.industry * 2.5 + star.population * 0.00012 - distance * 0.18;
+            const double score = star.habitability * 10.0 + star.industry * 2.5 + starPopulationWeight(star) * 1.6 - distance * 0.18;
             if (score > bestScore) {
                 bestScore = score;
                 best = int(i);
@@ -1164,7 +1166,7 @@ bool tryCreateCourierContract(Game& game, int originStar) {
         if (target == originStar || !validStar(game, target)) continue;
         const double distance = cachedRouteDistance(game, originStar, target);
         const double ownerValue = game.cluster.stars[target].ownerFaction >= 0 ? 2.0 : 0.0;
-        const double score = ownerValue + game.cluster.stars[target].industry * 0.8 + game.cluster.stars[target].population * 0.00005 - distance * 0.025;
+        const double score = ownerValue + game.cluster.stars[target].industry * 0.8 + starPopulationWeight(game.cluster.stars[target]) * 0.66 - distance * 0.025;
         if (score > bestScore) {
             bestScore = score;
             best = target;
@@ -1261,7 +1263,7 @@ bool tryCreateColonySupplyContract(Game& game, int originStar) {
         if (pressure < 1.16) continue;
 
         const double distance = cachedRouteDistance(game, originStar, target);
-        const double score = pressure * 18.0 + game.cluster.stars[target].population * 0.00004 + game.cluster.stars[target].industry * 1.4 - distance * 0.11;
+        const double score = pressure * 18.0 + starPopulationWeight(game.cluster.stars[target]) * 0.53 + game.cluster.stars[target].industry * 1.4 - distance * 0.11;
         if (score > bestScore) {
             bestScore = score;
             best = target;
@@ -1353,7 +1355,7 @@ bool tryCreateRaidContract(Game& game, int originStar) {
         const double stalePenalty = std::min(12.0, infoAge * 0.10);
         const double targetValue =
             star.industry * 3.2 +
-            star.population * 0.00007 +
+            starPopulationWeight(star) * 0.92 +
             star.defense * 0.45 +
             hostility * 18.0 +
             game.factions[issuer].aggression * 8.0;
@@ -1423,7 +1425,7 @@ bool tryCreateEscortContract(Game& game, int originStar) {
         const int target = randomer(rng, int(game.cluster.stars.size()) - 1);
         if (target == originStar || !validStar(game, target)) continue;
         const double distance = cachedRouteDistance(game, originStar, target);
-        const double score = game.cluster.stars[target].industry * 1.3 + game.cluster.stars[target].population * 0.00006 - distance * 0.04;
+        const double score = game.cluster.stars[target].industry * 1.3 + starPopulationWeight(game.cluster.stars[target]) * 0.79 - distance * 0.04;
         if (score > bestScore) {
             bestScore = score;
             targetStar = target;
@@ -1863,7 +1865,11 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
     }
     if (licenceFee > 0.0) {
         game.licenceQuotaPaid += licenceFee;
-        if (validFaction(game, game.playerFaction)) game.factions[game.playerFaction].treasury += licenceFee;
+        // Лицензиями и квотами ведает КЛИРИНГОВАЯ ПАЛАТА, а не своя же фракция.
+        // Иначе игрок платил тариф сам себе, а после §16 (доступ к казне) ещё и
+        // снимал его обратно — квота не стоила ничего (замер: удержано 33.6 Cr,
+        // снято обратно 33.6 Cr).
+        if (validFaction(game, game.clearingFaction)) game.factions[game.clearingFaction].treasury += licenceFee;
     }
     agent.lastProfit = gross - fee - licenceFee - costShare;
     agent.cargoCost = std::max(0.0, agent.cargoCost - costShare);
@@ -2006,7 +2012,7 @@ int pickColonistTarget(const Game& game, int factionIndex, int observerStar) {
         const double distance = nearestOwnedDistance(game, starIndex, factionIndex);
         const double uncertainty = ownerKnown ? 0.0 : 2.5;
         const double stalePenalty = ownerKnown ? std::min(6.0, game.factionKnownOwnerAgeAt(factionIndex, observerStar, starIndex) * 0.025) : 0.0;
-        const double score = star.habitability * 15.0 + star.industry * 3.0 + star.population * 0.00014 - distance * 0.32 - uncertainty - stalePenalty;
+        const double score = star.habitability * 15.0 + star.industry * 3.0 + starPopulationWeight(star) * 1.8 - distance * 0.32 - uncertainty - stalePenalty;
         if (score > bestScore) {
             bestScore = score;
             best = starIndex;
@@ -2115,7 +2121,7 @@ int pickMilitaryTarget(const Game& game, int factionIndex, int observerStar) {
         const double enemyValue = !ownerKnown ? 3.0 + faction.aggression * 2.0 :
             (knownOwner >= 0 ? 8.0 + hostility * 26.0 + faction.aggression * 8.0 : 4.0 + faction.aggression * 4.0);
         const double stalePenalty = ownerKnown ? std::min(8.0, game.factionKnownOwnerAgeAt(factionIndex, observerStar, starIndex) * 0.035) : 4.0;
-        const double score = enemyValue + star.industry * 2.4 + star.population * 0.00008 - distance * 0.28 - star.defense * 0.18 - stalePenalty;
+        const double score = enemyValue + star.industry * 2.4 + starPopulationWeight(star) * 1.05 - distance * 0.28 - star.defense * 0.18 - stalePenalty;
         if (score > bestScore) {
             bestScore = score;
             best = starIndex;
@@ -2382,7 +2388,7 @@ int pickPirateRoute(const Game& game, const Agent& pirate) {
         const double distance = validStar(game, pirate.currentStar) ? distanceBetween(game.cluster.stars[pirate.currentStar], star) : 0.0;
         const int relation = validFaction(game, pirate.ship.ownerFaction) ? game.factionRelation(pirate.ship.ownerFaction, star.ownerFaction) : 0;
         const double hostility = relation < 0 ? double(-relation) / 128.0 : 0.25;
-        const double score = star.population * 0.00012 + star.industry * 2.0 + hostility * 10.0 - distance * 0.09;
+        const double score = starPopulationWeight(star) * 1.6 + star.industry * 2.0 + hostility * 10.0 - distance * 0.09;
         if (score > bestScore) {
             bestScore = score;
             best = starIndex;
@@ -2783,15 +2789,20 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 12 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 13 " << cluster.stars.size() << '\n';
     out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
         << nextContractId << ' ' << playerAgent << ' ' << playerFaction << ' '
         << boughtSystems << ' ' << capturedSystems << ' ' << nextSignalEventId << ' ' << saveToken(lastEvent) << '\n';
+    // clusterPriceLevel идёт в той же строке — он тоже про деньги скопления.
+    // До версии 13 он жил в файловом глобале `market.cpp` и в сейв не попадал
+    // вовсе, поэтому ставка тарифа зависела от того, сколько времени прожил
+    // ПРОЦЕСС, а не партия.
     out << "LICENCE " << licenceQuotaPaid << ' ' << licencePeriodEnd << ' ' << licenceTariffRate << ' '
         << licenceBuyback << ' ' << licenceCount << ' ' << (licenceRevoked ? 1 : 0) << ' '
-        << licencePeriodsMet << ' ' << licenceQuotaBase << '\n';
+        << licencePeriodsMet << ' ' << licenceQuotaBase << ' '
+        << clusterPriceLevel << ' ' << clusterPriceBase << ' ' << clearingFaction << '\n';
 
     out << "STARS " << cluster.stars.size() << '\n';
     for (const ClusterStar& star : cluster.stars) {
@@ -2890,7 +2901,11 @@ bool Game::saveToFile(const std::string& path) {
             << ship.cargoCapacity << ' ' << ship.ownerFaction << ' '
             << ship.targetStar << ' ' << int(ship.enRoute) << ' '
             << ship.heavyWeapons << ' ' << ship.lightWeapons << ' ' << ship.armor << ' '
-            << ship.utility << ' ' << ship.hullHP << ' ' << ship.maxHullHP << '\n';
+            // maxModules — часть корпуса, а не производная: он приходит из
+            // таблицы классов (1 у капсулы, 20 у крепости). Без него round-trip
+            // возвращал всем бортам конструкторский дефолт 3, то есть капитал
+            // молча терял слоты, а перехватчик их получал.
+            << ship.utility << ' ' << ship.hullHP << ' ' << ship.maxHullHP << ' ' << ship.maxModules << '\n';
         out << "CARGO ";
         writeResourceList(out, ship.cargo);
         out << '\n';
@@ -3010,6 +3025,13 @@ bool Game::saveToFile(const std::string& path) {
     out << "MINING " << int(playerMining) << ' ' << miningTimer << ' ' << miningStar << ' '
         << miningYieldAccum << '\n';
 
+    // Приход, ещё не покрытый светом. Без него сейв «печатал» бы деньги:
+    // счёт полон, а в пути ничего — то есть всё сразу доступно к трате.
+    out << "CREDIT_FLOAT " << creditFloat.size() << '\n';
+    for (const CreditFloat& c : creditFloat) {
+        out << "CF " << c.faction << ' ' << c.amount << ' ' << c.clearsAt << '\n';
+    }
+
     if (!out) {
         lastEvent = "save failed";
         return false;
@@ -3028,7 +3050,7 @@ bool Game::loadFromFile(const std::string& path) {
     std::string tag;
     int version = 0;
     size_t starCount = 0;
-    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 12) {
+    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 13) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -3068,7 +3090,7 @@ bool Game::loadFromFile(const std::string& path) {
         if (!expectTag(in, "LICENCE") ||
             !(in >> loaded.licenceQuotaPaid >> loaded.licencePeriodEnd >> loaded.licenceTariffRate >>
                 loaded.licenceBuyback >> loaded.licenceCount >> revoked >> loaded.licencePeriodsMet >>
-                loaded.licenceQuotaBase)) {
+                loaded.licenceQuotaBase >> loaded.clusterPriceLevel >> loaded.clusterPriceBase >> loaded.clearingFaction)) {
             lastEvent = "load failed: licence";
             return false;
         }
@@ -3302,7 +3324,8 @@ bool Game::loadFromFile(const std::string& path) {
                 agent.ship.cargoCapacity >> agent.ship.ownerFaction >>
                 agent.ship.targetStar >> enRoute >>
                 agent.ship.heavyWeapons >> agent.ship.lightWeapons >> agent.ship.armor >>
-                agent.ship.utility >> agent.ship.hullHP >> agent.ship.maxHullHP)) {
+                agent.ship.utility >> agent.ship.hullHP >> agent.ship.maxHullHP >>
+                agent.ship.maxModules)) {
             lastEvent = "load failed: ship";
             return false;
         }
@@ -3588,6 +3611,21 @@ bool Game::loadFromFile(const std::string& path) {
     }
     loaded.playerMining = playerMiningInt != 0;
 
+    if (!expectTag(in, "CREDIT_FLOAT") || !(in >> count)) {
+        lastEvent = "load failed: credit float";
+        return false;
+    }
+    loaded.creditFloat.clear();
+    loaded.creditFloat.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        CreditFloat c;
+        if (!expectTag(in, "CF") || !(in >> c.faction >> c.amount >> c.clearsAt)) {
+            lastEvent = "load failed: credit float entry";
+            return false;
+        }
+        loaded.creditFloat.push_back(c);
+    }
+
     if (!in) {
         lastEvent = "load failed";
         return false;
@@ -3601,6 +3639,9 @@ bool Game::loadFromFile(const std::string& path) {
     marketUpdatedAt.assign(markets.size(), time - MARKET_UPDATE_INTERVAL_YEARS);
     marketUpdateCursor = 0;
     marketUpdateBudget = 0.0;
+    // Денежный уровень — часть партии, а не процесса: восстанавливаем его в
+    // ценовом слое сразу, не дожидаясь первого такта рынков.
+    marketSetClusterLevel(clusterPriceLevel);
     rebuildRouteCache();
     lastEvent = "loaded " + path;
     return true;
@@ -3803,6 +3844,7 @@ void Game::init(size_t num_stars) {
     factionUpdateTimer = 0.0;
     playerAgent = -1;
     playerFaction = -1;
+    clearingFaction = -1;
     boughtSystems = 0;
     capturedSystems = 0;
     tech = TechState();
@@ -3856,6 +3898,48 @@ void Game::init(size_t num_stars) {
     }
     for (size_t i = 0; i < factions.size(); ++i) {
         claimInitialHoldings(*this, int(i));
+    }
+
+    // --- Клиринговая палата скопления -------------------------------------
+    // Межзвёздный банк и биржа: держит богатые системы в ядре, собирает все
+    // лицензионные деньги и тратит их как государство. Дом выбирается по той же
+    // логике, что и у держав, но со смещением к ЦЕНТРУ скопления: банк сидит
+    // там, куда свет доходит быстрее всего до любого края, — иначе сверка
+    // счетов (§16) шла бы у него дольше, чем у всех клиентов.
+    {
+        clearingFaction = int(factions.size());
+        int bankHome = -1;
+        double bestScore = -1e18;
+        for (size_t i = 0; i < cluster.stars.size(); ++i) {
+            // ⚠️ Только НИЧЕЙНАЯ звезда. Без этой проверки банк садился на уже
+            // занятую систему, а `setStarOwner` молча отбирал её у державы —
+            // Aster Compact оставался с одной звездой, стартовая система
+            // выбиралась из неё одной и оказывалась в пустоте (ближайший сосед
+            // 17.5 ly вместо 8), после чего половина балансовых проверок не
+            // находила куда лететь.
+            if (cluster.stars[i].ownerFaction >= 0) continue;
+            if (std::find(homes.begin(), homes.end(), int(i)) != homes.end()) continue;
+            const ClusterStar& star = cluster.stars[i];
+            const double dx = star.x - cluster.centreX;
+            const double dy = star.y - cluster.centreY;
+            const double dz = star.z - cluster.centreZ;
+            const double fromCentre = std::sqrt(dx * dx + dy * dy + dz * dz);
+            const double score = starPopulationWeight(star) * 3.0 + star.industry * 4.0 - fromCentre * 0.25;
+            if (score > bestScore) { bestScore = score; bankHome = int(i); }
+        }
+        factions.emplace_back("Clearing House", 210, 214, 236);
+        Faction& bank = factions.back();
+        bank.homeStar = bankHome;
+        bank.treasury = 0.0;
+        bank.estimatedTreasury = 0.0;
+        // Банк не воюет и не расширяется силой: он кредитует.
+        bank.strength = 1.2;
+        bank.aggression = 0.05;
+        bank.riskTolerance = 0.20;
+        bank.tradeBias = 1.0;
+        bank.expansionBias = 0.05;
+        bank.defenseBias = 0.60;
+        if (validStar(*this, bankHome)) claimInitialHoldings(*this, clearingFaction);
     }
 
     const int npcFactionCount = int(factions.size());
@@ -4096,6 +4180,15 @@ void Game::init(size_t num_stars) {
     for (int i = 0; i < seedContracts; ++i) {
         tryCreateDeliveryContract(*this, randomer(rng, int(num_stars) - 1));
     }
+
+    // Перепись при основании партии. Она задаёт СРАЗУ ДВЕ величины: точку, от
+    // которой привод держит номинальные цены (отношение к якорю), и точку
+    // отсчёта для ставки тарифа (насколько скопление подорожает ПОТОМ).
+    // Поэтому ставка первого тысячелетия равна ровно `LICENCE_TARIFF_BASE`.
+    clusterPriceLevel = measureClusterPriceLevel();
+    clusterPriceBase = clusterPriceLevel;
+    marketSetClusterLevel(clusterPriceLevel);
+    licenceTariffRate = LICENCE_TARIFF_BASE;
 }
 
 void Game::update(double dt) {
@@ -4113,6 +4206,12 @@ void Game::update(double dt) {
     processSignals();
     updateAnomalies(dt);
     updateLicence(dt);
+    // Свет дошёл до края скопления — приход стал доступен к трате где угодно.
+    // Список короткий (по одной записи на взнос), поэтому чистка тривиальна.
+    if (!creditFloat.empty()) {
+        creditFloat.erase(std::remove_if(creditFloat.begin(), creditFloat.end(),
+            [this](const CreditFloat& c) { return c.clearsAt <= time; }), creditFloat.end());
+    }
     if (playerAgent >= 0 && playerAgent < int(agents.size()) && !agents[playerAgent].ship.enRoute) {
         observeStar(agents[playerAgent].currentStar);
         agentCompleteContracts(playerAgent);
@@ -4140,6 +4239,11 @@ void Game::update(double dt) {
 void Game::updateMarkets(double dt) {
     const int count = int(markets.size());
     if (count <= 0) return;
+    // Уровень ПРИНАДЛЕЖИТ партии и меняется только на тысячелетней сверке;
+    // сюда он просто проталкивается, чтобы ценовой слой не хранил своего
+    // состояния и оставался чистой функцией данных рынка.
+    marketSetClusterLevel(clusterPriceLevel);
+
     if (marketUpdatedAt.size() != markets.size()) {
         marketUpdatedAt.assign(markets.size(), time - MARKET_UPDATE_INTERVAL_YEARS);
         marketUpdateCursor = 0;
@@ -4187,7 +4291,11 @@ void Game::updateColonies(double dt) {
         const double supplySatisfaction = std::max(0.12, 1.0 - market.strain * 1.15);
         const double damageFactor = std::max(0.1, 1.0 - colony.damage);
         const double growthRate = (0.0012 + star.habitability * 0.0035 + colony.infrastructure * 0.00035) * supplySatisfaction * damageFactor;
-        const double gained = std::min(1200.0, double(colony.population) * growthRate * dt);
+        // Потолок прироста — доля от самой колонии, а не абсолютные 1200 человек:
+        // на прежнем масштабе населения это была страховка, на нынешнем стало бы
+        // стеной, за которой метрополия не растёт вовсе.
+        const double gained = std::min(double(colony.population) * 0.04,
+                                       double(colony.population) * growthRate * dt);
         const size_t gainedPopulation = size_t(std::max(0.0, gained));
         colony.population += gainedPopulation;
         star.population += double(gainedPopulation);
@@ -4198,7 +4306,7 @@ void Game::updateColonies(double dt) {
         star.defense = std::max(star.defense, colony.defense);
         colony.infrastructure += star.industry * 0.000035 * supplySatisfaction * dt;
 
-        const double income = (star.industry * 0.55 + double(colony.population) * 0.00002) * colony.marketAccess * dt;
+        const double income = colonyIncomeAt(colony.starIndex) * dt;
         colony.localLedger += income;
         colony.stockpileValue = 0.0;
         for (const Resource& resource : colony.stockpile) {
@@ -4218,8 +4326,22 @@ void Game::updateColonies(double dt) {
             colony.constructionQueue.push_back(colonySuggestedConstruction(colony));
         }
 
+        // Прибыль колонии УХОДИТ ВЛАДЕЛЬЦУ по проводам, а не ждёт, пока за ней
+        // прилетят. Касса остаётся рабочим балансом стройки: колония держит
+        // ровно столько, сколько нужно текущей очереди, остальное телеграфирует.
+        // Империю больше не надо облетать ради денег — но и мгновенной она не
+        // становится: у игрока приход ложится в поплавок (§16) и станет
+        // доступным к трате, только когда известие покроет скопление.
         Faction& faction = factions[colony.ownerFaction];
-        faction.treasury += income * 0.42;
+        const double reserve = colony.constructionQueue.empty()
+            ? 0.0
+            : std::max(0.0, colony.constructionQueue.front().cost - colony.constructionQueue.front().progress);
+        const double surplus = colony.localLedger - reserve;
+        if (surplus > 0.0) {
+            colony.localLedger -= surplus;
+            faction.treasury += surplus;
+            if (colony.ownerFaction == playerFaction) addCreditFloat(playerFaction, surplus, colony.starIndex);
+        }
         faction.strength += 0.00015 * dt;
     }
 }
@@ -4331,6 +4453,33 @@ void Game::updateFactions(double dt) {
             }
             if (current < target) setFactionRelation(int(a), int(b), current + 1);
             if (current > target) setFactionRelation(int(a), int(b), current - 1);
+        }
+    }
+
+    // --- Клиринговая палата тратит собранное как государство ----------------
+    // Лицензионные деньги не исчезают: банк раз в такт субсидирует САМУЮ
+    // задыхающуюся колонию скопления — ту, где выше всего доля незакрытых нужд.
+    // Своих колоний игрока это касается ровно так же, как чужих: банк не знает
+    // «свой-чужой», он гасит нестабильность, потому что от неё зависят его же
+    // сборы. Деньги идут в кассу колонии, откуда та тратит их на свою стройку.
+    if (validFaction(*this, clearingFaction) && factions[clearingFaction].treasury > 0.0) {
+        int neediest = -1;
+        double worstStrain = 0.15;      // ниже этого система живёт нормально
+        for (size_t c = 0; c < colonies.size(); ++c) {
+            const int starIndex = colonies[c].starIndex;
+            if (!validStar(*this, starIndex) || starIndex >= int(markets.size())) continue;
+            if (markets[starIndex].strain > worstStrain) {
+                worstStrain = markets[starIndex].strain;
+                neediest = int(c);
+            }
+        }
+        if (neediest >= 0) {
+            const double grant = std::min(factions[clearingFaction].treasury * 0.02,
+                                          colonyIncomeAt(colonies[neediest].starIndex) * 40.0);
+            if (grant > 0.0) {
+                factions[clearingFaction].treasury -= grant;
+                colonies[neediest].localLedger += grant;
+            }
         }
     }
 
@@ -4520,6 +4669,13 @@ void downgradeAgentToEscapePod(Agent& a) {
     const ShipClass& pod = classes[0];
     a.ship.name = "Escape Pod";
     a.ship.cargo.clear();
+    // Модули гибнут вместе с корпусом — как и груз. Раньше список `modules`
+    // переживал даунгрейд, хотя `shipApplyClass` уже обнулил поля корабля
+    // табличными значениями капсулы: бонусов нет, а записи есть. Дальше
+    // `unequipModule` вычитал бонусы, которые никогда не применялись
+    // (Aegis Bulwark уносил maxHullHP капсулы в −565), и возвращал модуль в
+    // трюм — то есть из уничтоженного корабля можно было выгрести апгрейды.
+    a.ship.modules.clear();
     shipApplyClass(a.ship, pod);
     a.cargoCost = 0.0;
 }
@@ -4651,7 +4807,23 @@ bool Game::buyShip(int agentIndex, int starIndex, int classId) {
     
     agent.money -= upgradePrice;
     agent.ship.name = sc.name;
+    const std::vector<int> installed = agent.ship.modules;
     shipApplyClass(agent.ship, sc);
+    // Бонусы модулей ЗАПЕЧЕНЫ в поля корпуса (правило CHROMOCORE), а новый
+    // корпус переписывает эти поля табличными значениями. Раньше список
+    // `modules` переживал покупку, а бонусы — нет: игрок покупал корпус выше
+    // ступенью и молча терял всю навеску (трюм, броню, корпус, сенсоры),
+    // причём слоты оставались занятыми. Запекаем заново тем же путём, что и
+    // `equipModule`, — один закон на установку и на пересадку.
+    const std::vector<ModuleDef>& moduleTable = moduleDefs();
+    for (size_t i = 0; i < installed.size(); ++i) {
+        const int defIndex = installed[i];
+        if (defIndex < 0 || defIndex >= int(moduleTable.size())) continue;
+        applyModuleToShip(agent.ship, moduleTable[defIndex]);
+    }
+    agent.ship.hullHP = agent.ship.maxHullHP;
+    // Состав и ёмкости изменились — рабочая точка двигателя подбирается заново.
+    shipTuneDrive(agent.ship, 1.0, 1.0);
     agent.lastAction = "bought " + sc.name;
     return true;
 }
@@ -4678,7 +4850,13 @@ bool Game::buyAdditionalShip(int agentIndex, int starIndex, int classId) {
 
     agents[agentIndex].money -= totalPrice;
     
-    Ship newShip(sc.name, 0, 0, 0, 0, agents[agentIndex].ship.ownerFaction);
+    // Борт рождается В ТОЙ СИСТЕМЕ, где его купили. Раньше он ставился в
+    // (0,0,0) — центр скопления, — а `currentStar` указывал на верфь: два
+    // разных места. Перемещение привязано к КООРДИНАТАМ (§12.7), поэтому
+    // окно считало маршрут от звезды, а корабль потом летел от центра
+    // скопления — расхождение до сотни световых лет.
+    const ClusterStar& berth = cluster.stars[starIndex];
+    Ship newShip(sc.name, berth.x, berth.y, berth.z, 0, agents[agentIndex].ship.ownerFaction);
     shipApplyClass(newShip, sc);
 
     Agent newAgent(agents[agentIndex].type, newShip);
@@ -4692,11 +4870,13 @@ bool Game::buyAdditionalShip(int agentIndex, int starIndex, int classId) {
     int newAgentIndex = int(agents.size());
     agents.push_back(newAgent);
     registerFactionAgent(*this, newAgentIndex);
-    
-    if (agentIndex == playerAgent) {
-        playerAgent = newAgentIndex;
-    }
-    
+    // Управление НЕ перебрасывается на новый борт. Раньше перебрасывалось, и
+    // игрок сразу после покупки оказывался на пустом корабле без единого
+    // кредита (деньги остаются у капитана, который платил), причём без всякого
+    // предупреждения. Переключение — отдельное осознанное действие `W SWITCH`,
+    // а деньги переводятся `playerTransferCredits`, пока оба борта стоят рядом.
+    if (agentIndex == playerAgent) lastEvent = "new hull docked here - W to switch, HOLD to fund it";
+
     return true;
 }
 
@@ -4714,13 +4894,22 @@ bool Game::commandAgentToStar(int agentIndex, int starIndex) {
         return false;
     }
 
+    const double risk = agentRouteThreatRisk(agentIndex, starIndex);
+    const bool departed = startJourney(*this, agent, starIndex);
+    if (!agent.playerControlled) return departed;
+
+    // ⚠️ Цифры для игрока считаются ПОСЛЕ попытки, и это принципиально.
+    // `startJourney` первым делом перенастраивает движок по ценам порта вылета
+    // (§12.4), то есть меняет рабочую точку — а вместе с ней и требуемое
+    // количество вещества. Раньше сообщение о нехватке считалось ДО вылета, по
+    // СТАРОЙ точке, и получалось «route blocked: fuel 2/2 short 0»: игрок
+    // залил ровно столько, сколько ему показали, и всё равно получил отказ без
+    // объяснимой причины. Попытка ничего не ломает — она лишь фиксирует ту
+    // самую точку, по которой корабль и полетит, поэтому замер после неё честен.
     const double years = agentRouteTravelTime(agentIndex, starIndex);
     const double fuelNeeded = agentRouteFuelNeeded(agentIndex, starIndex);
     const double shortfall = agentRouteFuelShortfall(agentIndex, starIndex);
     const double propShortfall = agentRoutePropellantShortfall(agentIndex, starIndex);
-    const double risk = agentRouteThreatRisk(agentIndex, starIndex);
-    const bool departed = startJourney(*this, agent, starIndex);
-    if (!agent.playerControlled) return departed;
 
     if (!departed) {
         // Разводим два разных отказа: «нечего жечь» и «нечего выбрасывать в
@@ -5023,9 +5212,21 @@ double Game::agentLoadPropellantFromCargo(int agentIndex, int elementIdx, double
     return moved;
 }
 
+// Двигатель настраивается только НА СТОЯНКЕ. Рабочая точка `cruiseExhaust`
+// фиксируется на вылете (§12.4), и планировщик с реальным расходом обязаны
+// считать по одной и той же скорости истечения — иначе это грабля §12.5.2,
+// только запущенная рукой игрока, а не кодом.
+//
+// Гейт — именно `enRoute`, а НЕ «стоим в системе»: после экстренного STOP
+// корабль встаёт посреди пустоты (`enRoute=false`, `currentStar=-1`), и там
+// перенастроить схему под новую цель не только можно, но и нужно.
 void Game::agentSetThrottle(int agentIndex, double throttle) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return;
     Agent& agent = agents[agentIndex];
+    if (agent.ship.enRoute) {
+        if (agent.playerControlled) lastEvent = "drive locked in flight - STOP first";
+        return;
+    }
     agent.ship.throttle = std::max(0.0, std::min(1.0, throttle));
     double propellantPrice = 1.0;
     double fuelPrice = 1.0;
@@ -5045,9 +5246,15 @@ bool Game::setAgentDestination(int agentIndex, int starIndex) {
     return true;
 }
 
+// Тот же гейт, что у ручки режима (см. agentSetThrottle): крейсер входит в
+// маршрутную оценку через `nominalDeltaV`, поэтому в полёте он тоже заперт.
 void Game::agentSetCruiseFraction(int agentIndex, double fraction) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return;
     Agent& agent = agents[agentIndex];
+    if (agent.ship.enRoute) {
+        if (agent.playerControlled) lastEvent = "cruise locked in flight - STOP first";
+        return;
+    }
     agent.ship.cruiseFraction = std::max(0.2, std::min(1.0, fraction));
     double propellantPrice = 1.0;
     double fuelPrice = 1.0;
@@ -5059,6 +5266,13 @@ bool Game::agentOptimiseForTarget(int agentIndex, int targetStar) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
     if (!validStar(*this, targetStar)) return false;
     Agent& agent = agents[agentIndex];
+    // Кнопка OPTIMAL перебирает пару (throttle, cruise) — то есть делает то же,
+    // что две ручки, и запирается тем же гейтом. Рисовалась она неактивной уже
+    // давно (`canOptimise` в drawCargoWindow), но клик всё равно проходил.
+    if (agent.ship.enRoute) {
+        if (agent.playerControlled) lastEvent = "drive locked in flight - STOP first";
+        return false;
+    }
 
     double propellantPrice = 1.0;
     double fuelPrice = 1.0;
@@ -5415,6 +5629,19 @@ bool Game::agentAutoTrade(int agentIndex) {
 // сколько раз система ценнее пустого камня». Всё контекстно: ни одной константы,
 // приписанной конкретной звезде, — только то, что уже живёт в мире (люди, заводы,
 // обитаемость, годовой выпуск недр, построенное, владелец).
+// Годовой выпуск недр в кредитах. Единственный источник и для цены системы, и
+// для дохода её владельца — поэтому «производит больше ⇒ стоит дороже» и
+// «производит больше ⇒ приносит больше» это одно и то же утверждение, а не два
+// независимо подогнанных.
+double Game::systemTurnover(int starIndex) const {
+    if (starIndex < 0 || starIndex >= int(markets.size())) return 0.0;
+    const Market& market = markets[starIndex];
+    const size_t count = std::min(market.productionRate.size(), market.prices.size());
+    double turnover = 0.0;
+    for (size_t i = 0; i < count; ++i) turnover += market.productionRate[i] * market.prices[i];
+    return turnover;
+}
+
 SystemPrice Game::systemPrice(int starIndex) const {
     SystemPrice price;
     if (!validStar(*this, starIndex)) return price;
@@ -5428,13 +5655,7 @@ SystemPrice Game::systemPrice(int starIndex) const {
     // по местным ценам. Богатая иридием система дороже богатой песком ровно во
     // столько раз, во сколько иридий дороже песка, и ни одной таблицы для этого
     // не нужно — рынок уже всё посчитал.
-    double turnover = 0.0;
-    if (starIndex < int(markets.size())) {
-        const Market& market = markets[starIndex];
-        const size_t count = std::min(market.productionRate.size(), market.prices.size());
-        for (size_t i = 0; i < count; ++i) turnover += market.productionRate[i] * market.prices[i];
-    }
-    price.resources = 1.0 + std::max(0.0, turnover) / SYSTEM_PRICE_TURNOVER_REF;
+    price.resources = 1.0 + std::max(0.0, systemTurnover(starIndex)) / SYSTEM_PRICE_TURNOVER_REF;
 
     const int colonyIndex = colonyIndexAt(*this, starIndex);
     if (colonyIndex >= 0) {
@@ -5503,6 +5724,141 @@ bool Game::playerBuySystem() {
     return true;
 }
 
+// Другой борт игрока, стоящий в ТОЙ ЖЕ системе. Первый попавшийся: бортов у
+// игрока единицы (каждый стоит лицензии), перебор дешёв и порядок стабилен.
+int Game::playerOtherShipHere() const {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return -1;
+    const Agent& me = agents[playerAgent];
+    if (me.ship.enRoute || !validStar(*this, me.currentStar)) return -1;
+    for (size_t i = 0; i < agents.size(); ++i) {
+        if (int(i) == playerAgent) continue;
+        const Agent& other = agents[i];
+        if (!other.playerControlled || other.ship.enRoute) continue;
+        if (other.currentStar == me.currentStar) return int(i);
+    }
+    return -1;
+}
+
+// Перевод кредитов между своими бортами. amount <= 0 переводит всё, что есть у
+// отдающего. Возвращает реально переведённое.
+double Game::playerTransferCredits(double amount, bool give) {
+    const int other = playerOtherShipHere();
+    if (other < 0) {
+        lastEvent = "transfer blocked: no second ship of yours docked here";
+        return 0.0;
+    }
+    Agent& me = agents[playerAgent];
+    Agent& mate = agents[other];
+    Agent& from = give ? me : mate;
+    Agent& to = give ? mate : me;
+    const double moved = std::min(from.money, amount > 0.0 ? amount : from.money);
+    if (moved <= 0.0) {
+        lastEvent = give ? "transfer blocked: your wallet is empty"
+                         : "transfer blocked: the other ship has nothing";
+        return 0.0;
+    }
+    from.money -= moved;
+    to.money += moved;
+    me.lastAction = give ? "handed credits over" : "took credits aboard";
+    lastEvent = (give ? "sent " : "drew ") + std::to_string((long long)moved) + " Cr";
+    return moved;
+}
+
+// ------------------------------------------------- СЧЁТ ФРАКЦИИ ПО СВЕТУ --
+// Верхняя оценка «за сколько лет свет отсюда покроет всё скопление»: от звезды
+// до центра плюс радиус. Точное значение — максимум по всем звёздам, но считать
+// его на каждую транзакцию значит гонять 10 000 расстояний; оценка сверху лишь
+// делает банк чуть осторожнее, а это ровно та сторона, где ошибаться безопасно.
+double Game::creditClearYears(int starIndex) const {
+    if (!validStar(*this, starIndex)) return cluster.radiusLy * 2.0;
+    const ClusterStar& star = cluster.stars[starIndex];
+    const double dx = star.x - cluster.centreX;
+    const double dy = star.y - cluster.centreY;
+    const double dz = star.z - cluster.centreZ;
+    return std::sqrt(dx * dx + dy * dy + dz * dz) + cluster.radiusLy;
+}
+
+double Game::factionTreasuryAt(int factionIndex) const {
+    return validFaction(*this, factionIndex) ? factions[factionIndex].treasury : 0.0;
+}
+
+double Game::factionCreditsInFlight(int factionIndex) const {
+    double sum = 0.0;
+    for (size_t i = 0; i < creditFloat.size(); ++i) {
+        if (creditFloat[i].faction == factionIndex) sum += creditFloat[i].amount;
+    }
+    return sum;
+}
+
+// Тратить можно только то, о чём знает ВСЁ скопление. Иначе один и тот же
+// кредит снимался бы дважды в двух концах одновременно — а быстрее света
+// договориться нельзя, это и есть сеттинг.
+double Game::factionClearedTreasury(int factionIndex) const {
+    return std::max(0.0, factionTreasuryAt(factionIndex) - factionCreditsInFlight(factionIndex));
+}
+
+void Game::addCreditFloat(int factionIndex, double amount, int originStar) {
+    if (!validFaction(*this, factionIndex) || amount <= 0.0) return;
+    // Сверка привязана к ГОДУ: колония телеграфирует прибыль каждый тик, и без
+    // склейки поплавок рос бы вектором на десятки тысяч записей за партию.
+    // Округление вверх делает банк чуть осторожнее — сторона, где ошибаться
+    // безопасно.
+    const double clearsAt = std::ceil(time + creditClearYears(originStar));
+    for (size_t i = 0; i < creditFloat.size(); ++i) {
+        if (creditFloat[i].faction != factionIndex) continue;
+        if (std::abs(creditFloat[i].clearsAt - clearsAt) > 1e-9) continue;
+        creditFloat[i].amount += amount;
+        return;
+    }
+    CreditFloat pending;
+    pending.faction = factionIndex;
+    pending.amount = amount;
+    pending.clearsAt = clearsAt;
+    creditFloat.push_back(pending);
+}
+
+double Game::playerAccountDeposit(double amount) {
+    if (playerAgent < 0 || playerAgent >= int(agents.size()) || !validFaction(*this, playerFaction)) return 0.0;
+    Agent& player = agents[playerAgent];
+    if (player.ship.enRoute || !validStar(*this, player.currentStar)) {
+        lastEvent = "account blocked: dock in a system first";
+        return 0.0;
+    }
+    const double moved = std::min(player.money, amount > 0.0 ? amount : player.money);
+    if (moved <= 0.0) return 0.0;
+    player.money -= moved;
+    factions[playerFaction].treasury += moved;
+    addCreditFloat(playerFaction, moved, player.currentStar);
+
+    player.lastAction = "banked credits";
+    lastEvent = "deposited - clears cluster-wide in " +
+                std::to_string(int(std::ceil(creditClearYears(player.currentStar)))) + " yr";
+    return moved;
+}
+
+double Game::playerAccountWithdraw(double amount) {
+    if (playerAgent < 0 || playerAgent >= int(agents.size()) || !validFaction(*this, playerFaction)) return 0.0;
+    Agent& player = agents[playerAgent];
+    if (player.ship.enRoute || !validStar(*this, player.currentStar)) {
+        lastEvent = "account blocked: dock in a system first";
+        return 0.0;
+    }
+    const double cleared = factionClearedTreasury(playerFaction);
+    const double moved = std::min(cleared, amount > 0.0 ? amount : cleared);
+    if (moved <= 0.0) {
+        lastEvent = factionCreditsInFlight(playerFaction) > 0.0
+                        ? "account blocked: credits still in flight"
+                        : "account blocked: nothing cleared";
+        return 0.0;
+    }
+    // Снятие бьёт по счёту немедленно и потому безопасно: за световые годы
+    // отсюда нельзя снять то, что уже снято здесь.
+    factions[playerFaction].treasury -= moved;
+    player.money += moved;
+    player.lastAction = "drew on the account";
+    return moved;
+}
+
 double Game::colonyLedgerAt(int starIndex) const {
     const int colonyIndex = colonyIndexAt(*this, starIndex);
     return colonyIndex < 0 ? 0.0 : colonies[colonyIndex].localLedger;
@@ -5514,8 +5870,16 @@ double Game::colonyIncomeAt(int starIndex) const {
     const int colonyIndex = colonyIndexAt(*this, starIndex);
     if (colonyIndex < 0 || !validStar(*this, starIndex)) return 0.0;
     const Colony& colony = colonies[colonyIndex];
-    const ClusterStar& star = cluster.stars[starIndex];
-    return (star.industry * 0.55 + double(colony.population) * 0.00002) * colony.marketAccess;
+    // Доход — доля ГОДОВОГО ВЫПУСКА, а не формула по `star.industry`. Разница
+    // принципиальна: выпуск считает рынок, он живёт вместе с ценами, зависит от
+    // построенного и падает, когда склад вычерпан. Прежняя формула была
+    // синтетикой поверх сгенерированного поля 0.4..2.6 и не могла дать больше
+    // единиц кредитов, что бы в системе ни происходило.
+    //
+    // `strain` наконец работает в обе стороны: вывез склад подчистую — уронил
+    // себе же доход, ровно как обещает §13.5.
+    const double health = std::max(0.0, 1.0 - markets[starIndex].strain);
+    return systemTurnover(starIndex) * COLONY_OWNER_DUTY * colony.marketAccess * health;
 }
 
 double Game::playerColonyDeposit(double amount) {
@@ -5561,22 +5925,74 @@ double Game::licenceQuotaTarget() const {
     return licenceQuotaBase * (1.0 + LICENCE_QUOTA_PER_EXTRA * double(std::max(0, licenceCount - 1)));
 }
 
+// Медиана стоимости единицы услуги по скоплению. Медиана, а не среднее: рынки
+// на отшибе уходят в разы от типичного, и среднее тянул бы хвост.
+//
+// Берутся ВСЕ рынки, и это не «всеведение»: физическое ограничение здесь не
+// «кто про кого знает», а СКОЛЬКО ИДЁТ СВЕТ. Оно уже смоделировано тем, что
+// перепись проводится раз в тысячелетие и между сверками уровень — константа.
+// Фильтровать выборку по знанию фракции нельзя ещё и практически: на старте
+// лицензиару известен ОДИН рынок, и медиана из одного элемента — шум, а не
+// замер. Чистая функция состояния: без RNG, без мутаций — §2.3-safe.
+double Game::measureClusterServiceCost() const {
+    std::vector<double> samples;
+    samples.reserve(markets.size());
+    for (size_t i = 0; i < markets.size(); ++i) {
+        if (markets[i].serviceCostAvg > 0.0) samples.push_back(markets[i].serviceCostAvg);
+    }
+    if (samples.empty()) return 0.0;
+    std::sort(samples.begin(), samples.end());
+    return samples[samples.size() / 2];
+}
+
+// Уровень — отношение к ЯКОРЮ `ECON_CREDITS_PER_SERVICE`, и это принципиально:
+// на нём висит не только ставка тарифа, но и ценовой привод `gLevelDrive`,
+// который единственный закрепляет НОМИНАЛЬНЫЙ уровень цен (доли замещения
+// зависят только от относительных цен, поэтому номинал сам по себе свободно
+// дрейфует — см. market.cpp). Мерить уровень «от начала партии» было заманчиво
+// (1.0 по построению), но тогда привод обнуляется и якорь перестаёт держать
+// цены вовсе: замер показал падение котировок на треть.
+double Game::measureClusterPriceLevel() const {
+    const double now = measureClusterServiceCost();
+    if (now <= 0.0) return clusterPriceLevel;
+    return std::max(1e-6, now / ECON_CREDITS_PER_SERVICE);
+}
+
 void Game::updateLicence(double dt) {
     if (playerAgent < 0 || playerAgent >= int(agents.size())) return;
 
-    // Ставка следует за денежным уровнем скопления (постоянная времени ~250 лет):
-    // богатеющее скопление берёт с оборота больше. Никакого RNG — чистая функция
-    // наблюдаемого состояния рынков, поэтому воспроизводится вместе с seed.
-    const double level = marketClusterLevel();
+    // Ставка следует за тем, насколько скопление подорожало С НАЧАЛА ПАРТИИ, а
+    // не за отношением к якорю: якорь — точка отсчёта для ЦЕН, а не для денег
+    // игрока. Отсюда `LICENCE_TARIFF_BASE` наконец означает написанное — ставку
+    // первого тысячелетия, — а клампы становятся границами дрейфа вместо
+    // вечного пола. Между сверками величина КОНСТАНТА, поэтому строка
+    // идемпотентна и сама ставит ставку на место после загрузки сейва.
+    const double drift = clusterPriceBase > 0.0 ? clusterPriceLevel / clusterPriceBase : 1.0;
     licenceTariffRate = std::max(LICENCE_TARIFF_MIN,
-                                 std::min(LICENCE_TARIFF_MAX, LICENCE_TARIFF_BASE * level));
+                                 std::min(LICENCE_TARIFF_MAX, LICENCE_TARIFF_BASE * drift));
 
     if (time < licencePeriodEnd) return;
 
     const double target = licenceQuotaTarget();
     // Тысячелетний рубеж: свет доходит от края скопления до края за век с лишним,
     // поэтому цены сверяют разом и с той же оказией пересматривают квоты.
-    pushNews("Millennial relativistic market correction: ledgers reconciled cluster-wide.", 1);
+    // ЗДЕСЬ И ТОЛЬКО ЗДЕСЬ пересчитывается денежный уровень скопления. Сверка
+    // перестаёт быть таймером и становится событием: ставка тарифа меняется
+    // ступенькой ровно в тот момент, о котором игру предупредили в прологе.
+    // Банк СВЕРЯЕТ курс, а не переставляет его рывком: новый уровень берётся
+    // на полпути к замеру. Это не украшение — контур, который меряют раз в
+    // тысячу лет и применяют на полную, входит в устойчивый двухтактный цикл
+    // (замер без сглаживания: 0.265 ↔ 0.428 ↔ 0.297 ↔ 0.430, ставка прыгала
+    // 0.080 → 0.129 → 0.090 → 0.130 идеально через раз, что читается как
+    // артефакт, а не как экономика).
+    clusterPriceLevel += (measureClusterPriceLevel() - clusterPriceLevel) * 0.5;
+    marketSetClusterLevel(clusterPriceLevel);
+    const double reconciledDrift = clusterPriceBase > 0.0 ? clusterPriceLevel / clusterPriceBase : 1.0;
+    licenceTariffRate = std::max(LICENCE_TARIFF_MIN,
+                                 std::min(LICENCE_TARIFF_MAX, LICENCE_TARIFF_BASE * reconciledDrift));
+    pushNews("Millennial relativistic market correction: cluster prices at " +
+             std::to_string(int(reconciledDrift * 100.0 + 0.5)) + "% of founding, tariff now " +
+             std::to_string(int(licenceTariffRate * 1000.0 + 0.5)) + " per mille.", 1);
     if (licenceQuotaPaid + 1e-6 >= target) {
         licencePeriodsMet += 1;
         pushNews("Licence renewed: quota met (" + std::to_string(int(licenceQuotaPaid)) +
@@ -5612,7 +6028,7 @@ bool Game::playerBuybackLicence() {
     }
     player.money -= licenceBuyback;
     // Выкуп идёт в казну лицензиара — деньги не исчезают из экономики.
-    if (validFaction(*this, playerFaction)) factions[playerFaction].treasury += licenceBuyback;
+    if (validFaction(*this, clearingFaction)) factions[clearingFaction].treasury += licenceBuyback;
     licenceRevoked = false;
     licenceBuyback = 0.0;
     licenceQuotaPaid = 0.0;
@@ -5822,7 +6238,7 @@ bool Game::playerBuyLicence() {
         return false;
     }
     player.money -= price;
-    if (validFaction(*this, playerFaction)) factions[playerFaction].treasury += price;
+    if (validFaction(*this, clearingFaction)) factions[clearingFaction].treasury += price;
     licenceCount += 1;
     pushNews("Trading licence #" + std::to_string(licenceCount) + " acquired. Quota is now " +
              std::to_string(int(licenceQuotaTarget())) + " Cr per period.", 4);
@@ -5844,7 +6260,7 @@ bool Game::playerSettleQuota() {
         return false;
     }
     player.money -= cost;
-    if (validFaction(*this, playerFaction)) factions[playerFaction].treasury += cost;
+    if (validFaction(*this, clearingFaction)) factions[clearingFaction].treasury += cost;
     licenceQuotaPaid += remaining;
     pushNews("Quota settled in cash for " + std::to_string(int(std::ceil(cost))) + " Cr.", 4);
     lastEvent = "quota settled";

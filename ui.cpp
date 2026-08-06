@@ -630,7 +630,7 @@ void drawStarPanel(SDL_Renderer* renderer, const Game& game, int starIndex, int 
             factionName(game, star->occupyingFaction).c_str(), star->captureProgress * 100.0);
         drawText(renderer, x + w - 126, y + 43, cap, P.red, 1);
     }
-    labelBar(renderer, x + 10, y + 58, w - 20, "POPULATION", star->population / 1400000.0, P.green);
+    labelBar(renderer, x + 10, y + 58, w - 20, "POPULATION", starPopulationWeight(*star) / 8.0, P.green);
     labelBar(renderer, x + 10, y + 72, w - 20, "INDUSTRY", star->industry / 3.0, P.amber);
     labelBar(renderer, x + 10, y + 86, w - 20, "HABITABILITY", star->habitability, P.cyan);
     labelBar(renderer, x + 10, y + 100, w - 20, "DEFENSE", star->defense / 10.0, P.red);
@@ -1127,6 +1127,24 @@ SDL_Rect holdOptimalRect(const Window& window) {
     return r;
 }
 
+// Перевод кредитов на соседний свой борт и обратно. Живут в окне HOLD, потому
+// что HOLD — это «что на корабле и куда оно уходит», а деньги капитана такой же
+// предмет на борту, как груз: у фракции касса общая, у корабля — своя.
+// Сумму берут из того же поля шага, что и переливы вещества, — одно понятие на
+// все операции окна.
+SDL_Rect holdGiveRect(const Window& window) {
+    SDL_Rect r = holdOptimalRect(window);
+    r.x -= 196;
+    r.w = 92;
+    return r;
+}
+
+SDL_Rect holdTakeRect(const Window& window) {
+    SDL_Rect r = holdGiveRect(window);
+    r.x += 96;
+    return r;
+}
+
 // Кнопка «за борт»: единственный выход, если перегрузился вдали от рынка.
 SDL_Rect holdJettisonRect(const Window& window, int row) {
     SDL_Rect r;
@@ -1167,6 +1185,15 @@ bool handleCargoWindowMouseDown(WindowState& state, Game& game, const Window& wi
         const int dest = game.agents[game.playerAgent].destStar;
         if (dest >= 0) game.agentOptimiseForTarget(game.playerAgent, dest);
         else game.lastEvent = "no destination set: open a system and press DESTINATION";
+        return true;
+    }
+    // Деньги между своими бортами: та же сумма из поля шага, что и переливы.
+    if (contains(holdGiveRect(window), mouseX, mouseY)) {
+        game.playerTransferCredits(amount, true);
+        return true;
+    }
+    if (contains(holdTakeRect(window), mouseX, mouseY)) {
+        game.playerTransferCredits(amount, false);
         return true;
     }
     {
@@ -1551,6 +1578,9 @@ struct ExchangeLayout {
     SDL_Rect scrollUp = {0, 0, 0, 0};
     SDL_Rect scrollDown = {0, 0, 0, 0};
     SDL_Rect elementsBtn = {0, 0, 0, 0};
+    // Счёт фракции: деньги, которые ходят СВЕТОМ, а не с кораблём.
+    SDL_Rect accountIn = {0, 0, 0, 0};
+    SDL_Rect accountOut = {0, 0, 0, 0};
     int rowH = 14;
     int rows = 0;
     // Сетка таблицы Менделеева (режим выбора элемента)
@@ -1561,7 +1591,8 @@ ExchangeLayout exchangeLayout(const Window& window) {
     ExchangeLayout layout;
     const int x = window.rect.x + WINDOW_PAD;
     const int w = window.rect.w - WINDOW_PAD * 2;
-    const int top = window.rect.y + TITLE_H + 56;      // под шапкой со статусом лицензии
+    // Шапка на строку выше: под статусом лицензии живёт ещё и счёт фракции.
+    const int top = window.rect.y + TITLE_H + 70;
     const int bottom = window.rect.y + window.rect.h - 40;
     layout.board = {x, top, w, std::max(0, bottom - top - 8)};
     layout.rows = std::max(0, layout.board.h / layout.rowH - 1);
@@ -1571,6 +1602,9 @@ ExchangeLayout exchangeLayout(const Window& window) {
     layout.scrollUp    = {window.rect.x + window.rect.w - 46, top - 18, 36, 16};
     layout.scrollDown  = {window.rect.x + window.rect.w - 46, by, 36, 24};
     layout.elementsBtn = {x + 376, by, 150, 24};
+    // Взнос и снятие — над нижним рядом, чтобы не тесниться с лицензиями.
+    layout.accountIn  = {x, by - 28, 170, 24};
+    layout.accountOut = {x + 178, by - 28, 190, 24};
     // Таблица Менделеева: 18 столбцов, вписываем в ширину доски.
     layout.cellW = std::max(18, std::min(34, (layout.board.w - 20) / 18));
     layout.cellH = std::max(16, layout.cellW - 6);
@@ -1697,8 +1731,19 @@ bool handleExchangeWindowMouseDown(WindowState& state, Game& game, const Window&
         game.playerSettleQuota();
         return true;
     }
+    // Счёт фракции: сумма — из того же поля, что и всё остальное в окнах.
+    if (contains(layout.accountIn, mouseX, mouseY)) {
+        game.playerAccountDeposit(tradeRequestedAmount(state));
+        return true;
+    }
+    if (contains(layout.accountOut, mouseX, mouseY)) {
+        game.playerAccountWithdraw(tradeRequestedAmount(state));
+        return true;
+    }
     return false;
 }
+
+std::string creditsLabel(double value);   // определена ниже, у окна колонии
 
 void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& window,
                         const WindowState& state, bool active) {
@@ -1728,6 +1773,21 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
     std::snprintf(head, sizeof(head), "LICENCES %d   HULLS %d   FREE %d",
                   game.licenceCount, game.playerShipCount(), game.playerFreeLicences());
     drawText(renderer, x, y, head, game.playerFreeLicences() > 0 ? P.green : P.dim, 1);
+    y += 14;
+
+    // --- Счёт фракции. Деньги на нём ходят СВЕТОМ: внёс в одном конце
+    // скопления — потратить в другом можно только когда туда дошло известие.
+    // Поэтому цифры две, и вторая объясняет, почему первая меньше.
+    const double cleared = game.factionClearedTreasury(game.playerFaction);
+    const double inFlight = game.factionCreditsInFlight(game.playerFaction);
+    if (inFlight > 0.0) {
+        std::snprintf(head, sizeof(head), "ACCOUNT %s CR CLEARED   %s CR IN FLIGHT",
+                      creditsLabel(cleared).c_str(), creditsLabel(inFlight).c_str());
+        drawText(renderer, x, y, head, P.amber, 1);
+    } else {
+        std::snprintf(head, sizeof(head), "ACCOUNT %s CR CLEARED", creditsLabel(cleared).c_str());
+        drawText(renderer, x, y, head, P.green, 1);
+    }
     y += 14;
 
     const int dockedStar = playerMarketStar(game);
@@ -1840,6 +1900,15 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
                       elementDefinitions()[state.exchangeElement].symbol);
     } else {
         std::snprintf(btn, sizeof(btn), "FILTER BY ELEMENT");
+    }
+    // Взнос доступен на любой стоянке, снятие — только на покрытую светом сумму.
+    {
+        const bool docked = playerMarketStar(game) >= 0;
+        const double wallet = (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()))
+                                  ? game.agents[game.playerAgent].money : 0.0;
+        drawButton(renderer, layout.accountIn, "TO ACCOUNT", P.amber, docked && wallet > 0.0);
+        drawButton(renderer, layout.accountOut, "FROM ACCOUNT", P.green,
+                   docked && game.factionClearedTreasury(game.playerFaction) > 0.0);
     }
     drawButton(renderer, layout.elementsBtn, btn, P.cyan, true);
 }
@@ -1970,8 +2039,7 @@ void drawColonyWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
 
     if (!owned) {
         const SystemPrice price = game.systemPrice(window.star);
-        std::snprintf(buf, sizeof(buf), "%.0F", star->population);
-        drawPriceFactor(renderer, x, y, columnW, "POPULATION", buf, price.population); y += 14;
+        drawPriceFactor(renderer, x, y, columnW, "POPULATION", creditsLabel(star->population), price.population); y += 14;
         std::snprintf(buf, sizeof(buf), "%.2F", star->industry);
         drawPriceFactor(renderer, x, y, columnW, "INDUSTRY", buf, price.industry); y += 14;
         std::snprintf(buf, sizeof(buf), "%.2F", star->habitability);
@@ -1995,6 +2063,27 @@ void drawColonyWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
         drawText(renderer, x, y, "ASKING PRICE", P.dim, 1);
         drawText(renderer, x + 96, y, creditsLabel(price.total) + " CR",
                  cash >= price.total ? P.green : P.red, 1);
+        y += 14;
+        // Окупаемость — не вход формулы, а СЛЕДСТВИЕ: цена собрана из
+        // характеристик системы, доход идёт от её годового выпуска, и частное
+        // отвечает игроку на единственный вопрос, который у него есть, — стоит
+        // ли. Медиана по скоплению ~10 000 лет, но гарантии нет ни у одной
+        // системы: богатая людьми дороже, чем даёт её выпуск, тихая рудная —
+        // наоборот. Ровно поэтому «какую покупать» — вопрос, а не таблица.
+        {
+            const double income = game.colonyIncomeAt(window.star);
+            char pay[96];
+            if (income > 0.0) {
+                const double years = price.total / income;
+                std::snprintf(pay, sizeof(pay), "%s CR/Y - PAYS BACK IN %s Y",
+                              creditsLabel(income).c_str(), creditsLabel(years).c_str());
+                drawText(renderer, x, y, "YIELD", P.dim, 1);
+                drawText(renderer, x + 96, y, pay, years < 12000.0 ? P.green : P.amber, 1);
+            } else {
+                drawText(renderer, x, y, "YIELD", P.dim, 1);
+                drawText(renderer, x + 96, y, "NO WORKING ECONOMY YET", P.dim, 1);
+            }
+        }
         y += 18;
         if (owner >= 0 && owner < int(game.factions.size())) {
             drawText(renderer, x, y, "PAID IN FULL TO THE SELLING FACTION", P.dim, 1);
@@ -2009,8 +2098,7 @@ void drawColonyWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
     }
 
     // --- Своя система: как она живёт и что в кассе ---
-    std::snprintf(buf, sizeof(buf), "%.0F", star->population);
-    drawStat(renderer, x, y, "POPULATION ", buf); y += 14;
+    drawStat(renderer, x, y, "POPULATION ", creditsLabel(star->population)); y += 14;
     std::snprintf(buf, sizeof(buf), "%.2F", star->industry);
     int cx = drawStat(renderer, x, y, "INDUSTRY ", buf);
     std::snprintf(buf, sizeof(buf), "%d", game.shipyardLevelAtStar(window.star));
@@ -2256,7 +2344,7 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
 
     drawText(renderer, x, y, "ROLE " + star->economyRole, P.text, 1);
     y += 18;
-    labelBar(renderer, x, y, window.rect.w - 28, "POP", star->population / 1400000.0, P.green);
+    labelBar(renderer, x, y, window.rect.w - 28, "POP", starPopulationWeight(*star) / 8.0, P.green);
     y += 14;
     labelBar(renderer, x, y, window.rect.w - 28, "IND", star->industry / 3.0, P.amber);
     y += 14;
@@ -2819,30 +2907,37 @@ void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         destStarLabel(game).c_str(), P.dim, 1);
 
     // --- Ручка режима двигателя ---
+    // В полёте обе ручки заперты: рабочая точка двигателя фиксируется на вылете
+    // (§12.4), иначе маршрутная оценка и реальный расход считают по разным
+    // скоростям истечения. Гейт — `enRoute`, поэтому вставший после STOP
+    // посреди пустоты корабль перенастроить МОЖНО.
+    const bool driveLocked = ship.enRoute;
     const SDL_Rect thr = holdThrottleRect(window);
     const double t = std::max(0.0, std::min(1.0, ship.throttle));
     const char* mode = t < 0.42 ? "BULK" : (t > 0.58 ? "BURN" : "OPTIMUM");
-    std::snprintf(line, sizeof(line), "THROTTLE %.2F  %s", t, mode);
-    drawText(renderer, thr.x - 40, thr.y - 14, line, P.text, 1);
+    std::snprintf(line, sizeof(line), "THROTTLE %.2F  %s%s", t, mode, driveLocked ? "  LOCKED" : "");
+    drawText(renderer, thr.x - 40, thr.y - 14, line, driveLocked ? P.dim : P.text, 1);
 
     fillRect(renderer, thr.x, thr.y, thr.w, thr.h, {9, 14, 26, 245});
     strokeRect(renderer, thr.x, thr.y, thr.w, thr.h, P.border);
     // Отметка ценового оптимума ровно посередине шкалы.
     fillRect(renderer, thr.x + thr.w / 2, thr.y - 3, 1, thr.h + 6, P.dim);
     const int knob = thr.x + int(t * double(thr.w - 6));
-    fillRect(renderer, knob, thr.y - 2, 6, thr.h + 4, t < 0.42 ? P.cyan : (t > 0.58 ? P.amber : P.green));
+    fillRect(renderer, knob, thr.y - 2, 6, thr.h + 4,
+             driveLocked ? P.dim : (t < 0.42 ? P.cyan : (t > 0.58 ? P.amber : P.green)));
     drawText(renderer, thr.x - 40, thr.y + 2, "PROP", P.cyan, 1);
     drawText(renderer, thr.x + thr.w + 6, thr.y + 2, "FUEL", P.amber, 1);
 
     // --- Крейсерская скорость ---
     const SDL_Rect cru = holdCruiseRect(window);
     const double cf = std::max(0.2, std::min(1.0, ship.cruiseFraction));
-    std::snprintf(line, sizeof(line), "CRUISE %.0F%%  %.3FC", cf * 100.0, shipCruiseSpeed(ship));
-    drawText(renderer, cru.x - 40, cru.y - 14, line, P.text, 1);
+    std::snprintf(line, sizeof(line), "CRUISE %.0F%%  %.3FC%s", cf * 100.0, shipCruiseSpeed(ship),
+                  driveLocked ? "  LOCKED" : "");
+    drawText(renderer, cru.x - 40, cru.y - 14, line, driveLocked ? P.dim : P.text, 1);
     fillRect(renderer, cru.x, cru.y, cru.w, cru.h, {9, 14, 26, 245});
     strokeRect(renderer, cru.x, cru.y, cru.w, cru.h, P.border);
     const int cknob = cru.x + int((cf - 0.2) / 0.8 * double(cru.w - 6));
-    fillRect(renderer, cknob, cru.y - 2, 6, cru.h + 4, P.green);
+    fillRect(renderer, cknob, cru.y - 2, 6, cru.h + 4, driveLocked ? P.dim : P.green);
     drawText(renderer, cru.x - 40, cru.y + 2, "SLOW", P.green, 1);
     drawText(renderer, cru.x + cru.w + 6, cru.y + 2, "FAST", P.red, 1);
 
@@ -2851,6 +2946,19 @@ void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     const bool canOptimise = destStar >= 0 && !ship.enRoute &&
                              destStar != game.agents[game.playerAgent].currentStar;
     drawButton(renderer, holdOptimalRect(window), "OPTIMAL", P.green, canOptimise);
+
+    // --- Кредиты соседнему своему борту ---
+    // Кошелёк лежит НА БОРТУ, а не у игрока: перевозить деньги приходится так
+    // же, как груз. Кнопки живы только когда второй свой борт стоит рядом.
+    const int mate = game.playerOtherShipHere();
+    drawButton(renderer, holdGiveRect(window), "GIVE CR", P.amber, mate >= 0);
+    drawButton(renderer, holdTakeRect(window), "TAKE CR", P.green, mate >= 0);
+    if (mate >= 0) {
+        std::snprintf(line, sizeof(line), "%s HAS %s CR",
+                      game.agents[mate].ship.name.c_str(),
+                      creditsLabel(game.agents[mate].money).c_str());
+        drawText(renderer, holdGiveRect(window).x, holdGiveRect(window).y - 13, line, P.dim, 1);
+    }
 
     // Поле шага: сколько двигает ОДНО нажатие стрелки. То же число, что AMOUNT
     // в окне торговли, — одно понятие на все операции с веществом.
