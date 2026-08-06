@@ -25,6 +25,20 @@ void fillRect(SDL_Renderer* renderer, int x, int y, int w, int h, SDL_Color c);
 void strokeRect(SDL_Renderer* renderer, int x, int y, int w, int h, SDL_Color c);
 void panel(SDL_Renderer* renderer, int x, int y, int w, int h);
 const char* glyph(char ch);
+// Глиф по кодовой точке Unicode: ASCII идёт в glyph(), кириллица — в свою
+// таблицу 5x7 (см. cyrillicGlyph). Неизвестное — «тофу» по умолчанию.
+const char* glyphCp(unsigned int cp);
+
+// Длина строки В СИМВОЛАХ, а не в байтах: кириллица в UTF-8 занимает два байта,
+// и всякий `text.size()` в раскладке начинал врать вдвое.
+size_t textLength(const std::string& text);
+// Безопасная обрезка по символам — печатная машинка не должна разрывать
+// двухбайтовую букву пополам (получился бы «тофу» на последнем кадре).
+std::string textPrefix(const std::string& text, size_t chars);
+// Ширина уже ПЕРЕВЕДЁННОГО текста в пикселях (максимум по строкам). Всё
+// центрирование считает по ней: русский текст длиннее английского.
+int textWidth(const std::string& text, int scale = 2);
+
 void drawText(SDL_Renderer* renderer, int x, int y, const std::string& text, SDL_Color c, int scale = 2);
 void bar(SDL_Renderer* renderer, int x, int y, int w, int h, double value, SDL_Color c);
 

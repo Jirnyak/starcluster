@@ -6,6 +6,7 @@
 #include "local.h"
 #include "render2d.h"
 #include "shell.h"
+#include "i18n.h"
 #include <SDL.h>
 #include <SDL_mixer.h>
 #include "stb_image.h"
@@ -546,6 +547,9 @@ int main(int argc, char** argv) {
     // CI встанет на ожидании клавиши (см. PROMPT_frontend_shell.md §6).
     Game game;
     bool soundOn = true;
+    // Язык интерфейса выбирается в меню, но помнится между запусками: файл
+    // лежит рядом с сейвом. Нет файла — остаётся английский.
+    I18N::loadPreference(savePath() + ".lang");
     if (smoke) {
         game.seed = worldSeed;
         game.init(STAR_COUNT);
@@ -708,12 +712,12 @@ int main(int argc, char** argv) {
         const int h = 24, gap = 6, pad = 14, scale = 1;
         int total = 0;
         for (size_t i = 0; i < specs.size(); ++i)
-            total += pad + int(specs[i].label.size()) * 6 * scale + (i ? gap : 0);
+            total += pad + UI::textWidth(specs[i].label, scale) + (i ? gap : 0);
         int x = std::max(6, (winW - total) / 2);
         const int y = localScene.active ? (winH - h - 34) : (winH - h - 6);
         for (size_t i = 0; i < specs.size(); ++i) {
             ActionButton b;
-            b.rect = SDL_Rect{ x, y, pad + int(specs[i].label.size()) * 6 * scale, h };
+            b.rect = SDL_Rect{ x, y, pad + UI::textWidth(specs[i].label, scale), h };
             b.label = specs[i].label;
             b.color = specs[i].color;
             b.enabled = specs[i].enabled;
@@ -746,7 +750,7 @@ int main(int argc, char** argv) {
 
             UI::fillRect(renderer, b.rect.x, b.rect.y, b.rect.w, b.rect.h, fill);
             UI::strokeRect(renderer, b.rect.x, b.rect.y, b.rect.w, b.rect.h, b.enabled ? b.color : UI::P.dim);
-            const int lw = int(b.label.size()) * 6;
+            const int lw = UI::textWidth(b.label, 1);
             UI::drawText(renderer, b.rect.x + (b.rect.w - lw) / 2, b.rect.y + (b.rect.h - 7) / 2, b.label, txt, 1);
         }
     };

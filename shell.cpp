@@ -2,6 +2,7 @@
 
 #include "render2d.h"
 #include "ui.h"
+#include "i18n.h"
 #include "stb_image.h"
 
 #include <algorithm>
@@ -35,6 +36,8 @@ const float REWIND_RATE   = 0.85f;    // скорость промотки на�
 const float HOLD_SECONDS  = 1.35f;    // сколько держим собранную надпись
 const int   SUPER = 2;                // клеток на один пиксель шрифта 5x7
 const int   COMIC_SLIDES = 5;
+// Пунктов главного меню: NEW GAME / LOAD GAME / LANGUAGE / SOUND / EXIT.
+const int   MENU_ITEMS = 5;
 
 // --- Курсор как физический толкатель ---------------------------------------
 // Скорость курсора считается в НАСТОЯЩИХ px/с (rel за кадр / dt), поэтому резкий
@@ -812,21 +815,28 @@ void drawCells(SDL_Renderer* r, const State& s, float fade) {
 }
 
 void centerText(SDL_Renderer* r, int cx, int y, const std::string& t, SDL_Color c, int scale) {
-    UI::drawText(r, cx - int(t.size()) * 3 * scale, y, t, c, scale);
+    // Ширину берём у UI::textWidth: она меряет уже переведённую строку и считает
+    // символы, а не байты (кириллица в UTF-8 двухбайтовая).
+    UI::drawText(r, cx - UI::textWidth(t, scale) / 2, y, t, c, scale);
 }
 
 std::string wrapPlain(const std::string& text, int maxChars) {
     std::string out, line, word;
+    size_t lineLen = 0, wordLen = 0;
     for (size_t k = 0; k <= text.size(); ++k) {
         const char ch = k < text.size() ? text[k] : ' ';
         if (ch == ' ') {
             if (word.empty()) continue;
-            if (line.empty()) line = word;
-            else if (int(line.size() + 1 + word.size()) <= maxChars) line += " " + word;
-            else { out += line; out += "\n"; line = word; }
+            if (line.empty()) { line = word; lineLen = wordLen; }
+            else if (int(lineLen + 1 + wordLen) <= maxChars) { line += " " + word; lineLen += 1 + wordLen; }
+            else { out += line; out += "\n"; line = word; lineLen = wordLen; }
             word.clear();
+            wordLen = 0;
         } else {
             word += ch;
+            // Хвостовые байты UTF-8 (10xxxxxx) не считаются за символ — иначе
+            // русская подпись переносилась бы вдвое раньше нужного.
+            if (((unsigned char)ch & 0xC0) != 0x80) ++wordLen;
         }
     }
     if (!line.empty()) out += line;
@@ -911,18 +921,20 @@ void drawComic(SDL_Renderer* r, State& s) {
     }
 
     // Подпись печатается посимвольно — та же эстетика, что у новеллы Тимертии.
-    const std::string full = SLIDE_TEXT[s.slide];
-    const size_t shown = std::min(full.size(), size_t(s.slideText));
+    // Переводим ДО машинки: посимвольная обрезка английского оригинала не дала
+    // бы словарю совпасть ни разу (он ищет целые слова и обороты).
+    const std::string full = I18N::tr(SLIDE_TEXT[s.slide]);
+    const size_t shown = std::min(UI::textLength(full), size_t(s.slideText));
     const int capY = artY + frameH + 18;
     const int maxChars = std::max(20, (s.winW - margin * 2 - 20) / 12);
-    UI::drawText(r, artX + 4, capY, wrapPlain(full.substr(0, shown), maxChars), P.text, 2);
+    UI::drawText(r, artX + 4, capY, wrapPlain(UI::textPrefix(full, shown), maxChars), P.text, 2);
 
     // Счётчик кадров
     for (int i = 0; i < COMIC_SLIDES; ++i) {
         const SDL_Color c = i == s.slide ? P.cyan : P.dim;
         UI::fillRect(r, s.winW / 2 - COMIC_SLIDES * 9 + i * 18, s.winH - 42, 12, 4, c);
     }
-    const bool typing = shown < full.size();
+    const bool typing = shown < UI::textLength(full);
     if ((SDL_GetTicks() / 420) % 2 == 0 || typing) {
         centerText(r, s.winW / 2, s.winH - 30,
                    typing ? "CLICK TO REVEAL" : "CLICK TO CONTINUE", P.dim, 1);
@@ -1067,8 +1079,8 @@ int run(SDL_Window* window, SDL_Renderer* renderer, Game& game, size_t starCount
                     keyAdvance = true;
                 }
                 if (s.phase == PH_MENU) {
-                    if (k == SDLK_UP || k == SDLK_w) s.menuIndex = (s.menuIndex + 3) % 4;
-                    if (k == SDLK_DOWN || k == SDLK_s) s.menuIndex = (s.menuIndex + 1) % 4;
+                    if (k == SDLK_UP || k == SDLK_w) s.menuIndex = (s.menuIndex + MENU_ITEMS - 1) % MENU_ITEMS;
+                    if (k == SDLK_DOWN || k == SDLK_s) s.menuIndex = (s.menuIndex + 1) % MENU_ITEMS;
                 }
             }
         }
@@ -1199,16 +1211,21 @@ int run(SDL_Window* window, SDL_Renderer* renderer, Game& game, size_t starCount
                     s.slideText = 0.0f;
                     loadSlides(renderer, s);
                 } else if (s.menuIndex == 2) {
+                    // Переключатель языка. Выбор переживает запуск — лежит
+                    // рядом с сейвом (см. I18N::savePreference в main.cpp).
+                    I18N::setLang(I18N::lang() == I18N::LANG_RU ? I18N::LANG_EN : I18N::LANG_RU);
+                    I18N::savePreference(savePath + ".lang");
+                } else if (s.menuIndex == 3) {
                     soundOn = !soundOn;
                     Mix_VolumeMusic(soundOn ? MIX_MAX_VOLUME : 0);
                     if (!soundOn) Mix_HaltMusic();
-                } else if (s.menuIndex == 3) {
+                } else if (s.menuIndex == 4) {
                     s.quitRequested = true;
                 }
             }
         } else if (s.phase == PH_COMIC) {
             s.slideText += realDt * 78.0f;
-            const size_t full = std::strlen(SLIDE_TEXT[s.slide]);
+            const size_t full = UI::textLength(I18N::tr(SLIDE_TEXT[s.slide]));
             if (skipAll) {
                 s.phase = PH_LOADING;
                 s.phaseTime = 0.0f;
@@ -1268,16 +1285,19 @@ int run(SDL_Window* window, SDL_Renderer* renderer, Game& game, size_t starCount
             // (drawPx ещё едет к нему после пересборки — подпись налезала бы).
             centerText(renderer, s.winW / 2, int(s.winH * 0.13f) + 7 * SUPER * s.titlePx + 18,
                        "A TENEVIK GAMES SIMULATION", P.dim, 1);
-            const char* labels[4] = { "NEW GAME", "LOAD GAME", "SOUND", "EXIT" };
+            const char* labels[MENU_ITEMS] = { "NEW GAME", "LOAD GAME", "LANGUAGE", "SOUND", "EXIT" };
             s.menuRects.clear();
             const int itemH = 40;
             const int top = int(s.winH * 0.50f);
-            for (int i = 0; i < 4; ++i) {
+            for (int i = 0; i < MENU_ITEMS; ++i) {
                 std::string label = labels[i];
-                if (i == 2) label += soundOn ? " ON" : " OFF";
+                // Язык всегда подписан обеими метками: игрок, открывший меню на
+                // чужом языке, всё равно видит, куда жать.
+                if (i == 2) label += I18N::lang() == I18N::LANG_RU ? ": RUS / ENG" : ": ENG / RUS";
+                if (i == 3) label += soundOn ? " ON" : " OFF";
                 const bool enabled = !(i == 1 && !s.hasSave);
                 const bool sel = i == s.menuIndex;
-                const int w = int(label.size()) * 12 + 80;
+                const int w = UI::textWidth(label, 2) + 80;
                 SDL_Rect q = { s.winW / 2 - w / 2, top + i * itemH, w, itemH - 8 };
                 s.menuRects.push_back(q);
                 if (sel && enabled) {

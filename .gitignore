@@ -7,11 +7,14 @@
 /ui_click_test
 /shot_test
 /shot_test_asan
+/ui_shot_test
 /balance_test
 /econ_test
 /test_rng
 shot_*.bmp
 shot_*.png
+uishot_*.bmp
+uishot_*.png
 *.dSYM/
 *.o
 *.out

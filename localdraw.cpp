@@ -50,10 +50,9 @@ SDL_Color fade(uint8_t r, uint8_t g, uint8_t b, uint8_t a, double f) {
     return rgba(int(r * f), int(g * f), int(b * f), a);
 }
 
-// Приблизительная ширина строки для центрирования (глиф 5 + 1 пробел = 6 * scale).
-int textWidth(const std::string& s, int scale) {
-    return int(s.size()) * 6 * scale;
-}
+// Ширина строки для центрирования живёт теперь в render2d.cpp (UI::textWidth):
+// она считает символы, а не байты, и меряет уже ПЕРЕВЕДЁННУЮ строку — локальный
+// вариант на `s.size()` врал бы вдвое на кириллице.
 
 // Экранный радиус мирового радиуса R по режиму: перспектива => R*focal/depth
 // (depth = дистанция перед камерой, >near); орто => R*scale. Возвращает СЫРОЙ px

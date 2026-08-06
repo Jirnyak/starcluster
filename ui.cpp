@@ -3,6 +3,7 @@
 #include "econ.h"
 #include "modules.h"
 #include "render2d.h"
+#include "i18n.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -221,9 +222,11 @@ void labelBar(SDL_Renderer* renderer, int x, int y, int w, const std::string& la
 
 int drawStat(SDL_Renderer* renderer, int x, int y, const std::string& label, const std::string& value, SDL_Color lc = P.dim, SDL_Color vc = P.text) {
     drawText(renderer, x, y, label, lc, 1);
-    x += int(label.length()) * 6;
+    // Ширину берём у textWidth: она меряет ПЕРЕВЕДЁННУЮ строку и считает символы,
+    // а не байты. На `label.length()` русская подпись наезжала на своё значение.
+    x += textWidth(label, 1);
     drawText(renderer, x, y, value, vc, 1);
-    x += int(value.length()) * 6 + 12;
+    x += textWidth(value, 1) + 12;
     return x;
 }
 
@@ -544,8 +547,8 @@ void drawRoutePreview(SDL_Renderer* renderer, const Game& game, int starIndex, i
     }
 
     const int maxW = w - WINDOW_PAD * 2;
-    const int routeW = int(std::strlen(route)) * 6;
-    const int detailW = int(std::strlen(detail)) * 6;
+    const int routeW = textWidth(route, 1);
+    const int detailW = textWidth(detail, 1);
     if (routeW + 6 + detailW <= maxW) {
         drawText(renderer, x, y, route, primary, 1);
         drawText(renderer, x + routeW + 6, y, detail, secondary, 1);
@@ -795,7 +798,7 @@ void drawButton(SDL_Renderer* renderer, const SDL_Rect& rect, const std::string&
 
     fillRect(renderer, rect.x, rect.y, rect.w, rect.h, fill);
     strokeRect(renderer, rect.x, rect.y, rect.w, rect.h, stroke);
-    drawText(renderer, rect.x + (rect.w - int(label.size()) * 6) / 2, rect.y + (rect.h - 7) / 2, label, text, 1);
+    drawText(renderer, rect.x + (rect.w - textWidth(label, 1)) / 2, rect.y + (rect.h - 7) / 2, label, text, 1);
 }
 
 void drawLiveColonySummary(SDL_Renderer* renderer, const Game& game, int starIndex, int x, int& y) {
@@ -856,7 +859,7 @@ void drawContractRouteLine(SDL_Renderer* renderer, const Game& game, const Contr
         std::snprintf(line, sizeof(line), "%s %.0FY  FUEL %.0F OK  RISK %.0F%%%s",
             remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, risk * 100.0, cargoFits ? "" : " HOLD/HEAVY");
     }
-    if (int(std::strlen(line)) * 6 > maxW) {
+    if (textWidth(line, 1) > maxW) {
         if (fuelShort) {
             std::snprintf(line, sizeof(line), "%.0FY F%.0F S%.0F R%.0F%%%s",
                 years, fuelNeeded, shortfall, risk * 100.0, cargoFits ? "" : " HOLD/HEAVY");
@@ -1932,7 +1935,7 @@ void drawPriceFactor(SDL_Renderer* renderer, int x, int y, int width,
     char mul[16];
     std::snprintf(mul, sizeof(mul), "X%.2F", factor);
     const SDL_Color tint = factor >= 1.60 ? P.green : (factor <= 1.08 ? P.dim : P.text);
-    drawText(renderer, x + width - int(std::strlen(mul)) * 6, y, mul, tint, 1);
+    drawText(renderer, x + width - textWidth(mul, 1), y, mul, tint, 1);
 }
 
 void drawColonyWindow(SDL_Renderer* renderer, const Game& game, const Window& window, const WindowState& state, bool active) {
@@ -2199,7 +2202,7 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
                 threats,
                 game.factionKnownThreatAge(game.playerFaction, window.star),
                 game.factionKnownThreatRisk(game.playerFaction, window.star));
-            if (int(std::strlen(line)) * 6 <= window.rect.w - WINDOW_PAD * 2) {
+            if (textWidth(line, 1) <= window.rect.w - WINDOW_PAD * 2) {
                 drawText(renderer, x, y, line, P.red, 1);
             } else {
                 std::snprintf(line, sizeof(line), "THREATS %d AGE %.0F", threats,
@@ -2360,7 +2363,7 @@ void drawContractRow(SDL_Renderer* renderer, const Game& game, const Window& win
             target ? target->name.c_str() : "-",
             contract.reward,
             yearsLeft);
-        if (int(std::strlen(line)) * 6 > button.x - x - 16) {
+        if (textWidth(line, 1) > button.x - x - 16) {
             std::snprintf(line, sizeof(line), "#%d %s %.0F > %s CR%.0F %.1FY",
                 contract.id,
                 validResource ? elements[contract.resource].symbol : "?",
@@ -2377,7 +2380,7 @@ void drawContractRow(SDL_Renderer* renderer, const Game& game, const Window& win
             target ? target->name.c_str() : "-",
             contract.reward,
             yearsLeft);
-        if (int(std::strlen(line)) * 6 > button.x - x - 16) {
+        if (textWidth(line, 1) > button.x - x - 16) {
             std::snprintf(line, sizeof(line), "#%d %s > %s CR%.0F %.1FY",
                 contract.id,
                 contractTypeLabel(contract.type),
@@ -3093,13 +3096,13 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
     outOpenSystem = false;
     outOpenTrade = false;
     switch (step) {
-        case 0: return "Master, I am Timertia - your AI core Agent.";
-        case 1: return "Congratulations on obtaining your trading licence!";
-        case 2: outArrowTarget = 1; return "You can view your balance here.";
-        case 3: return "You own 1 space ship unit for now.";
-        case 4: outArrowTarget = 2; return "My subagents will monitor its system states here.";
+        case 0: return I18N::tr("Master, I am Timertia - your AI core Agent.");
+        case 1: return I18N::tr("Congratulations on obtaining your trading licence!");
+        case 2: outArrowTarget = 1; return I18N::tr("You can view your balance here.");
+        case 3: return I18N::tr("You own 1 space ship unit for now.");
+        case 4: outArrowTarget = 2; return I18N::tr("My subagents will monitor its system states here.");
         case 5: {
-            std::string starName = "Unknown Node";
+            std::string starName = I18N::tr("Unknown Node");
             if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
                 int starId = game.agents[game.playerAgent].currentStar;
                 if (starId >= 0 && starId < (int)game.cluster.stars.size()) {
@@ -3109,14 +3112,14 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
             outArrowTarget = 0;
             outOpenSystem = true;
             char buf[256];
-            std::snprintf(buf, sizeof(buf), "Your vessel is currently at %s. You can access a model of local star system here.", starName.c_str());
+            std::snprintf(buf, sizeof(buf), I18N::tr("Your vessel is currently at %s. You can access a model of local star system here.").c_str(), starName.c_str());
             return buf;
         }
-        case 6: outArrowTarget = 0; outOpenTrade = true; return "With your trading licence you can perform HIGH-FREQUENCY BROKERAGE on local market.";
-        case 7: return "A periodic table based on standard supersymmetrical model is common CONVENTION of interstellar market.";
-        case 8: return "NASH EQUILIBRIUM proves it is best to buy on supply and sell on demand.";
+        case 6: outArrowTarget = 0; outOpenTrade = true; return I18N::tr("With your trading licence you can perform HIGH-FREQUENCY BROKERAGE on local market.");
+        case 7: return I18N::tr("A periodic table based on standard supersymmetrical model is common CONVENTION of interstellar market.");
+        case 8: return I18N::tr("NASH EQUILIBRIUM proves it is best to buy on supply and sell on demand.");
         case 9: {
-            std::string element = "isotopes";
+            std::string element = I18N::tr("isotopes");
             if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
                 int starId = game.agents[game.playerAgent].currentStar;
                 if (starId >= 0 && starId < (int)game.markets.size()) {
@@ -3131,16 +3134,16 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
                     }
                     if (bestEl >= 0) {
                         const auto& defs = elementDefinitions();
-                        if (bestEl < (int)defs.size()) element = defs[bestEl].name;
+                        if (bestEl < (int)defs.size()) element = I18N::tr(defs[bestEl].name);
                     }
                 }
             }
             char buf[256];
-            std::snprintf(buf, sizeof(buf), "The local model suggests you buy %s.", element.c_str());
+            std::snprintf(buf, sizeof(buf), I18N::tr("The local model suggests you buy %s.").c_str(), element.c_str());
             return buf;
         }
         case 10: {
-            std::string starName = "an adjacent node";
+            std::string starName = I18N::tr("an adjacent node");
             if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
                 int starId = game.agents[game.playerAgent].currentStar;
                 if (starId >= 0 && starId < (int)game.cluster.stars.size() && starId < (int)game.markets.size()) {
@@ -3178,18 +3181,18 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
                 }
             }
             char buf[256];
-            std::snprintf(buf, sizeof(buf), "We also have insight that the best place to sell it right now is %s. Remember that name, Master: %s!", starName.c_str(), starName.c_str());
+            std::snprintf(buf, sizeof(buf), I18N::tr("We also have insight that the best place to sell it right now is %s. Remember that name, Master: %s!").c_str(), starName.c_str(), starName.c_str());
             return buf;
         }
-        case 11: return "By the way, you can also upgrade your vessel and purchase more trading licenses.";
-        case 12: return "Finally, the new technology of applied color superconductivity has produced novel AI cores.";
-        case 13: outArrowTarget = 0; return "They are still prototypes and very rare. Be sure to privatise every one you find.";
-        case 14: return "I am at your service with more insights at any time, Master. [V]";
+        case 11: return I18N::tr("By the way, you can also upgrade your vessel and purchase more trading licenses.");
+        case 12: return I18N::tr("Finally, the new technology of applied color superconductivity has produced novel AI cores.");
+        case 13: outArrowTarget = 0; return I18N::tr("They are still prototypes and very rare. Be sure to privatise every one you find.");
+        case 14: return I18N::tr("I am at your service with more insights at any time, Master. [V]");
         case 100: {
-            std::string supplyStr = "none";
-            std::string demandStr = "none";
-            std::string supplyStarName = "nowhere";
-            std::string demandStarName = "nowhere";
+            std::string supplyStr = I18N::tr("none");
+            std::string demandStr = I18N::tr("none");
+            std::string supplyStarName = I18N::tr("nowhere");
+            std::string demandStarName = I18N::tr("nowhere");
             
             if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
                 int starId = game.agents[game.playerAgent].currentStar;
@@ -3230,18 +3233,18 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
                     
                     const auto& defs = elementDefinitions();
                     if (globalBestSupplyEl >= 0 && globalBestSupplyEl < (int)defs.size()) {
-                        supplyStr = defs[globalBestSupplyEl].name;
+                        supplyStr = I18N::tr(defs[globalBestSupplyEl].name);
                         supplyStarName = game.cluster.stars[globalBestSupplyStar].name;
                     }
                     if (globalBestDemandEl >= 0 && globalBestDemandEl < (int)defs.size()) {
-                        demandStr = defs[globalBestDemandEl].name;
+                        demandStr = I18N::tr(defs[globalBestDemandEl].name);
                         demandStarName = game.cluster.stars[globalBestDemandStar].name;
                     }
                 }
             }
             
             char buf[512];
-            std::snprintf(buf, sizeof(buf), "Care for a market report, Master? Local scans show peak supply of %s at %s, and highest demand for %s at %s.", 
+            std::snprintf(buf, sizeof(buf), I18N::tr("Care for a market report, Master? Local scans show peak supply of %s at %s, and highest demand for %s at %s.").c_str(), 
                           supplyStr.c_str(), supplyStarName.c_str(), demandStr.c_str(), demandStarName.c_str());
             return buf;
         }
@@ -3253,8 +3256,8 @@ bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH) {
     auto& vn = state.vnState;
     if (!vn.active) return false;
     
-    if (vn.textProgress < vn.targetText.length()) {
-        vn.textProgress = vn.targetText.length();
+    if (vn.textProgress < UI::textLength(vn.targetText)) {
+        vn.textProgress = float(UI::textLength(vn.targetText));
         vn.currentText = vn.targetText;
     } else {
         if (!vn.tutorialCompleted) {
@@ -3305,21 +3308,27 @@ void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, i
         }
     }
     
-    if (vn.textProgress < vn.targetText.length()) {
+    // Машинка считает СИМВОЛЫ, а не байты: русская реплика в UTF-8 двухбайтовая,
+    // и обрезка по байту рвала бы букву пополам (на кадре появлялся бы «тофу»).
+    if (vn.textProgress < UI::textLength(vn.targetText)) {
         vn.textProgress += dt * 50.0f;
-        if (vn.textProgress > vn.targetText.length()) vn.textProgress = vn.targetText.length();
-        vn.currentText = vn.targetText.substr(0, (size_t)vn.textProgress);
+        const float full = float(UI::textLength(vn.targetText));
+        if (vn.textProgress > full) vn.textProgress = full;
+        vn.currentText = UI::textPrefix(vn.targetText, (size_t)vn.textProgress);
     }
 }
 
+// Перенос по словам. Длина считается в СИМВОЛАХ: кириллица в UTF-8 занимает два
+// байта, и подсчёт по `word.length()` рвал бы русскую реплику вдвое раньше.
 std::string wrapText(const std::string& text, int maxChars) {
     std::string result;
     int lineLen = 0;
     std::string word;
-    
+    int wordLen = 0;
+
     for (char c : text) {
         if (c == ' ' || c == '\n') {
-            if (lineLen + int(word.length()) > maxChars) {
+            if (lineLen + wordLen > maxChars) {
                 result += "\n";
                 lineLen = 0;
             } else if (!result.empty() && result.back() != '\n') {
@@ -3327,18 +3336,20 @@ std::string wrapText(const std::string& text, int maxChars) {
                 lineLen++;
             }
             result += word;
-            lineLen += word.length();
+            lineLen += wordLen;
             word.clear();
+            wordLen = 0;
             if (c == '\n') {
                 result += "\n";
                 lineLen = 0;
             }
         } else {
             word += c;
+            if (((unsigned char)c & 0xC0) != 0x80) ++wordLen;
         }
     }
     if (!word.empty()) {
-        if (lineLen + int(word.length()) > maxChars && !result.empty() && result.back() != '\n') {
+        if (lineLen + wordLen > maxChars && !result.empty() && result.back() != '\n') {
             result += "\n";
         } else if (!result.empty() && result.back() != '\n') {
             result += " ";

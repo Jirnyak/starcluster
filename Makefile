@@ -2,7 +2,7 @@ CXX ?= g++
 SDL_CFLAGS := $(shell sdl2-config --cflags)
 SDL_LIBS := $(shell sdl2-config --libs) -lSDL2_mixer
 
-SOURCES = drive.cpp main.cpp shell.cpp game.cpp cluster.cpp resource.cpp market.cpp econ.cpp ship.cpp agent.cpp colony.cpp faction.cpp ui.cpp mining.cpp combat.cpp spaceevents.cpp anomaly.cpp modules.cpp chromo.cpp render2d.cpp localgen.cpp localsim.cpp localdraw.cpp stb_image.cpp
+SOURCES = drive.cpp main.cpp shell.cpp game.cpp cluster.cpp resource.cpp market.cpp econ.cpp ship.cpp agent.cpp colony.cpp faction.cpp ui.cpp mining.cpp combat.cpp spaceevents.cpp anomaly.cpp modules.cpp chromo.cpp render2d.cpp localgen.cpp localsim.cpp localdraw.cpp stb_image.cpp i18n.cpp
 
 # Всё, кроме точки входа (для линковки альтернативных main — soak/uiclick/balance).
 # shell.cpp тоже исключён: оболочка опирается на assetPath() из main.cpp и в
@@ -65,5 +65,13 @@ shot_asan: shot_test.cpp $(LIBSOURCES)
 	$(CXX) shot_test.cpp $(LIBSOURCES) $(SANFLAGS) -std=c++11 $(SDL_CFLAGS) $(SDL_LIBS) -o shot_test_asan
 	SDL_VIDEODRIVER=dummy ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 ./shot_test_asan
 
+# Скриншот-харнес интерфейса: HUD и каждое окно в BMP через программный рендерер.
+# Нужен для глазной проверки локализации — русский текст длиннее английского, и
+# переполнение панели видно только на картинке. Артефакты не коммитятся.
+uishots: ui_shot_test.cpp $(LIBSOURCES)
+	$(CXX) ui_shot_test.cpp $(LIBSOURCES) -O2 -std=c++11 $(WARNFLAGS) $(SDL_CFLAGS) $(SDL_LIBS) -o ui_shot_test
+	SDL_VIDEODRIVER=dummy ./ui_shot_test ru
+	@for f in uishot_*.bmp; do sips -s format png "$$f" --out "$${f%.bmp}.png" >/dev/null 2>&1 && echo "png: $${f%.bmp}.png"; done
+
 clean:
-	rm -rf game game_asan soak_asan ui_click_test balance_test shot_test shot_test_asan *.dSYM shot_*.bmp shot_*.png
+	rm -rf game game_asan soak_asan ui_click_test balance_test shot_test shot_test_asan ui_shot_test *.dSYM shot_*.bmp shot_*.png uishot_*.bmp uishot_*.png
