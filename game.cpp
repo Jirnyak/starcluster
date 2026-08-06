@@ -2789,7 +2789,7 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 13 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 14 " << cluster.stars.size() << '\n';
     out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
@@ -2905,7 +2905,11 @@ bool Game::saveToFile(const std::string& path) {
             // таблицы классов (1 у капсулы, 20 у крепости). Без него round-trip
             // возвращал всем бортам конструкторский дефолт 3, то есть капитал
             // молча терял слоты, а перехватчик их получал.
-            << ship.utility << ' ' << ship.hullHP << ' ' << ship.maxHullHP << ' ' << ship.maxModules << '\n';
+            // miningRig — тот же случай, что и maxModules: бонус ЗАПЕЧЁН в поле
+            // (CHROMOCORE §2.4), а список модулей при загрузке заново не
+            // применяется. Без записи буровая тихо исчезала бы при загрузке.
+            << ship.utility << ' ' << ship.hullHP << ' ' << ship.maxHullHP << ' ' << ship.maxModules
+            << ' ' << ship.miningRig << '\n';
         out << "CARGO ";
         writeResourceList(out, ship.cargo);
         out << '\n';
@@ -3050,7 +3054,7 @@ bool Game::loadFromFile(const std::string& path) {
     std::string tag;
     int version = 0;
     size_t starCount = 0;
-    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 13) {
+    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 14) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -3325,7 +3329,7 @@ bool Game::loadFromFile(const std::string& path) {
                 agent.ship.targetStar >> enRoute >>
                 agent.ship.heavyWeapons >> agent.ship.lightWeapons >> agent.ship.armor >>
                 agent.ship.utility >> agent.ship.hullHP >> agent.ship.maxHullHP >>
-                agent.ship.maxModules)) {
+                agent.ship.maxModules >> agent.ship.miningRig)) {
             lastEvent = "load failed: ship";
             return false;
         }
@@ -5368,6 +5372,32 @@ bool Game::agentSellCargoAmount(int agentIndex, double amount, int elementIndex)
         elementSymbol = elementDefinitions()[elementIndex].symbol;
     }
     return sellCargo(*this, agent, agent.currentStar, amount, elementSymbol);
+}
+
+int Game::agentSellAllCargo(int agentIndex) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0;
+    Agent& agent = agents[agentIndex];
+    if (agent.playerControlled && playerTradingBlocked()) return 0;
+    if (agent.ship.enRoute || !validStar(*this, agent.currentStar)) return 0;
+
+    // Партии сдаются по одной с головы вектора: sellCargo сам стирает опустевшую,
+    // поэтому индекс не нужен. Ограничитель по числу партий — от зацикливания,
+    // если очередная партия окажется меньше порога 0.01 и sellCargo вернёт false
+    // (тогда вектор не уменьшится и цикл обязан прерваться).
+    int lots = 0;
+    size_t guard = agent.ship.cargo.size();
+    while (!agent.ship.cargo.empty() && guard-- > 0) {
+        const size_t before = agent.ship.cargo.size();
+        if (!sellCargo(*this, agent, agent.currentStar)) break;
+        if (agent.ship.cargo.size() >= before) break;
+        ++lots;
+    }
+    if (lots > 0) {
+        lastEvent = "hold sold: " + std::to_string(lots) + " lots";
+    } else if (agent.playerControlled) {
+        lastEvent = "hold empty";
+    }
+    return lots;
 }
 
 bool Game::agentAcceptContract(int agentIndex, int contractId) {

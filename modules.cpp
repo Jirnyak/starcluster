@@ -10,34 +10,42 @@
 // установке; список ship.modules хранит индексы для отображения и сохранения.
 
 const std::vector<ModuleDef>& moduleDefs() {
-    //                 name                slot               price    mass  cargo  propVol fuelVol  spd    acc  heavy light armor hull  util drive SY  blurb
+    //                 name                slot               price    mass  cargo  propVol fuelVol  spd    acc  heavy light armor hull  util  rig drive SY  blurb
     static const std::vector<ModuleDef> defs = {
-        {"Cargo Pod I",       ModuleSlot::Cargo,    900.0,   6.0,  40.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 0, "+40 cargo capacity"},
-        {"Propellant Tank I", ModuleSlot::Fuel,     700.0,   4.0,   0.0,  140.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 0, "+140 propellant volume"},
-        {"Bunker Pod I",      ModuleSlot::Fuel,     900.0,   3.0,   0.0,    0.0,  22.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 0, "+22 fuel bunker volume"},
-        {"Point Defense",     ModuleSlot::Weapon,  1200.0,   3.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  8.0,  0.0,   0.0,  0.0, -1, 0, "+8 light weapons"},
-        {"Ablative Plating I",ModuleSlot::Defense, 1100.0,   8.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  6.0,  40.0,  0.0, -1, 0, "+6 armor, +40 hull"},
-        {"Survey Array",      ModuleSlot::Sensor,  1400.0,   2.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  6.0, -1, 0, "+6 sensors (utility)"},
+        {"Cargo Pod I",       ModuleSlot::Cargo,    900.0,   6.0,  40.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0,  0.0, -1, 0, "+40 cargo capacity"},
+        {"Propellant Tank I", ModuleSlot::Fuel,     700.0,   4.0,   0.0,  140.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0,  0.0, -1, 0, "+140 propellant volume"},
+        {"Bunker Pod I",      ModuleSlot::Fuel,     900.0,   3.0,   0.0,    0.0,  22.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0,  0.0, -1, 0, "+22 fuel bunker volume"},
+        {"Point Defense",     ModuleSlot::Weapon,  1200.0,   3.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  8.0,  0.0,   0.0,  0.0,  0.0, -1, 0, "+8 light weapons"},
+        {"Ablative Plating I",ModuleSlot::Defense, 1100.0,   8.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  6.0,  40.0,  0.0,  0.0, -1, 0, "+6 armor, +40 hull"},
+        {"Survey Array",      ModuleSlot::Sensor,  1400.0,   2.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  6.0,  0.0, -1, 0, "+6 sensors (utility)"},
+        // (§20.11) Буровые. Ставятся в Special, потому что это не оружие и не сенсор:
+        // отдельный потребитель мощности реактора. Дают ТЕМП (тонн в час) при неизменной
+        // цене тонны — грызёшь быстрее, но и топлива в час жжёшь ровно во столько же раз
+        // больше. Дешёвая ступень намеренно доступна с верфи 0: бур — это то, чем игрок
+        // выбирается из нищеты, в том числе на спасательной капсуле.
+        {"Mining Laser I",    ModuleSlot::Special,  800.0,   5.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0,  2.0, -1, 0, "+2x drilling rate"},
 
-        {"Cargo Pod II",      ModuleSlot::Cargo,   3200.0,  12.0, 120.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 1, "+120 cargo capacity"},
-        {"Propellant Tank II",ModuleSlot::Fuel,    2800.0,  10.0,   0.0,  480.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 1, "+480 propellant volume"},
-        {"Bunker Pod II",     ModuleSlot::Fuel,    3400.0,   8.0,   0.0,    0.0,  75.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 1, "+75 fuel bunker volume"},
-        {"Railgun Battery",   ModuleSlot::Weapon,  5200.0,  10.0,   0.0,    0.0,   0.0, 0.0,  0.0,  20.0,  0.0,  0.0,   0.0,  0.0, -1, 1, "+20 heavy weapons"},
-        {"Composite Hull",    ModuleSlot::Defense, 4800.0,  16.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0, 18.0, 140.0,  0.0, -1, 1, "+18 armor, +140 hull"},
+        {"Cargo Pod II",      ModuleSlot::Cargo,   3200.0,  12.0, 120.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0,  0.0, -1, 1, "+120 cargo capacity"},
+        {"Mining Laser II",   ModuleSlot::Special, 4600.0,  11.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0,  6.0, -1, 1, "+6x drilling rate"},
+        {"Propellant Tank II",ModuleSlot::Fuel,    2800.0,  10.0,   0.0,  480.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0,  0.0, -1, 1, "+480 propellant volume"},
+        {"Bunker Pod II",     ModuleSlot::Fuel,    3400.0,   8.0,   0.0,    0.0,  75.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0,  0.0, -1, 1, "+75 fuel bunker volume"},
+        {"Railgun Battery",   ModuleSlot::Weapon,  5200.0,  10.0,   0.0,    0.0,   0.0, 0.0,  0.0,  20.0,  0.0,  0.0,   0.0,  0.0,  0.0, -1, 1, "+20 heavy weapons"},
+        {"Composite Hull",    ModuleSlot::Defense, 4800.0,  16.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0, 18.0, 140.0,  0.0,  0.0, -1, 1, "+18 armor, +140 hull"},
 
-        {"Cargo Hold III",    ModuleSlot::Cargo,  12000.0,  30.0, 400.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, -1, 2, "+400 cargo capacity"},
-        {"Deep-Field Scanner",ModuleSlot::Sensor,  9000.0,   4.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0, 24.0, -1, 2, "+24 sensors (utility)"},
-        {"Aegis Bulwark",     ModuleSlot::Defense,18000.0,  40.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0, 80.0, 600.0,  0.0, -1, 2, "+80 armor, +600 hull"},
-        {"Spinal Lance",      ModuleSlot::Weapon, 22000.0,  24.0,   0.0,    0.0,   0.0, 0.0,  0.0,  90.0, 20.0,  0.0,   0.0,  0.0, -1, 3, "+90 heavy, +20 light"},
+        {"Cargo Hold III",    ModuleSlot::Cargo,  12000.0,  30.0, 400.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0,  0.0, -1, 2, "+400 cargo capacity"},
+        {"Ore Refinery Rig",  ModuleSlot::Special,19000.0,  34.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0, 18.0, -1, 2, "+18x drilling rate"},
+        {"Deep-Field Scanner",ModuleSlot::Sensor,  9000.0,   4.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0, 24.0,  0.0, -1, 2, "+24 sensors (utility)"},
+        {"Aegis Bulwark",     ModuleSlot::Defense,18000.0,  40.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0, 80.0, 600.0,  0.0,  0.0, -1, 2, "+80 armor, +600 hull"},
+        {"Spinal Lance",      ModuleSlot::Weapon, 22000.0,  24.0,   0.0,    0.0,   0.0, 0.0,  0.0,  90.0, 20.0,  0.0,   0.0,  0.0,  0.0, -1, 3, "+90 heavy, +20 light"},
 
         // --- Двигатели. Слот эксклюзивный: движок ровно один. Дефолтный
         // Thermal Core I стоит на корпусе бесплатно и слота НЕ занимает;
         // всё, что ниже, его вытесняет и занимает один слот апгрейда.
-        {"Thermal Core II",   ModuleSlot::Drive,   6500.0,   6.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0,  1, 1, "hotter chamber: more exhaust speed"},
-        {"Ion Grid I",        ModuleSlot::Drive,  12000.0,   5.0,   0.0,    0.0,   0.0, 0.0, -0.06, 0.0,  0.0,  0.0,   0.0,  0.0,  3, 1, "electric: huge range, tiny thrust"},
-        {"Thermal Core III",  ModuleSlot::Drive,  34000.0,  14.0,   0.0,    0.0,   0.0, 0.0,  0.02,  0.0,  0.0,  0.0,   0.0,  0.0,  2, 2, "refractory chamber, wide fuel range"},
-        {"Ion Grid II",       ModuleSlot::Drive,  58000.0,  11.0,   0.0,    0.0,   0.0, 0.0, -0.05, 0.0,  0.0,  0.0,   0.0,  0.0,  4, 2, "high voltage: extreme range"},
-        {"Fusion Torch",      ModuleSlot::Drive, 260000.0,  26.0,   0.0,    0.0,   0.0, 0.05, 0.06,  0.0,  0.0,  0.0,   0.0,  0.0,  5, 3, "fuel is the exhaust; no propellant tank"},
+        {"Thermal Core II",   ModuleSlot::Drive,   6500.0,   6.0,   0.0,    0.0,   0.0, 0.0,  0.0,   0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  1, 1, "hotter chamber: more exhaust speed"},
+        {"Ion Grid I",        ModuleSlot::Drive,  12000.0,   5.0,   0.0,    0.0,   0.0, 0.0, -0.06, 0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  3, 1, "electric: huge range, tiny thrust"},
+        {"Thermal Core III",  ModuleSlot::Drive,  34000.0,  14.0,   0.0,    0.0,   0.0, 0.0,  0.02,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  2, 2, "refractory chamber, wide fuel range"},
+        {"Ion Grid II",       ModuleSlot::Drive,  58000.0,  11.0,   0.0,    0.0,   0.0, 0.0, -0.05, 0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  4, 2, "high voltage: extreme range"},
+        {"Fusion Torch",      ModuleSlot::Drive, 260000.0,  26.0,   0.0,    0.0,   0.0, 0.05, 0.06,  0.0,  0.0,  0.0,   0.0,  0.0,  0.0,  5, 3, "fuel is the exhaust; no propellant tank"},
     };
     return defs;
 }
@@ -72,6 +80,7 @@ void applyModuleToShip(Ship& ship, const ModuleDef& def) {
     ship.maxHullHP += def.hullBonus;
     ship.hullHP = std::min(ship.maxHullHP, ship.hullHP + def.hullBonus);
     ship.utility += def.utilityBonus;
+    ship.miningRig += def.miningBonus;
 }
 
 int Game::shipyardLevelAtStar(int starIndex) const {
@@ -103,6 +112,7 @@ void removeModuleFromShip(Ship& ship, const ModuleDef& def) {
     ship.maxHullHP -= def.hullBonus;
     ship.hullHP = std::min(ship.maxHullHP, ship.hullHP);
     ship.utility -= def.utilityBonus;
+    ship.miningRig = std::max(0.0, ship.miningRig - def.miningBonus);
 }
 
 bool Game::buyModule(int agentIndex, int defIndex) {

@@ -199,7 +199,12 @@ still reference `uni.cpp`; they are not the current project build path.
 
 System windows expose route, trade, and contract actions through mouse buttons.
 The trade window uses the periodic table layout for element selection and an
-amount field; an empty amount means `MAX`.
+amount field; an empty amount means `MAX`. Cells carry two frames: the outer one
+is about the market (cyan for what the system mines, red for what it needs), the
+inner green one about your ship - it marks what is currently in the hold, so
+selling a delivered cargo does not mean hunting for its symbol among 118 cells.
+`SELL ALL` empties the hold in one click; the bunker and the propellant tank are
+not cargo and are drained from the `HOLD / TANKS` window instead.
 
 ## Game Model
 
@@ -403,6 +408,39 @@ and introduces no new constants.
 This makes market **depth** matter alongside the price spread. Dumping a full
 hold into a small colony is a loss; sizing the trade to the market is the skill.
 
+### Asteroid Belts And Drilling
+
+A belt is made of the same matter as the system around it. The element of each rock
+is drawn from the star's own crust, weighted by four physical quantities that were
+already in the element tables: mass share, condensed-phase density, nuclear
+stability (a rock is billions of years old, so short-lived nuclides are not ore),
+and thermal retention `1 - exp(-A / 24)` - an asteroid has no gravity to hold light
+species, so hydrogen is rare in a belt because it is light, not because of a price
+list. About 84% of belt mass is heavier than magnesium.
+
+That is what makes local mining a way out of poverty rather than a money printer:
+what you dig up is exactly what the local market is already flooded with, so selling
+it on the spot pays a pittance. A full hold of ore is worth roughly 0.8 holds of
+ordinary local goods. To make money on it you have to haul it somewhere, which is
+just trade.
+
+Drilling is powered by the ship's reactor, so it is not a flat rate:
+
+```text
+energy per ton = MINE_ENERGY_PER_MASS / (rock class x seam grade)
+drill power    = hull thrust x drive efficiency x (1 + mining rig)
+tons per hour  = drill power / energy per ton
+fuel per hour  = drill power
+```
+
+A bigger hull with a better drive cuts faster; a mining laser module cuts faster
+still, but burns fuel proportionally, so a rig buys time rather than margin. Ore
+runs out only in the sense that fuel does: the belt regenerates whenever local
+flight is re-entered, and the bunker is the real limit. Volatiles mined out of ice
+can be transferred into the reactor, which is the survival loop when a refill is
+unaffordable. An escape pod carries the weakest drill in the game and a 12-ton hold,
+deliberately: losing your ship must be a long climb, not a dead end.
+
 ### Ships
 
 `Ship` stores:
@@ -417,6 +455,7 @@ hold into a small colony is a loss; sizing the trade to the market is the skill.
 - the drive's fixed operating exhaust velocity, retuned on refuel, transfer and departure;
 - cruise speed as a fraction of the hull's cap: flying slower is genuinely cheaper;
 - cargo vector and cargo capacity;
+- weapons, armor, sensors, and the drilling rig, all baked in from modules;
 - owner faction, route target, and en-route state.
 
 Cargo mass comes from resource amount and element atomic mass. Fuel and
@@ -580,16 +619,21 @@ back to the working directory so older saves still open.
 The file is text and begins with:
 
 ```text
-STARCLUSTER_SAVE 13
+STARCLUSTER_SAVE 14
 ```
 
 The save stores the world seed, RNG state, time, stars, markets, factions,
 relations, colonies, contracts, agents, faction knowledge, player knowledge,
 pending signals, signal memory, and trading licence state. `F9` loads the same
-file and rebuilds runtime caches. Only version 13 loads: the ship record still changes with the
-simulation (v13 added the hull's upgrade-slot count, which used to be lost on
-load), so older saves are rejected with a clear message rather than opening
-corrupt.
+file and rebuilds runtime caches. Only version 14 loads: the ship record still changes with the
+simulation (v13 added the hull's upgrade-slot count and v14 the drilling rig, both
+of which used to be lost on load), so older saves are rejected with a clear
+message rather than opening corrupt.
+
+Any ship field a module writes into has to be saved explicitly: modules bake their
+bonuses into the hull's fields and the module list is *not* re-applied on load.
+The same field also has to be cleared in `shipApplyClass`, or the bonus survives
+both a hull swap and the loss of the ship.
 
 ## Design Constraints
 
@@ -623,6 +667,11 @@ that ballast dilutes a mixture, that burned fuel comes back as ash nearer to
 iron, that fusion wins per mass while fission wins per volume, that iron ignites
 nowhere, that self-supplied fuel beats the station markup, that the drive slot
 stays exclusive, and that overloading the hold is possible but grounds the ship.
+Local mining carries four more: that a hold of ore is worth about one hold of
+ordinary local goods rather than a fortune, that the drill burns reactor fuel and
+stops dead without it, that drilling scales with the hull and the fitted rig
+instead of being a flat rate, and that the rig dies with the hull like every other
+baked-in bonus.
 `make uiclick` additionally pins the HOLD window transfer-arrow geometry, because
 that interface silently failed twice.
 

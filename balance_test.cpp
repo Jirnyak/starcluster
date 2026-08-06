@@ -17,11 +17,16 @@
 #include "ship.h"
 #include "modules.h"
 #include "drive.h"
+#include "local.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
+
+// Определена в game.cpp; здесь нужна, чтобы проверить, что запечённые бонусы
+// гибнут вместе с корпусом.
+void downgradeAgentToEscapePod(Agent&);
 
 namespace {
 
@@ -1291,6 +1296,216 @@ void testColonyVaultConserves() {
     check(deposited && withdrawn && remoteBlocked, "касса колонии сохраняет деньги", buf);
 }
 
+// --- Локальная добыча — гроши, а не капитал (§20.1) ------------------------
+// Меряет ОДНУ безразмерную величину: во сколько трюмов ОБЫЧНОГО местного товара
+// оценивается трюм, набранный в поясе и сданный НЕ СХОДЯ С МЕСТА. Замысел —
+// пояс сделан из того же вещества, что и система, значит рынок им уже завален и
+// берёт за гроши; чтобы заработать, намайненное надо ВЕЗТИ.
+//
+// Ловит три разных промаха, каждый из которых уже был: элемент камня выбирался
+// равномерно по классу (четверть глыб — дефицит по 2.5 опорной цены); состав
+// считался в ЕДИНИЦАХ, а не в массе (пояс из водорода — единиц больше всех, а
+// весит единица в сотни раз меньше); буровая снимала одинаковое ЧИСЛО единиц
+// независимо от элемента, хотя трюм меряется массой. Замер до правок — 7.37,
+// после — 2.32. Порог 4.0 ловит возврат к прежнему режиму, оставляя запас на
+// обычный дрейф баланса.
+//
+// Величина БЕЗРАЗМЕРНА (§17.5 п.2): пересчёт масштаба мира её не сдвинет.
+void testBeltIsLocalDirt() {
+    Game g;
+    buildWorld(g, 42, 0);
+    const int ec = int(elementCount());
+    const double cap = g.agents[g.playerAgent].ship.cargoCapacity;
+
+    std::vector<double> holdRatio;   // трюм добычи / трюм обычного местного товара
+    for (int s = 0; s < int(g.cluster.stars.size()) && int(holdRatio.size()) < 40; s += 29) {
+        if (g.cluster.stars[s].population <= 0.0) continue;
+        LocalScene scene;
+        buildLocalScene(g, s, scene);
+        if (scene.rocks.empty()) continue;
+        const Market& m = g.markets[s];
+
+        double ore = 0.0;
+        for (size_t i = 0; i < scene.rocks.size(); ++i) {
+            const int e = scene.rocks[i].element;
+            if (e >= 0 && e < ec) ore += scene.rocks[i].ore;
+        }
+        if (ore <= 0.0) continue;
+
+        // Трюм добычи: берём пояс как он есть (доли по руде) до полной вместимости.
+        double mined = 0.0;
+        for (int e = 0; e < ec; ++e) {
+            double share = 0.0;
+            for (size_t i = 0; i < scene.rocks.size(); ++i) {
+                if (scene.rocks[i].element == e) share += scene.rocks[i].ore;
+            }
+            if (share <= 0.0) continue;
+            // `rock.ore` — тоннаж, поэтому доля идёт по МАССЕ, а трюм тоже меряется массой.
+            const double units = cap * (share / ore) / std::max(0.001, resourceUnitMassByIndex(e));
+            mined += units * m.executionPrice(e, units, true);
+        }
+        // Трюм обычного местного товара — медиана по тому, что реально лежит на складе.
+        std::vector<double> perMass;
+        for (int e = 0; e < ec; ++e) {
+            if (m.supply[size_t(e)].amount < 200.0) continue;
+            perMass.push_back(m.prices[e] / std::max(0.001, resourceUnitMassByIndex(e)));
+        }
+        if (perMass.empty()) continue;
+        std::sort(perMass.begin(), perMass.end());
+        const double typical = perMass[perMass.size() / 2] * cap;
+        if (typical > 0.0) holdRatio.push_back(mined / typical);
+    }
+
+    if (holdRatio.empty()) {
+        check(false, "локальная добыча — гроши", "выборка пуста");
+        return;
+    }
+    std::sort(holdRatio.begin(), holdRatio.end());
+    const double hold = holdRatio[holdRatio.size() / 2];
+
+    char buf[200];
+    std::snprintf(buf, sizeof(buf),
+        "трюм добычи = %.2f трюма обычного местного товара (было 7.37, нужно <4.0)", hold);
+    check(hold < 4.0, "локальная добыча — гроши", buf);
+}
+
+// --- Бур жжёт топливо реактора (§20.7) -------------------------------------
+// Пояс возрождается полным при каждом входе в локальный полёт (§20.3B), значит
+// руда бесконечна и единственная цена добычи — бункер. Проверка держит ДВА
+// свойства сразу: с топливом бур даёт руду и уводит бункер вниз; без топлива
+// не даёт НИЧЕГО и честно об этом говорит, а не крутит вхолостую. Второе важнее:
+// если гейт отвалится, добыча снова станет бесплатной, и это не заметит ни одна
+// другая проверка.
+void testMiningBurnsReactorFuel() {
+    Game g;
+    buildWorld(g, 42, 0);
+    const int home = g.agents[g.playerAgent].currentStar;
+
+    // Ставим игрока вплотную к первому камню с рудой и включаем бур.
+    LocalScene scene;
+    buildLocalScene(g, home, scene);
+    int rock = -1;
+    for (size_t i = 0; i < scene.rocks.size(); ++i) {
+        if (scene.rocks[i].ore > 0.0) { rock = int(i); break; }
+    }
+    if (rock < 0) { check(false, "бур жжёт топливо реактора", "в поясе нет руды"); return; }
+    scene.px = scene.rocks[size_t(rock)].x;
+    scene.py = scene.rocks[size_t(rock)].y;
+    scene.pz = scene.rocks[size_t(rock)].z;
+    scene.pvx = scene.pvy = scene.pvz = 0.0;
+    scene.miningRock = rock;
+
+    Ship& ps = g.agents[g.playerAgent].ship;
+    ps.cargo.clear();
+    const double fuelBefore = shipFuelMass(ps);
+    LocalInput in;
+    for (int f = 0; f < 40 && scene.miningRock >= 0; ++f) updateLocalScene(g, scene, in, 1.0);
+    const double mined = shipCargoMass(ps);
+    const double burned = fuelBefore - shipFuelMass(ps);
+
+    // Тот же камень с ПУСТЫМ бункером: руды быть не должно вовсе.
+    Game dry;
+    buildWorld(dry, 42, 0);
+    LocalScene dryScene;
+    buildLocalScene(dry, home, dryScene);
+    dryScene.px = dryScene.rocks[size_t(rock)].x;
+    dryScene.py = dryScene.rocks[size_t(rock)].y;
+    dryScene.pz = dryScene.rocks[size_t(rock)].z;
+    dryScene.pvx = dryScene.pvy = dryScene.pvz = 0.0;
+    dryScene.miningRock = rock;
+    Ship& ds = dry.agents[dry.playerAgent].ship;
+    ds.cargo.clear();
+    ds.fuel.clear();
+    for (int f = 0; f < 40 && dryScene.miningRock >= 0; ++f) updateLocalScene(dry, dryScene, in, 1.0);
+    const double dryMined = shipCargoMass(ds);
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf),
+        "с топливом добыто %.2f при расходе %.4f бункера (%.2f%%); с пустым бункером %.4f, бур %s",
+        mined, burned, 100.0 * burned / std::max(1e-9, fuelBefore), dryMined,
+        dryScene.miningRock < 0 ? "выключен" : "ВСЁ ЕЩЁ ВКЛЮЧЕН");
+    check(mined > 0.01 && burned > 0.0 && dryMined <= 0.01 && dryScene.miningRock < 0,
+          "бур жжёт топливо реактора", buf);
+}
+
+// --- Бур — это реактор, а реакторы разные (§20.9) --------------------------
+// Ловит возврат к ПЛОСКОЙ скорости добычи. До §20.9 темп задавала одна
+// константа (9 тонн/час), одинаковая для спас-капсулы и для «Фортресса»: ни
+// корпус, ни движок на добычу не влияли вовсе. Теперь темп = мощность установки
+// / энергия на тонну, поэтому крупный борт с дорогим движком обязан грызть
+// камень заметно быстрее. Проверка безразмерна: сравнивает корпуса ДРУГ С
+// ДРУГОМ, а не с абсолютным числом тонн.
+void testDrillScalesWithReactor() {
+    // Сколько намыто за 10 часов на ОДНОМ и том же камне разными корпусами.
+    auto minedBy = [](const char* hull, int moduleIndex) {
+        Game g;
+        buildWorld(g, 42, 0);
+        const int home = g.agents[g.playerAgent].currentStar;
+        Ship& ps = g.agents[g.playerAgent].ship;
+        for (size_t c = 0; c < shipClasses().size(); ++c) {
+            if (shipClasses()[c].name == hull) { shipApplyClass(ps, shipClasses()[c]); break; }
+        }
+        if (moduleIndex >= 0 && moduleIndex < int(moduleDefs().size())) {
+            applyModuleToShip(ps, moduleDefs()[size_t(moduleIndex)]);
+        }
+        ps.cargo.clear();
+        LocalScene scene;
+        buildLocalScene(g, home, scene);
+        int rock = -1;
+        for (size_t i = 0; i < scene.rocks.size(); ++i) {
+            if (scene.rocks[i].ore > 0.0) { rock = int(i); break; }
+        }
+        if (rock < 0) return 0.0;
+        scene.px = scene.rocks[size_t(rock)].x;
+        scene.py = scene.rocks[size_t(rock)].y;
+        scene.pz = scene.rocks[size_t(rock)].z;
+        scene.pvx = scene.pvy = scene.pvz = 0.0;
+        scene.miningRock = rock;
+        LocalInput in;
+        for (int f = 0; f < 10 && scene.miningRock >= 0; ++f) updateLocalScene(g, scene, in, 1.0);
+        return shipCargoMass(ps);
+    };
+
+    const double starter = minedBy("Hauler", -1);
+    const double heavy   = minedBy("Heavy Freighter", -1);
+    const double pod     = minedBy("Escape Pod", -1);
+    // Та же капсула с самой дешёвой буровой: установка обязана значить.
+    int laser = -1;
+    for (size_t i = 0; i < moduleDefs().size(); ++i) {
+        if (moduleDefs()[i].name == "Mining Laser I") { laser = int(i); break; }
+    }
+    const double podRig = laser >= 0 ? minedBy("Escape Pod", laser) : 0.0;
+
+    char buf[260];
+    std::snprintf(buf, sizeof(buf),
+        "за 10 ч: капсула %.2f (с буром %.2f) < Hauler %.2f < Heavy Freighter %.2f (x%.1f)",
+        pod, podRig, starter, heavy, starter > 0.0 ? heavy / starter : 0.0);
+    // Капсула грызёт САМОЕ слабое, но грызёт: без неё игрок, потерявший корабль,
+    // остаётся без единого способа заработать. Тяжёлый борт заметно обгоняет её и
+    // стартовый корпус, а буровая ускоряет даже капсулу.
+    check(pod > 0.0 && pod < starter && starter < heavy && heavy > starter * 2.0 &&
+          podRig > pod * 2.0,
+          "бур масштабируется с реактором", buf);
+
+    // (§20.11) Буровая — запечённый бонус, значит она обязана ГИБНУТЬ вместе с
+    // корпусом (грабля §15.1B). Ловим ровно это: поставили на корабль, утопили
+    // корабль — в капсуле установки быть не должно.
+    {
+        Game g;
+        buildWorld(g, 42, 0);
+        Agent& pa = g.agents[g.playerAgent];
+        if (laser >= 0) applyModuleToShip(pa.ship, moduleDefs()[size_t(laser)]);
+        pa.ship.modules.push_back(laser);
+        const double fitted = pa.ship.miningRig;
+        downgradeAgentToEscapePod(pa);
+        char b2[200];
+        std::snprintf(b2, sizeof(b2), "установлено %.1f, после гибели корпуса %.1f, модулей %d",
+                      fitted, pa.ship.miningRig, int(pa.ship.modules.size()));
+        check(fitted > 0.0 && pa.ship.miningRig == 0.0 && pa.ship.modules.empty(),
+              "буровая гибнет вместе с корпусом", b2);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1328,6 +1543,9 @@ int main() {
     testBuySystemMovesMoneyAndOwner();
     testOwnedMarketIsFreeButFinite();
     testColonyVaultConserves();
+    testBeltIsLocalDirt();
+    testMiningBurnsReactorFuel();
+    testDrillScalesWithReactor();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;
 }

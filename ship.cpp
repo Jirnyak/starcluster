@@ -131,6 +131,24 @@ std::vector<Resource> listConsumeMass(std::vector<Resource>& list, double mass) 
     return taken;
 }
 
+// Топливо из активной зоны не улетает — оно перегорает. Дефект массы порядка
+// процента, так что зола весит практически столько же, сколько сгорело. Один
+// закон на все места, где реактор что-то жжёт: и полёт, и буровая.
+void spillAsh(const std::vector<Resource>& burned, std::vector<Resource>* ashOut) {
+    if (!ashOut) return;
+    const std::vector<ElementDefinition>& elements = elementDefinitions();
+    for (size_t i = 0; i < burned.size(); ++i) {
+        const int from = elementIndex(burned[i].element);
+        const int ash = elementAshProduct(from);
+        if (from < 0 || ash < 0) continue;
+        const double burnedMass = burned[i].amount * elementUnitMass(from);
+        const double defect = elements[from].specificEnergy / NUCLEON_REST_MEV;
+        const double ashMass = burnedMass * std::max(0.0, 1.0 - defect);
+        const double ashUnits = ashMass / std::max(1e-6, elementUnitMass(ash));
+        if (ashUnits > 1e-9) ashOut->push_back(Resource(elements[ash].symbol, ashUnits));
+    }
+}
+
 // Средневзвешенные по массе свойства смеси. ignitionDrive >= 0 включает учёт
 // доли поджига (для топлива); -1 оставляет чистую ядерную энергию.
 MixSummary summarize(const std::vector<Resource>& list, int ignitionDrive) {
@@ -178,7 +196,12 @@ const std::vector<ShipClass>& shipClasses() {
         // даёт высокую скорость истечения; ртутный — наоборот.
 
         // Tier 0: Emergency
-        {"Escape Pod", 5.0, 1.0, 0.40, 0.0, 12.0, 1.2, 0.0, 0.0, 1.0, 0.0, 0.0, 1},
+        // (§20.11) Трюм у капсулы НЕ нулевой. С нулём она не могла ни возить, ни
+        // добывать (бур упирался в «CARGO FULL» на первом же кадре), то есть после
+        // гибели корабля игрок оставался без единого способа заработать — тупик, а
+        // не наказание. 12 — меньше десятой доли стартового корпуса: подняться со
+        // дна можно, но это долгая дорога, и это правильная цена за потерю борта.
+        {"Escape Pod", 5.0, 1.0, 0.40, 12.0, 12.0, 1.2, 0.0, 0.0, 1.0, 0.0, 0.0, 1},
 
         // Стартовый корпус игрока. Раньше он строился вручную в Game::init под
         // именем "Player" и в этом списке НЕ ЧИСЛИЛСЯ, из-за чего зачёт старого
@@ -600,22 +623,40 @@ double shipConsumeForDeltaV(Ship& ship, double desiredDeltaV, std::vector<Resour
         burned = listConsumeMass(ship.fuel, fuelBurn);
     }
 
-    // Топливо из активной зоны не улетает — оно перегорает. Дефект массы порядка
-    // процента, так что зола весит практически столько же, сколько сгорело.
-    if (ashOut) {
-        const std::vector<ElementDefinition>& elements = elementDefinitions();
-        for (size_t i = 0; i < burned.size(); ++i) {
-            const int from = elementIndex(burned[i].element);
-            const int ash = elementAshProduct(from);
-            if (from < 0 || ash < 0) continue;
-            const double burnedMass = burned[i].amount * elementUnitMass(from);
-            const double defect = elements[from].specificEnergy / NUCLEON_REST_MEV;
-            const double ashMass = burnedMass * std::max(0.0, 1.0 - defect);
-            const double ashUnits = ashMass / std::max(1e-6, elementUnitMass(ash));
-            if (ashUnits > 1e-9) ashOut->push_back(Resource(elements[ash].symbol, ashUnits));
-        }
-    }
+    spillAsh(burned, ashOut);
     return achieved;
+}
+
+double shipReactorPower(const Ship& ship) {
+    if (shipFuelMix(ship).mass <= 0.0) return 0.0;   // гореть нечему — установка стоит
+    // Паспортная мощность установки, а не пересчёт джоулей: РАЗМЕР берём от тяги
+    // (корпус несёт реактор под свой двигатель), КАЧЕСТВО — от КПД поставленного
+    // движка. Обе величины уже есть в таблицах, ни одна не зависит от содержимого
+    // бака — иначе бур глох бы от пустого бака рабочего тела, хотя реактору оно
+    // не нужно.
+    return std::max(0.0, ship.driveThrust) * driveReactorEfficiency(ship.driveIndex);
+}
+
+double shipDrillPower(const Ship& ship) {
+    // Реактор задаёт потолок, буровая — какую его долю удаётся пустить в породу.
+    // Без установки бур импровизированный (множитель 1), с ней — во столько раз
+    // мощнее, во сколько её оценили модули.
+    return shipReactorPower(ship) * (1.0 + std::max(0.0, ship.miningRig));
+}
+
+double shipDrawReactorEnergy(Ship& ship, double energy, std::vector<Resource>* ashOut) {
+    if (energy <= 0.0) return 0.0;
+    const MixSummary fuelMix = shipFuelMix(ship);
+    if (fuelMix.mass <= 0.0) return 0.0;
+    // Энергия единицы массы топлива — та же величина, что и в полёте (§12), но БЕЗ
+    // КПД струи: реактор греет буровую, а не разгоняет рабочее тело.
+    const double energyPerMass = fuelMix.specificEnergy / NUCLEON_REST_MEV;
+    if (energyPerMass <= 1e-12) return 0.0;   // в бункере один балласт — гореть нечему
+    const double want = energy / energyPerMass;
+    const double burn = std::min(want, fuelMix.mass);
+    if (burn <= 1e-12) return 0.0;
+    spillAsh(listConsumeMass(ship.fuel, burn), ashOut);
+    return burn * energyPerMass;
 }
 
 namespace {
@@ -723,6 +764,13 @@ void shipApplyClass(Ship& ship, const ShipClass& sc) {
     ship.lightWeapons = sc.lightWeapons;
     ship.armor = sc.armor;
     ship.utility = sc.utility;
+    // (§20.11) Буровая — такой же ЗАПЕЧЁННЫЙ бонус, как трюм или броня, и такой же
+    // смертный: она стоит на КОРПУСЕ, а корпус здесь заменяется. Без обнуления
+    // повторялась бы грабля §15.1B — установка переживала бы и гибель борта
+    // (`downgradeAgentToEscapePod` чистит modules, но поля перезаписывает именно
+    // этот вызов), и пересадку на другой корпус. `buyShip` запекает модули заново
+    // после этого вызова, поэтому законная навеска не теряется.
+    ship.miningRig = 0.0;
     ship.maxModules = sc.maxModules;
     shipAutofit(ship);
     // Табличные значения ставим ПОСЛЕ autofit, иначе он их перетрёт.

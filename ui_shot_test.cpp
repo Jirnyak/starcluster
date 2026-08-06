@@ -50,6 +50,17 @@ int main(int argc, char** argv) {
     UI::HudSelection sel;
     sel.star = here;
     sel.agent = game.playerAgent;
+    // Груз на борту и выбранный элемент — иначе окно торговли снимается в самом
+    // пустом своём состоянии: без рамок трюма, с погашенным SELL ALL и без
+    // разбора элемента, то есть ровно без тех строк, которые и переполняются.
+    {
+        Ship& ps = game.agents[game.playerAgent].ship;
+        ps.cargo.emplace_back("Fe", 12.0);
+        ps.cargo.emplace_back("Si", 7.0);
+        ps.cargo.emplace_back("Au", 1.5);
+        sel.element = 25;   // Fe
+        sel.star = here;
+    }
 
     // Каждое окно снимается отдельно: в каскаде они перекрываются и текст под
     // соседом не прочитать.

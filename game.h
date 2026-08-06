@@ -457,6 +457,11 @@ public:
     double agentDrainPropellantToCargo(int agentIndex, int elementIdx, double units);
     bool agentSellCargo(int agentIndex);
     bool agentSellCargoAmount(int agentIndex, double amount, int elementIndex = -1);
+    // Сдать ВЕСЬ трюм одной кнопкой. Трюм — это только `ship.cargo`: бак и рабочее
+    // тело не груз, их сливают через окно HOLD. Возвращает число проданных партий,
+    // потому что каждая идёт по своей цене исполнения (проскальзывание считается
+    // отдельно на каждый элемент — это тот же путь, что и ручная продажа).
+    int agentSellAllCargo(int agentIndex);
     bool agentAcceptContract(int agentIndex, int contractId);
     bool agentCompleteContract(int agentIndex, int contractId);
     int agentCompleteContracts(int agentIndex);

@@ -2152,8 +2152,14 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
         // (§5.13.23) + остаток руды `mr.ore`: видно, как глыба истощается к «ROCK DEPLETED»; запас
         // теперь варьируется по классу/насыщенности системы (§5.13.22), так что это живой отклик.
         const LocalRock& mr = scene.rocks[scene.miningRock];
-        std::snprintf(buf, sizeof(buf), "MINING %s  +%.0F  ORE %.0F",
-                      rockClassName(rockClass(mr.element)), scene.miningAccum, mr.ore);
+        // (§20.1) + СОРТНОСТЬ жилы: она правит скорость извлечения в разы, и без неё
+        // «почему эта глыба идёт вдесятеро медленнее» выглядело бы поломкой, а не выбором.
+        // (§20.7) + остаток бункера: бур жжёт топливо реактора, и шкала обязана быть на
+        // виду ИМЕННО здесь — иначе «MINING… NO REACTOR FUEL» прилетит без предупреждения.
+        const double fuelPct = (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size())
+            ? shipFuelFill(game.agents[game.playerAgent].ship) * 100.0 : 0.0;
+        std::snprintf(buf, sizeof(buf), "MINING %s  GRADE X%.2F  +%.0F  ORE %.0F  FUEL %.0F%%",
+                      rockClassName(rockClass(mr.element)), mr.grade, scene.miningAccum, mr.ore, fuelPct);
         drawText(renderer, cx - textWidth(buf, 2) / 2, winH - 182, buf, P.amber, 2);
     }
 
@@ -2171,8 +2177,8 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     // богатой системе несёт заметно больше руды, §5.13.22). Ноль RNG, читаем существующие поля камня.
     if (scene.minePrompt >= 0 && scene.minePrompt < (int)scene.rocks.size() && scene.miningRock < 0) {
         const LocalRock& tr = scene.rocks[scene.minePrompt];
-        std::snprintf(buf, sizeof(buf), "PRESS M TO MINE - %s  ORE %.0F",
-                      rockClassName(rockClass(tr.element)), tr.ore);
+        std::snprintf(buf, sizeof(buf), "PRESS M TO MINE - %s  GRADE X%.2F  ORE %.0F",
+                      rockClassName(rockClass(tr.element)), tr.grade, tr.ore);
         drawText(renderer, cx - textWidth(buf, 2) / 2, winH - 124, buf, P.amber, 2);
     }
 

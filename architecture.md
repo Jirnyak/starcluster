@@ -354,7 +354,12 @@ Rules:
 - when state layout changes, it is acceptable to bump the save version and
   invalidate older saves;
 - do not add compatibility layers unless they directly help current debugging
-  or current playable testing.
+  or current playable testing;
+- any ship field a module writes into must be serialized explicitly. Module
+  bonuses are baked into hull fields (CHROMOCORE rule) and the module list is not
+  re-applied on load, so an unsaved field silently disappears. The same field must
+  also be cleared in `shipApplyClass`, or the bonus survives a hull swap and the
+  loss of the ship.
 
 This keeps save/load small and aligned with the real architecture instead of
 turning prototype history into permanent API surface.

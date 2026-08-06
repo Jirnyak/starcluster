@@ -358,8 +358,51 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
     // считаем ОДИН раз здесь (чистая арифметика над star/defs, ноль lrng); в цикле лишь
     // выбираем класс/элемент по ДЕТЕРМИНИРОВАННОМУ хэшу i — розыгрыши lrng ниже не трогаем,
     // поэтому станция/трафик/радио спавнятся ПОБИТОВО как прежде (строго аддитивно, §2.3).
-    std::vector<int> classPool[4];   // индексы элементов по rockClass (enum RockClass 0..3)
-    for (int j = 0; j < elemN; ++j) { int c = rockClass(j); if (c >= 0 && c < 4) classPool[c].push_back(j); }
+    std::vector<int> classPool[4];      // индексы элементов по rockClass (enum RockClass 0..3)
+    std::vector<double> classWeight[4]; // запас этого элемента в недрах системы
+    std::vector<double> classCdf[4];    // он же накопленный — для выбора по CDF
+    for (int j = 0; j < elemN; ++j) {
+        int c = rockClass(j);
+        if (c < 0 || c >= 4) continue;
+        // (§20.1) Вес элемента в поясе — это его доля в НЕДРАХ системы (star.resources,
+        // тот же вектор, из которого market.seed выводит productionRate). Пояс сделан из
+        // того же вещества, что и планеты, а значит из того, чем местный рынок уже завален:
+        // продать намайненное ЗДЕСЬ можно только за гроши. Ноль хардкода — вся редкость
+        // приходит из abundanceWeight × supplyBias генератора звезды.
+        //
+        // Вес берётся по МАССЕ (единицы × вес единицы), а не по числу единиц. Камни
+        // примерно одинаковы по тоннажу, поэтому их ЧИСЛО должно идти от массовой доли
+        // элемента в коре — иначе пояс состоял бы из водорода: единиц у него больше
+        // всех, а весит единица в сотни раз меньше. Тот же промах, что и в темпе
+        // добычи ниже: трюм меряется массой, значит и состав считаем массой.
+        //
+        // И умножается на ПЛОТНОСТЬ конденсированной фазы. Астероид — голый камень в
+        // вакууме: что легко улетает, того в нём и не осталось. Плотность здесь и есть
+        // мера «остаётся ли это рудой»: у водорода 0.07, у железа 7.9. Без неё пояс
+        // раздавал самый дорогой на тонну груз в игре (водород — топливо синтеза,
+        // ~300 Cr за тонну против ~5 у обычного товара) даром и в неограниченном
+        // количестве. Ноль хардкода: density посчитана в resource.cpp из молярного объёма.
+        //
+        // И на ЯДЕРНУЮ УСТОЙЧИВОСТЬ. Камню миллиарды лет, нуклеосинтеза в нём нет:
+        // франций с полураспадом в минуты рудой не бывает, сколько бы его ни рождалось
+        // в недрах живой системы. Без этого пояс раздавал Fr/At/Po/Pu — самые дорогие
+        // за тонну элементы после водорода — теми же даровыми глыбами.
+        //
+        // И на УДЕРЖАНИЕ (oreRetention): у астероида нет гравитации, чтобы держать
+        // лёгкое. Тепловая скорость молекулы ~1/sqrt(m), поэтому лёгкое улетело за
+        // миллиарды лет, а тяжёлое осталось — и почти весь камень это тяжёлая порода.
+        // Водород в поясе редок не по прейскуранту, а потому что он лёгкий.
+        double wgt = 1.0;
+        if (j < int(star.resources.size())) {
+            wgt = std::max(1e-9, star.resources[size_t(j)].amount * resourceUnitMassByIndex(j)
+                                 * std::max(0.02, defs[size_t(j)].density)
+                                 * std::max(0.001, defs[size_t(j)].nuclearStability)
+                                 * oreRetention(defs[size_t(j)].atomicMass));
+        }
+        classPool[c].push_back(j);
+        classWeight[c].push_back(wgt);
+        classCdf[c].push_back((classCdf[c].empty() ? 0.0 : classCdf[c].back()) + wgt);
+    }
     std::vector<int> focusPool[4];   // подмножество resourceFocus, разложенное по классам
     for (size_t f = 0; f < star.resourceFocus.size(); ++f) {
         int fe = star.resourceFocus[f];
@@ -375,6 +418,18 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
     for (int c = 0; c < 4; ++c) w[c] += 0.9 * double(focusPool[c].size());  // экономический профиль
     for (int c = 0; c < 4; ++c) if (classPool[c].empty()) w[c] = 0.0;       // не выбирать пустой класс
     const double wsum = w[0] + w[1] + w[2] + w[3];
+
+    // (§20.1) СОРТНОСТЬ жилы: во сколько раз этого элемента в породе своего класса больше
+    // или меньше, чем у ТИПИЧНОГО элемента того же класса (медиана, а не среднее — среднее
+    // утаскивает водород и железо). Тот же вектор недр, что и выбор элемента выше: одна
+    // величина отвечает и «как часто встречается», и «как густо лежит».
+    double classTypical[4] = {1.0, 1.0, 1.0, 1.0};
+    for (int c = 0; c < 4; ++c) {
+        if (classPool[c].empty()) continue;
+        std::vector<double> v = classWeight[c];
+        std::sort(v.begin(), v.end());
+        classTypical[c] = std::max(1e-9, v[v.size() / 2]);
+    }
 
     int rockCount = 45 + int(lrng() % 45u);
     for (int i = 0; i < rockCount; ++i) {
@@ -414,23 +469,46 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
 
         // (§5.13.20) КОМПОЗИЦИОННО-ВЗВЕШЕННЫЙ выбор: тянем класс камня к составу системы
         // (веса w[] и пулы посчитаны до цикла). Класс — по CDF от ДЕТЕРМИНИРОВАННОГО хэша i;
-        // элемент — из focusPool своего класса (что система добывает), иначе из общего пула
-        // класса. Ноль lrng ⇒ строго аддитивно к спавну (§2.3). Хэш-константы иные, чем у
+        // (§20.1) элемент — по CDF ЗАПАСА НЕДР внутри класса, а не равномерно по пулу.
+        // Прежний равномерный выбор давал ~29% камней из того, чего в системе НЕТ, а рынок
+        // платит за недостающее 2.5 опорных цены: пояс печатал деньги на месте. Теперь чем
+        // больше элемента в недрах — тем чаще он в поясе, и ровно тем же вектором рынок
+        // насыщен. Ноль lrng ⇒ строго аддитивно к спавну (§2.3). Хэш-константы иные, чем у
         // §5.13.15 (цвет), чтобы класс и яркостный джиттер были декоррелированы.
         if (wsum > 0.0) {
             double uc = std::sin(double(i) * 78.233 + 12.9898) * 43758.5453; uc -= std::floor(uc);
             double pick = uc * wsum, acc = 0.0;
             int cls = ROCK_SILICATE;
             for (int cc = 0; cc < 4; ++cc) { acc += w[cc]; if (pick < acc) { cls = cc; break; } }
-            const std::vector<int>& pool = !focusPool[cls].empty() ? focusPool[cls] : classPool[cls];
-            if (!pool.empty()) {
+            const std::vector<int>& pool = classPool[cls];
+            const std::vector<double>& cdf = classCdf[cls];
+            if (!pool.empty() && cdf.size() == pool.size() && cdf.back() > 0.0) {
                 double ue = std::sin(double(i) * 39.425 + 7.311) * 43758.5453; ue -= std::floor(ue);
-                int idx = int(ue * double(pool.size()));
-                if (idx < 0) idx = 0; else if (idx >= int(pool.size())) idx = int(pool.size()) - 1;
+                const double target = ue * cdf.back();
+                size_t idx = size_t(std::lower_bound(cdf.begin(), cdf.end(), target) - cdf.begin());
+                if (idx >= pool.size()) idx = pool.size() - 1;
                 elem = pool[idx];
             }
         }
         rock.element = elem;
+
+        // (§20.1) Сортность жилы этого камня — по недрам системы (посчитано до цикла).
+        // Клампы — только страховка от вырождения: недра спорят на порядки, но жила не
+        // бывает ни бесконечно густой, ни нулевой.
+        {
+            const int rc = rockClass(elem);
+            double gwgt = 1.0;
+            if (elem < int(star.resources.size())) {
+                gwgt = std::max(1e-9, star.resources[size_t(elem)].amount * resourceUnitMassByIndex(elem)
+                                      * std::max(0.02, defs[size_t(elem)].density)
+                                      * std::max(0.001, defs[size_t(elem)].nuclearStability)
+                                      * oreRetention(defs[size_t(elem)].atomicMass));
+            }
+            double gr = (rc >= 0 && rc < 4) ? gwgt / classTypical[rc] : 1.0;
+            if (gr < LocalCfg::ORE_GRADE_MIN) gr = LocalCfg::ORE_GRADE_MIN;
+            else if (gr > LocalCfg::ORE_GRADE_MAX) gr = LocalCfg::ORE_GRADE_MAX;
+            rock.grade = gr;
+        }
 
         // (§5.13.22) ЗАПАС РУДЫ = базовый frand (выше) × класс × насыщенность системы. Множитель
         // применяется к УЖЕ разыгранному rock.ore ⇒ ноль новых draw lrng: поток остаётся стрим-

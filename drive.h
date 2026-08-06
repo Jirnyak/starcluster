@@ -73,5 +73,10 @@ double driveExhaustCeiling(int driveIndex, const MixSummary& propellantMix);
 // Доля энергии, дошедшая до струи, с учётом цены ионизации и опасности смеси.
 double driveJetEfficiency(int driveIndex, const MixSummary& propellantMix);
 
+// (§20.9) КПД установки как таковой — БЕЗ поправок на рабочее тело. Струе важно,
+// что и как ионизируется; потребителю на борту (буровая) — только качество самого
+// движка. Отсюда и разные функции: одна и та же цифра, но у струи с наценкой.
+double driveReactorEfficiency(int driveIndex);
+
 // Факел жжёт топливо как рабочее тело — второй бак ему не нужен.
 bool driveUsesFuelAsPropellant(int driveIndex);

@@ -120,6 +120,12 @@ double driveJetEfficiency(int driveIndex, const MixSummary& mix) {
     return std::max(0.02, std::min(1.0, efficiency));
 }
 
+double driveReactorEfficiency(int driveIndex) {
+    const DriveDef* def = driveAt(driveIndex);
+    if (!def) return 0.0;
+    return std::max(0.02, std::min(1.0, def->efficiency));
+}
+
 bool driveUsesFuelAsPropellant(int driveIndex) {
     const DriveDef* def = driveAt(driveIndex);
     return def && def->family == DriveFamily::Torch;

@@ -27,6 +27,7 @@ struct TradeLayout {
     SDL_Rect amount = {0, 0, 0, 0};
     SDL_Rect buy = {0, 0, 0, 0};
     SDL_Rect sell = {0, 0, 0, 0};
+    SDL_Rect sellAll = {0, 0, 0, 0};
     SDL_Rect autoTrade = {0, 0, 0, 0};
     SDL_Rect refuel = {0, 0, 0, 0};
     SDL_Rect hold = {0, 0, 0, 0};
@@ -95,7 +96,9 @@ SDL_Rect defaultWindowRect(WindowKind kind, int screenW, int screenH, int cascad
     SDL_Rect rect = {0, 0, 0, 0};
     if (kind == WindowKind::Trade) {
         rect.w = std::min(1000, std::max(740, screenW - 220));
-        rect.h = std::min(520, std::max(420, screenH - 180));
+        // Нижняя граница 456, а не 420: столбец действий вырос на ряд (SELL ALL),
+        // и на прежнем минимуме разбор выбранного элемента уезжал под подсказку.
+        rect.h = std::min(520, std::max(456, screenH - 180));
         rect.x = std::max(300, (screenW - rect.w) / 2 + cascade * 18);
         rect.y = std::max(70, screenH - rect.h - 28 - cascade * 10);
     } else if (kind == WindowKind::Contracts) {
@@ -204,10 +207,14 @@ TradeLayout tradeLayoutForWindow(const Window& window) {
     layout.amount = {bx, window.rect.y + TITLE_H + 45, buttonW, 30};
     layout.buy = {bx, layout.tableY, buttonW, 28};
     layout.sell = {bx, layout.tableY + 36, buttonW, 28};
-    layout.autoTrade = {bx, layout.tableY + 72, buttonW, 28};
-    layout.refuel = {bx, layout.tableY + 108, buttonW, 28};
+    // Сдать трюм целиком — сразу под поштучной продажей: это её же действие,
+    // только без выбора элемента. Иначе конец рейса превращается в перебор
+    // таблицы по буквам ради того, чтобы вспомнить, что вообще лежит в трюме.
+    layout.sellAll = {bx, layout.tableY + 72, buttonW, 28};
+    layout.autoTrade = {bx, layout.tableY + 108, buttonW, 28};
+    layout.refuel = {bx, layout.tableY + 144, buttonW, 28};
     // Ручной перелив живёт в окне HOLD: там видны обе ёмкости и их состав.
-    layout.hold = {bx, layout.tableY + 144, buttonW, 28};
+    layout.hold = {bx, layout.tableY + 180, buttonW, 28};
     return layout;
 }
 
@@ -1285,6 +1292,12 @@ bool handleTradeWindowMouseDown(WindowState& state, Game& game, const Window& wi
     }
     if (contains(layout.sell, mouseX, mouseY)) {
         if (liveMarket && game.agentSellCargoAmount(game.playerAgent, amount, selection.element)) {
+            selection.agent = game.playerAgent;
+        }
+        return true;
+    }
+    if (contains(layout.sellAll, mouseX, mouseY)) {
+        if (liveMarket && game.agentSellAllCargo(game.playerAgent) > 0) {
             selection.agent = game.playerAgent;
         }
         return true;
@@ -2578,6 +2591,21 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     }
 
     const std::vector<ElementDefinition>& elements = elementDefinitions();
+    // Что лежит в трюме ПРЯМО СЕЙЧАС. Без этого продать привезённое можно было
+    // только вспомнив символ и найдя его глазами среди 118 клеток — таблица
+    // показывала рынок, но не корабль.
+    std::vector<double> holdCargo(elements.size(), 0.0);
+    bool hasCargo = false;
+    if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
+        const Ship& ps = game.agents[game.playerAgent].ship;
+        for (size_t c = 0; c < ps.cargo.size(); ++c) {
+            const int e = elementIndex(ps.cargo[c].element);
+            if (e >= 0 && e < int(holdCargo.size()) && ps.cargo[c].amount > 0.0) {
+                holdCargo[size_t(e)] += ps.cargo[c].amount;
+                hasCargo = true;
+            }
+        }
+    }
     for (size_t i = 0; i < elements.size(); ++i) {
         const int idx = int(i);
         const SDL_Rect rect = elementRect(layout, idx);
@@ -2608,6 +2636,12 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         if (pressed) border = P.amber;
         
         strokeRect(renderer, rect.x, rect.y, rect.w, rect.h, border);
+        // Груз на борту — ВТОРАЯ, внутренняя рамка. Именно вторая, а не замена
+        // цвета: внешняя рамка говорит про рынок (что система добывает и что ей
+        // нужно), внутренняя — про корабль. Две разные вещи, два разных контура.
+        if (holdCargo[i] > 0.0) {
+            strokeRect(renderer, rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2, P.green);
+        }
 
         drawText(renderer, rect.x + 3, rect.y + 3, elements[i].symbol, idx == selection.element ? P.amber : P.text, 1);
         // Для чего этот элемент годится — прямо в клетке (три буквы функции).
@@ -2630,6 +2664,8 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
 
     drawButton(renderer, layout.buy, freeMarket ? "TAKE" : "BUY", P.green, liveMarket);
     drawButton(renderer, layout.sell, freeMarket ? "GIVE" : "SELL", P.amber, liveMarket);
+    drawButton(renderer, layout.sellAll, freeMarket ? "GIVE ALL" : "SELL ALL", P.amber,
+               liveMarket && hasCargo);
     drawButton(renderer, layout.autoTrade, "AUTO", P.cyan, liveMarket);
     drawButton(renderer, layout.refuel, freeMarket ? "FILL FUEL+PROP" : "BUY FUEL+PROP", P.amber, liveMarket);
     drawButton(renderer, layout.hold, "HOLD / TANKS", P.cyan, true);
@@ -2686,10 +2722,13 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
                          ratio < 0.87 ? P.green : (ratio > 1.15 ? P.red : P.text));
             }
             line += 13;
-            std::snprintf(buf1, sizeof(buf1), "%.0F", market->supply[selection.element].amount);
-            cx = drawStat(renderer, infoX, line, "STOCK ", buf1, P.dim, P.green);
-            std::snprintf(buf1, sizeof(buf1), "%.1F/Y", market->demandRate[selection.element]);
-            drawStat(renderer, cx, line, "USE ", buf1, P.dim, P.red);
+            // Склад и годовой расход — величины масштаба §17 (сотни миллионов). Полным
+            // числом они не помещались в колонку и переползали за край окна, а прочесть
+            // «275574988» всё равно нельзя. Тот же формат, что и у денег: 275.57 M.
+            cx = drawStat(renderer, infoX, line, "STOCK ",
+                          creditsLabel(market->supply[selection.element].amount), P.dim, P.green);
+            drawStat(renderer, cx, line, "USE ",
+                     creditsLabel(market->demandRate[selection.element]) + "/Y", P.dim, P.red);
             line += 13;
             const double cover = market->coverageYears(selection.element);
             std::snprintf(buf1, sizeof(buf1), "%.1FY", std::min(999.0, cover));

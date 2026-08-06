@@ -1471,32 +1471,87 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         double range = rk.radius + LocalCfg::MINE_RANGE;
         size_t ec = elementCount();
         if (rk.ore > 0.0 && d2 <= range*range && ec > 0) {
-            // (§5.13.16) Скорость извлечения зависит от КЛАССА породы (§5.13.15): металл —
-            // богатый и быстрый (ищи блестящие глыбы!), лёд — лёгкие летучие, силикат — базовый
-            // темп (=прежний ⇒ нулевой регресс для дефолт-класса), углерод — рыхлый и медленный.
-            // Тип уже виден по цвету/блеску — теперь он ещё и значим. Чистая арифметика, без RNG.
-            double rate = LocalCfg::MINE_RATE_BASE * rockYieldMult(rockClass(rk.element));
-            double amt = rate * dtHours;               // масса за кадр
+            // (§20.9) ОДИН закон и на скорость, и на расход: бур — это реактор,
+            // приставленный к камню.
+            //
+            //     энергия на тонну = MINE_ENERGY_PER_MASS / (класс породы × сортность жилы)
+            //     тонн в час       = мощность реактора / энергия на тонну
+            //
+            // Раньше скорость задавала ОТДЕЛЬНАЯ константа (MINE_RATE_BASE = 9 тонн/час,
+            // одинаково для спас-капсулы и для «Фортресса»), а цена энергии — вторая, и
+            // они не были связаны: «быстро, но дорого» ничем не отличалось от «медленно,
+            // но дёшево». Теперь скорость — следствие мощности и породы, а расход топлива
+            // — та же самая энергия, посчитанная один раз.
+            //
+            // Отсюда всё, что должно значить, значит:
+            //  • КОРПУС и ДВИЖОК — через shipReactorPower (тяга × КПД движка): крупный
+            //    борт с дорогим движком грызёт камень быстрее И тратит на тонну столько же;
+            //  • БУРОВАЯ УСТАНОВКА (§20.11) — модулем, там же: она поднимает ТЕМП, но не
+            //    меняет цену тонны, поэтому быстрее = дороже в час, а не выгоднее;
+            //  • КЛАСС ПОРОДЫ (§5.13.16) — металл богат, углерод рыхл: тот же множитель,
+            //    что и раньше, только теперь он честно означает «тонн на джоуль»;
+            //  • СОРТНОСТЬ жилы (§20.1) — прожилка редкого металла требует перемолоть
+            //    больше пустой породы на ту же тонну продукта.
+            //
+            // Масса, а не «единиц вещества» (§20.1): единица урана весит в 250 раз больше
+            // единицы водорода, а трюм меряется массой — резак снимает тонны, а не атомы.
             int el = rk.element;
             if (el < 0) el = 0;
             if (el >= (int)ec) el = (int)ec - 1;
             const char* sym = elementDefinitions()[el].symbol;
             double unit = std::max(0.001, resourceUnitMassByIndex(el));
             Ship& ps = game.agents[game.playerAgent].ship;
-            if (shipCargoMass(ps) + amt * unit > ps.cargoCapacity) {
+
+            const double oreHardness = std::max(1e-6, rockYieldMult(rockClass(rk.element)) * rk.grade);
+            const double energyPerMass = LocalCfg::MINE_ENERGY_PER_MASS / oreHardness;
+            const double power = shipDrillPower(ps) * LocalCfg::DRILL_POWER_FRACTION;
+            double massGain = energyPerMass > 0.0 ? power / energyPerMass * dtHours : 0.0;
+            massGain = std::min(massGain, rk.ore);
+            if (shipCargoMass(ps) + massGain > ps.cargoCapacity) {
                 scene.miningRock = -1;
                 scene.toast = "CARGO FULL";
                 scene.toastTimer = 2.0;
             } else {
-                amt = std::min(amt, rk.ore);
+                // (§20.7) Буровая ест энергию РЕАКТОРА. Пояс возрождается полным при
+                // каждом входе в локальный полёт, поэтому руда бесконечна — но
+                // БЕСПЛАТНОЙ она быть не должна: топливо в бункере и есть цена добычи.
+                // Отсюда же честная петля выживания — намайненное топливо переливается
+                // в реактор, и можно копать дальше. Платим ДО зачисления руды: сколько
+                // энергии реактор выдал, столько породы и срезано; пустеющий бункер
+                // режет подачу, а не выдаёт руду в долг.
+                const double wantEnergy = massGain * energyPerMass;
+                std::vector<Resource> ash;
+                const double gotEnergy = shipDrawReactorEnergy(ps, wantEnergy, &ash);
+                if (wantEnergy > 0.0 && gotEnergy < wantEnergy) massGain *= gotEnergy / wantEnergy;
+                // Зола ложится в трюм, как и в полёте (consumeAndStoreAsh): она
+                // заменяет собой сгоревшее топливо, общая масса корабля не растёт.
+                for (size_t k = 0; k < ash.size(); ++k) {
+                    if (ash[k].amount <= 1e-9) continue;
+                    bool merged = false;
+                    for (size_t c = 0; c < ps.cargo.size(); ++c) {
+                        if (ps.cargo[c].element != ash[k].element) continue;
+                        ps.cargo[c].amount += ash[k].amount;
+                        merged = true;
+                        break;
+                    }
+                    if (!merged) ps.cargo.push_back(ash[k]);
+                }
+                if (gotEnergy <= 0.0) {
+                    scene.miningRock = -1;
+                    scene.toast = "NO REACTOR FUEL";
+                    scene.toastTimer = 2.5;
+                    massGain = 0.0;
+                }
+
+                const double amt = massGain / unit;
                 std::string s(sym);
                 bool found = false;
                 for (size_t k = 0; k < ps.cargo.size(); ++k) {
                     if (ps.cargo[k].element == s) { ps.cargo[k].amount += amt; found = true; break; }
                 }
-                if (!found) ps.cargo.emplace_back(s, amt);
-                rk.ore -= amt;
-                scene.miningAccum += amt;
+                if (!found && amt > 0.0) ps.cargo.emplace_back(s, amt);
+                rk.ore -= massGain;
+                scene.miningAccum += massGain;
                 game.addResearch(0.2 * dtHours);
                 // (I) Пыль добычи: изредка тусклая дымка от астероида к игроку.
                 if ((int)scene.fx.size() < LocalCfg::FX_MAX) {

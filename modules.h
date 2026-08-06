@@ -31,6 +31,10 @@ struct ModuleDef {
     double armorBonus;
     double hullBonus;
     double utilityBonus;
+    // (§20.11) Буровая установка: прибавка к Ship::miningRig. Отдельная ось от
+    // сенсоров — добыча и разведка это разные приборы, и слепить их в одно
+    // `utility` значило бы, что «Перехватчик» копает лучше рудовоза.
+    double miningBonus;
     int driveIndex;       // для слота Drive: какой движок ставится; иначе -1
     int minShipyard;      // требуемый уровень верфи для установки
     std::string blurb;
