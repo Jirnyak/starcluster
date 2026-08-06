@@ -80,7 +80,7 @@ and fleet rules used by NPC agents.
 
 The current executable prototype contains:
 
-- a deterministic 10,000 star cluster (`STAR_COUNT = 10000`);
+- a deterministic 8,192 star cluster (`STAR_COUNT = 8192`);
 - local markets for all 118 chemical elements;
 - six NPC factions plus the player faction;
 - traders, patrol ships, colonists, scouts, pirates, adventurers, and the player;

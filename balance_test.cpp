@@ -1506,6 +1506,29 @@ void testDrillScalesWithReactor() {
     }
 }
 
+// (§22.3) `STAR_COUNT` — ОДНО число: и размер мира, и знаменатель плотности. Значит цели
+// населения (`AGENT_TARGET_FULL`, `CONTRACT_TARGET_FULL`) записаны абсолютом, а означают
+// ПЛОТНОСТЬ, и живут с ним в паре: поправит кто-нибудь размер мира, не тронув цели, — мир
+// молча станет гуще или пустее, и глазами это не видно. Пиньним ровно эту связку: полный
+// мир добирает свою цель, а мир вчетверо меньше получает ту же плотность, а не ту же кучу.
+void testWorldPopulationScalesWithSize() {
+    Game full;  full.seed = 42u; full.init(size_t(STAR_COUNT));
+    Game small; small.seed = 42u; small.init(1200);
+    const double dFull  = double(full.agents.size())  / double(STAR_COUNT);
+    const double dSmall = double(small.agents.size()) / 1200.0;
+    const bool reachesTarget = (full.agents.size() > size_t(AGENT_TARGET_FULL) * 9 / 10 &&
+                                full.agents.size() <= size_t(AGENT_TARGET_FULL));
+    const bool sameDensity   = (dSmall > dFull * 0.85 && dSmall < dFull * 1.15);
+    const bool boardScales   = (CONTRACT_TARGET_FULL * 1200 / STAR_COUNT >= 30);
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "мир %d: бортов %d (цель %d) = %.4f/систему; мир 1200: %d = %.4f/систему; доска %d->%d",
+                  STAR_COUNT, int(full.agents.size()), AGENT_TARGET_FULL, dFull,
+                  int(small.agents.size()), dSmall,
+                  CONTRACT_TARGET_FULL, CONTRACT_TARGET_FULL * 1200 / STAR_COUNT);
+    check(reachesTarget && sameDensity && boardScales,
+          "население мира идёт от его размера", buf);
+}
+
 } // namespace
 
 int main() {
@@ -1546,6 +1569,7 @@ int main() {
     testBeltIsLocalDirt();
     testMiningBurnsReactorFuel();
     testDrillScalesWithReactor();
+    testWorldPopulationScalesWithSize();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;
 }

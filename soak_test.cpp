@@ -171,6 +171,57 @@ int main() {
         std::printf("death-path probe: playerDestroyed=%s\n", deathPathOk ? "YES (ok)" : "NO");
     }
 
+    // --- (§22) Детерминированная проверка РАСКОЛА выработанной глыбы ---
+    // Ставим игрока вплотную к камню, оставляем в нём крохи руды и включаем бур. Ждём
+    // трёх вещей: (1) камень доходит до `gone` и выбывает из сцены; (2) бур сам гаснет и
+    // рассыпавшийся камень БОЛЬШЕ НЕ ПРЕДЛАГАЕТСЯ (miningRock/minePrompt на него не
+    // указывают) — иначе игрок целился бы в пустоту; (3) раскол выбросил частицы и длился
+    // около ROCK_BREAK_TIME РЕАЛЬНЫХ секунд, а не мгновение и не вечность.
+    bool rockBreakOk = false, rockBreakClean = false, rockBreakTimed = false;
+    {
+        LocalScene scene;
+        buildLocalScene(game, 0, scene);
+        scene.active = true;
+        if (!scene.rocks.empty()) {
+            LocalRock& rk = scene.rocks[0];
+            rk.ore = 0.02;                                  // последние крохи — раскол близко
+            scene.px = rk.x + rk.radius + 2.0; scene.py = rk.y; scene.pz = rk.z;
+            scene.pvx = scene.pvy = scene.pvz = 0.0;
+            const size_t fxBefore = scene.fx.size();
+            LocalInput in;
+            in.mineToggle = true;                           // кадр нажатия
+            updateLocalScene(game, scene, in, dtReal);
+            in.mineToggle = false;
+            // Бур выбирает БЛИЖАЙШИЙ камень в зоне (мог оказаться и соседний), а крохи руды
+            // сходят в ТОМ ЖЕ кадре — тогда miningRock уже сброшен. Цель ищем по расколу.
+            int target = scene.miningRock;
+            if (target < 0) {
+                for (size_t k = 0; k < scene.rocks.size(); ++k)
+                    if (scene.rocks[k].breakT > 0.0) { target = (int)k; break; }
+            }
+            size_t fxPeakBreak = scene.fx.size();
+            int frames = 0;
+            if (target >= 0) {
+                for (int f = 0; f < 4000; ++f) {
+                    updateLocalScene(game, scene, in, dtReal);
+                    ++frames;
+                    if (!finite3(scene.px, scene.py, scene.pz)) { ++invariantFails; break; }
+                    if (scene.fx.size() > fxPeakBreak) fxPeakBreak = scene.fx.size();
+                    if (scene.rocks[target].gone) { rockBreakOk = true; break; }
+                }
+                rockBreakClean = (scene.miningRock != target && scene.minePrompt != target);
+                // Кадр нажатия уже содержит начало раскола, поэтому +1 кадр допуска сверху.
+                const double dur = frames * dtReal;
+                rockBreakTimed = (dur >= LocalCfg::ROCK_BREAK_TIME - 2.0 * dtReal &&
+                                  dur <= LocalCfg::ROCK_BREAK_TIME + 2.0 * dtReal &&
+                                  fxPeakBreak > fxBefore);
+                std::printf("rock-shatter probe: target=%d gone=%s reselect-blocked=%s duration=%.2fs (exp %.2f) burstFx=%d\n",
+                            target, rockBreakOk ? "YES (ok)" : "NO", rockBreakClean ? "YES (ok)" : "NO",
+                            dur, LocalCfg::ROCK_BREAK_TIME, (int)(fxPeakBreak - fxBefore));
+            }
+        }
+    }
+
     // --- Детерминированная проверка write-back в макро (§5.13.14) ---
     // Привязываем локальное зеркало к реальному макро-агенту (не игроку), добиваем его
     // выстрелом игрока и проверяем, что агент в ПОСТОЯННОМ мире деградировал в спас-капсулу
@@ -1344,7 +1395,12 @@ int main() {
     }
     if (!lawPackHuntsPlayerOk) { std::printf("INVARIANT FAIL: §5.13.46 law-pack override did not fire for a pair, or a lone patrol wrongly took the player\n"); ++invariantFails; }
 
-    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s copKillDeeperReprisal=%s lawHuntsHostile=%s patrolTargetSignal=%s vendettaScalesWithStanding=%s lawPackHuntsPlayer=%s rocks=%ld shiny=%ld trades=%ld\n",
+    if (!rockBreakOk || !rockBreakClean || !rockBreakTimed) {
+        std::printf("INVARIANT FAIL: §22 выработанная глыба не рассыпалась, осталась выбираемой или сломан хронометраж раскола\n");
+        ++invariantFails;
+    }
+
+    std::printf("SOAK DONE frames=%ld deaths=%ld radioClaims=%ld craftDestroyed=%ld invariantFails=%ld deathPath=%s writeBack=%s sellWriteBack=%s npcWriteBack=%s patrolHuntsWanted=%s packRalliesOutlaw=%s patrolBacksUpSwarmed=%s manhuntScalesWithBounty=%s lawGratitude=%s copKillRaisesBounty=%s factionReprisal=%s copKillDeeperReprisal=%s lawHuntsHostile=%s patrolTargetSignal=%s vendettaScalesWithStanding=%s lawPackHuntsPlayer=%s rockShatter=%s rocks=%ld shiny=%ld trades=%ld\n",
                 totalFrames, deaths, claims, kills, invariantFails,
                 deathPathOk ? "ok" : "UNTRIGGERED", writeBackOk ? "ok" : "FAILED",
                 sellWriteBackOk ? "ok" : "FAILED", npcWriteBackOk ? "ok" : "FAILED",
@@ -1360,6 +1416,7 @@ int main() {
                 patrolTargetSignalOk ? "ok" : "FAILED",
                 vendettaScalesWithStandingOk ? "ok" : "FAILED",
                 lawPackHuntsPlayerOk ? "ok" : "FAILED",
+                (rockBreakOk && rockBreakClean && rockBreakTimed) ? "ok" : "FAILED",
                 rocksSeen, rocksShiny, tradesTotal);
     return invariantFails ? 1 : 0;
 }

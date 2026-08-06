@@ -361,6 +361,47 @@ int main(int argc, char** argv) {
         ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, "shot_belt_near.bmp");
     }
 
+    // (13b) РАСКОЛ ВЫРАБОТАННОЙ ГЛЫБЫ (§22.2) — три фазы одной и той же камеры. Кадрирование
+    //       ровно как у shot_belt_near (та же формула глаза), чтобы фазы сравнивались с целым
+    //       камнем один в один. Проверяем: (a) при малом breakT глыба ещё СОБРАНА, но по рёбрам
+    //       клиньев идёт раскалённый рез — силуэт обязан совпадать с целым камнем, никакого
+    //       «поп-ина»; (b) в середине куски разъехались и между ними видно фон; (c) под конец
+    //       остатки прозрачны и вразнобой. Мелкие соседние камни в кадре — контроль: они целы.
+    {
+        const double phase[3] = { 0.10, 0.45, 0.80 };
+        const char* names[3] = { "shot_rock_break_a.bmp", "shot_rock_break_b.bmp", "shot_rock_break_c.bmp" };
+        for (int ph = 0; ph < 3; ++ph) {
+            LocalScene s; buildLocalScene(game, 0, s); s.active = true;
+            int big = -1; double bestR = -1.0;
+            for (size_t i = 0; i < s.rocks.size(); ++i)
+                if (s.rocks[i].radius > bestR) { bestR = s.rocks[i].radius; big = (int)i; }
+            if (big >= 0) {
+                LocalRock& rk = s.rocks[big];
+                const double dl = std::sqrt(rk.x*rk.x + rk.y*rk.y + rk.z*rk.z);
+                const double ux = dl>1e-6 ? rk.x/dl : 1.0;
+                const double uy = dl>1e-6 ? rk.y/dl : 0.0;
+                const double uz = dl>1e-6 ? rk.z/dl : 0.0;
+                double px = uy, py = -ux, pz = 0.0;
+                double pl = std::sqrt(px*px + py*py + pz*pz);
+                if (pl < 1e-6) { px = 1.0; py = 0.0; pz = 0.0; pl = 1.0; }
+                px/=pl; py/=pl; pz/=pl;
+                const double off = std::max(14.0, rk.radius * 6.0);
+                s.px = rk.x + px*off - ux*off*0.35;
+                s.py = rk.y + py*off - uy*off*0.35;
+                s.pz = rk.z + pz*off - uz*off*0.35 + rk.radius*0.6;
+                s.pvx = s.pvy = s.pvz = 0.0;
+                localSetForward(s, rk.x - s.px, rk.y - s.py, rk.z - s.pz);
+                rk.ore = 0.0;
+                rk.breakT = LocalCfg::ROCK_BREAK_TIME * phase[ph];
+                std::printf("  [rock-break] rock=%d R=%.2f brk=%.2f shards=%d spread=%.2f\n",
+                            big, rk.radius, phase[ph], LocalCfg::ROCK_SHARD_COUNT,
+                            LocalCfg::ROCK_SHARD_SPREAD);
+            }
+            total += 1;
+            ok += saveShot(r, surf, game, s, W, H, false, 0.60, 0.8, names[ph]);
+        }
+    }
+
     // (13+) ТИПЫ ПОРОД (§5.13.15): четыре камня в ряд — по одному на класс материала
     //       (лёд O / углерод C / металл Fe / силикат Si), палитра/зеркальность взяты РОВНО
     //       из rockAppearance() (та же ф-я, что печёт цвета пояса в localgen). Свет — звезда

@@ -207,6 +207,78 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         }
     };
 
+    // (§22) spawnRockBurst: осыпание ВЫРАБОТАННОЙ глыбы. Это НЕ взрыв корабля: ни лута, ни
+    // огненных обломков — камень не горит. Здесь холодная порода: пыль (FX_SMOKE) цвета самого
+    // камня, каменная крошка (FX_DEBRIS) его же цвета и одно тусклое кольцо осевшей пыли.
+    // Тёплый тон допущен ровно в горстке искр — это докрасна раскалённый рез бура, и он гаснет
+    // первым. Скорости МАСШТАБИРОВАНЫ радиусом глыбы (LU/час, как весь fx): иначе камешек в
+    // 1.5 LU швырял бы крошку на сотню LU. Сид локальный (fx.size/fxClock/позиция) — global rng
+    // не трогаем (§2.3), потолок FX_MAX уважаем.
+    auto spawnRockBurst = [&scene](const LocalRock& rk) {
+        std::mt19937 lr((uint32_t)(scene.fx.size() * 2654435761u)
+                        ^ (uint32_t)(uint64_t)(scene.fxClock * 733.0)
+                        ^ (uint32_t)(uint64_t)(std::fabs(rk.x) * 16.0 + std::fabs(rk.y) * 4.0 + std::fabs(rk.z)));
+        std::uniform_real_distribution<double> us(-1.0, 1.0);
+        std::uniform_real_distribution<double> u01(0.0, 1.0);
+        const double R = std::max(0.5, rk.radius);
+        // Кольцо осевшей пыли — тусклое и цвета породы (у корабля оно яркое и белое).
+        if ((int)scene.fx.size() < LocalCfg::FX_MAX) {
+            LocalFx f;
+            f.x = rk.x; f.y = rk.y; f.z = rk.z;
+            f.vx = 0.0; f.vy = 0.0; f.vz = 0.0;
+            f.kind = FX_RING; f.size = R * 3.4;
+            f.life = 0.7; f.maxLife = 0.7;
+            f.r = rk.r; f.g = rk.g; f.b = rk.b; f.a = 170;
+            scene.fx.push_back(f);
+        }
+        // Крошка: летит из центра, живёт дольше пыли — «обломки пояса» ещё висят, когда
+        // облако уже осело.
+        for (int k = 0; k < 14; ++k) {
+            if ((int)scene.fx.size() >= LocalCfg::FX_MAX) break;
+            LocalFx f;
+            f.x = rk.x + us(lr) * R * 0.5;
+            f.y = rk.y + us(lr) * R * 0.5;
+            f.z = rk.z + us(lr) * R * 0.5;
+            const double sp = R * (2.5 + u01(lr) * 6.0);
+            f.vx = us(lr) * sp; f.vy = us(lr) * sp; f.vz = us(lr) * sp * 0.7;
+            f.kind = FX_DEBRIS;
+            f.size = 0.5 + u01(lr) * 0.9;
+            f.life = 0.9 + u01(lr) * 0.7; f.maxLife = f.life;
+            const double sh = 0.75 + u01(lr) * 0.45;      // крошка чуть светлее/темнее глыбы
+            f.r = (uint8_t)std::min(255.0, rk.r * sh);
+            f.g = (uint8_t)std::min(255.0, rk.g * sh);
+            f.b = (uint8_t)std::min(255.0, rk.b * sh);
+            f.a = 255;
+            scene.fx.push_back(f);
+        }
+        // Пыль: медленная, широкая, полупрозрачная — она и делает раскол «сочным».
+        for (int k = 0; k < 10; ++k) {
+            if ((int)scene.fx.size() >= LocalCfg::FX_MAX) break;
+            LocalFx f;
+            f.x = rk.x + us(lr) * R; f.y = rk.y + us(lr) * R; f.z = rk.z + us(lr) * R;
+            const double sp = R * (0.8 + u01(lr) * 2.0);
+            f.vx = us(lr) * sp; f.vy = us(lr) * sp; f.vz = us(lr) * sp * 0.6;
+            f.kind = FX_SMOKE;
+            f.size = R * (0.5 + u01(lr) * 0.7);
+            f.life = 1.3 + u01(lr) * 1.1; f.maxLife = f.life;
+            f.r = rk.r; f.g = rk.g; f.b = rk.b; f.a = 130;
+            scene.fx.push_back(f);
+        }
+        // Раскалённый рез: несколько янтарных искр, гаснут первыми.
+        for (int k = 0; k < 6; ++k) {
+            if ((int)scene.fx.size() >= LocalCfg::FX_MAX) break;
+            LocalFx f;
+            f.x = rk.x; f.y = rk.y; f.z = rk.z;
+            const double sp = R * (3.0 + u01(lr) * 7.0);
+            f.vx = us(lr) * sp; f.vy = us(lr) * sp; f.vz = us(lr) * sp * 0.6;
+            f.kind = FX_SPARK;
+            f.size = 0.7 + u01(lr) * 0.8;
+            f.life = 0.16 + u01(lr) * 0.20; f.maxLife = f.life;
+            f.r = 255; f.g = (uint8_t)(160.0 + u01(lr) * 70.0); f.b = 70; f.a = 255;
+            scene.fx.push_back(f);
+        }
+    };
+
     // emitWarp: сигнатура «прыжка» — циан-кольцо + яркая аддитивная вспышка-ядро + горсть искр.
     //   Ставится на ПРИЛЁТЕ (вход торговца с края) и на ОТЛЁТЕ (деспаун за краем). §5.13.10.
     //   Голубой тон намеренно отличается от тёплых взрывов, чтобы читаться как «варп», а не гибель.
@@ -313,6 +385,15 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
     if (!scene.rocks.empty()) {
         for (size_t i = 0; i < scene.rocks.size(); ++i) {
             LocalRock& rk = scene.rocks[i];
+            if (rk.gone) continue;                       // (§22) выработан и осыпался — вне сцены
+            // (§22) Раскол идёт по РЕАЛЬНОМУ времени: под warp камень не рассыпается
+            // мгновенно вместе с ускоренным потоком часов, зрелище остаётся зрелищем.
+            // Куски при этом продолжают дрейфовать с поясом (ниже) — глыба разваливается
+            // на ходу, а не замирает.
+            if (rk.breakT > 0.0) {
+                rk.breakT += dtReal;
+                if (rk.breakT >= LocalCfg::ROCK_BREAK_TIME) { rk.gone = true; continue; }
+            }
             rk.orbitAng += rk.orbitVel * dtHours;
             rk.spin     += rk.spinVel  * dtHours;
             rk.x = rk.orbitR * std::cos(rk.orbitAng);
@@ -1440,7 +1521,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
             int best = -1; double bestD2 = 0.0;
             for (size_t i = 0; i < scene.rocks.size(); ++i) {
                 LocalRock& rk = scene.rocks[i];
-                if (rk.ore <= 0.0) continue;
+                if (rk.ore <= 0.0 || rk.gone) continue;   // (§22) выработанный камень рассыпается
                 double dx = rk.x - scene.px, dy = rk.y - scene.py, dz = rk.z - scene.pz;
                 double d2 = dx*dx + dy*dy + dz*dz;
                 double range = rk.radius + LocalCfg::MINE_RANGE;
@@ -1578,8 +1659,20 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                     }
                 }
                 if (rk.ore <= 0.0) {
+                    // (§22) Последняя тонна РАЗРУШАЕТ глыбу: выработанный камень не остаётся
+                    // висеть пустой декорацией, а раскалывается (шейдер §22.2) и уходит из
+                    // сцены. Тряска — по близости: бур работает почти в упор, поэтому она
+                    // всегда будет, но за пределами зоны добычи гаснет.
+                    rk.ore = 0.0;
+                    if (rk.breakT <= 0.0) {
+                        rk.breakT = 1e-6;                 // >0 ⇒ раскол пошёл (см. блок (G))
+                        spawnRockBurst(rk);
+                        const double bd = std::sqrt(dx*dx + dy*dy + dz*dz);
+                        const double near01 = std::max(0.0, 1.0 - bd / (range * 2.0));
+                        scene.shake = std::min(40.0, std::max(scene.shake, 6.0 * near01));
+                    }
                     scene.miningRock = -1;
-                    scene.toast = "ROCK DEPLETED";
+                    scene.toast = "ROCK SHATTERED";
                     scene.toastTimer = 2.0;
                 }
             }
@@ -1608,7 +1701,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         int best = -1; double bestD2 = 0.0;
         for (size_t i = 0; i < scene.rocks.size(); ++i) {
             const LocalRock& rk = scene.rocks[i];
-            if (rk.ore <= 0.0) continue;
+            if (rk.ore <= 0.0 || rk.gone) continue;   // (§22) рассыпавшийся камень не подсказываем
             double dx = rk.x - scene.px, dy = rk.y - scene.py, dz = rk.z - scene.pz;
             double d2 = dx*dx + dy*dy + dz*dz;
             double range = rk.radius + LocalCfg::MINE_RANGE;

@@ -526,10 +526,21 @@ static bool renderBodySphere(SDL_Renderer* renderer, const LocalScene& scene,
 // вызывающий дешёвым диском с фазовой подсветкой. Половинное разрешение, bbox,
 // RenderCopy ×2. Детерминизм: сид из индекса/орбиты/радиуса (НЕ глобальный rng).
 // Возвращает true, если глыба отрисована (иначе вызывающий рисует диск-фолбэк).
+//
+// (§22.2) РАСКОЛ (brk = rk.breakT/ROCK_BREAK_TIME, 0 = камень цел). Выработанная глыба
+// разваливается ТЕМ ЖЕ ray-sphere приёмом, без единой новой модели и без частиц-заменителей:
+// сфера делится на ROCK_SHARD_COUNT клиньев Вороного по опорным направлениям, и каждый клин
+// РАЗЪЕЗЖАЕТСЯ вдоль своего направления. Пиксель проверяется на пересечение со СМЕЩЁННОЙ
+// сферой осколка и принимается, только если попал в СВОЙ клин, — поэтому при brk=0 объединение
+// клиньев побитово равно исходной глыбе (нулевое смещение ⇒ ни скачка, ни «поп-ина»), а дальше
+// между кусками открываются настоящие щели, сквозь которые видно фон. По рёбрам скола идёт
+// раскалённый рез (эмиссия, гаснет вчетверо быстрее самого разлёта — камень остывает), куски
+// гаснут вразнобой (у каждого свой порог), и к brk=1 не остаётся ничего.
 static bool renderRockLit(SDL_Renderer* renderer, const LocalScene& scene,
                           const View3D& view, const CameraBasis& basis,
                           int winW, int winH, const LocalRock& rk,
-                          const ProjectedPoint& pc, double fade01, unsigned idx) {
+                          const ProjectedPoint& pc, double fade01, unsigned idx,
+                          double brk) {
     const double Rb = rk.radius;
     if (Rb <= 0.0 || winW <= 0 || winH <= 0) return false;
     if (pc.behind || pc.depth <= view.nearPlane) return false;
@@ -555,7 +566,12 @@ static bool renderRockLit(SDL_Renderer* renderer, const LocalScene& scene,
     }
     if (!tex) return false;
 
-    const double margin = screenR * 1.10 + 3.0;
+    // (§22.2) Осколки уходят наружу — рамка обязана расти вместе с ними, иначе разлёт
+    // обрезался бы по краю прежнего bbox'а ровным прямоугольником.
+    if (brk < 0.0) brk = 0.0; else if (brk > 1.0) brk = 1.0;
+    const double brkE = (brk > 0.0) ? std::pow(brk, 1.25) : 0.0;   // разгон: сперва трещина, потом разлёт
+    const double maxSpread = LocalCfg::ROCK_SHARD_SPREAD * brkE;
+    const double margin = screenR * (1.10 + maxSpread) + 3.0;
     int bx0 = std::max(0,  (int)std::floor((pc.x - margin) * 0.5));
     int by0 = std::max(0,  (int)std::floor((pc.y - margin) * 0.5));
     int bx1 = std::min(bw, (int)std::ceil ((pc.x + margin) * 0.5) + 1);
@@ -577,6 +593,42 @@ static bool renderRockLit(SDL_Renderer* renderer, const LocalScene& scene,
     // Детерминированный сдвиг фаз шума (НЕ rng) + кувыркание вокруг мировой Z на угол spin.
     const double seed = idx * 0.61803398875 + rk.orbitAng * 0.31 + Rb * 0.13;
     const double ca = std::cos(rk.spin), sa = std::sin(rk.spin);
+
+    // (§22.2) Осколки. Опорные направления — спираль Фибоначчи (равномерно по сфере, без
+    // сгущений у полюсов), провёрнутая на seed камня: две глыбы рядом рассыпаются по-разному.
+    // Каждому осколку — свои скорость и порог гашения из детерминированного хэша (НЕ rng, §2.3).
+    const int K = LocalCfg::ROCK_SHARD_COUNT;
+    double shDX[LocalCfg::ROCK_SHARD_COUNT], shDY[LocalCfg::ROCK_SHARD_COUNT], shDZ[LocalCfg::ROCK_SHARD_COUNT];
+    double shOX[LocalCfg::ROCK_SHARD_COUNT], shOY[LocalCfg::ROCK_SHARD_COUNT], shOZ[LocalCfg::ROCK_SHARD_COUNT];
+    double shKX[LocalCfg::ROCK_SHARD_COUNT], shKY[LocalCfg::ROCK_SHARD_COUNT], shKZ[LocalCfg::ROCK_SHARD_COUNT];
+    double shC[LocalCfg::ROCK_SHARD_COUNT], shA[LocalCfg::ROCK_SHARD_COUNT];
+    double heat = 0.0;
+    if (brk > 0.0) {
+        heat = std::exp(-brk * 4.0);                    // рез остывает вчетверо быстрее разлёта
+        for (int k = 0; k < K; ++k) {
+            const double zk = 1.0 - (2.0 * k + 1.0) / (double)K;
+            const double rr = std::sqrt(std::max(0.0, 1.0 - zk * zk));
+            const double ph = (double)k * 2.39996322973 + seed;
+            shDX[k] = rr * std::cos(ph); shDY[k] = rr * std::sin(ph); shDZ[k] = zk;
+            double h = std::sin((double)k * 17.13 + seed * 3.7) * 43758.5453; h -= std::floor(h);
+            const double len = Rb * LocalCfg::ROCK_SHARD_SPREAD * brkE * (0.45 + 0.55 * h);
+            shKX[k] = cx + shDX[k] * len; shKY[k] = cy + shDY[k] * len; shKZ[k] = cz + shDZ[k] * len;
+            shOX[k] = ex - shKX[k]; shOY[k] = ey - shKY[k]; shOZ[k] = ez - shKZ[k];
+            shC[k] = shOX[k] * shOX[k] + shOY[k] * shOY[k] + shOZ[k] * shOZ[k] - Rb2;
+            // Гаснут вразнобой: один кусок ещё летит, когда соседний уже растворился.
+            const double tf = 0.30 + 0.35 * h;
+            shA[k] = (brk <= tf) ? 1.0 : std::max(0.0, 1.0 - (brk - tf) / (1.0 - tf));
+            // Отбраковка со СПИНЫ: клин лежит шапкой вокруг своего направления (10 ячеек
+            // Вороного ⇒ полуугол ~37°), поэтому осколок, чьё направление смотрит от глаза
+            // дальше чем на 90°+полуугол, не покажет ни одного пикселя. Порог −0.80 взят с
+            // запасом против 45°-оценки: цена ошибки — дыра в камне, цена запаса — ничто.
+            // Считается ОДИН раз на осколок и снимает примерно половину пиксельных тестов;
+            // без этого глыба, расколотая в упор, стоила бы полного перебора на каждый пиксель.
+            const double el2 = std::sqrt(std::max(1e-12, shOX[k]*shOX[k] + shOY[k]*shOY[k] + shOZ[k]*shOZ[k]));
+            const double face = (shDX[k]*shOX[k] + shDY[k]*shOY[k] + shDZ[k]*shOZ[k]) / el2;
+            if (face < -0.80) shA[k] = 0.0;
+        }
+    }
 
     const double invF  = 1.0 / focal;
     const double halfW = winW * 0.5, halfH = winH * 0.5;
@@ -601,13 +653,52 @@ static bool renderRockLit(SDL_Renderer* renderer, const LocalScene& scene,
             dx *= il; dy *= il; dz *= il;
 
             // Номинальная сфера радиуса Rb: ближний корень t0, нормаль поверхности.
-            const double b = ocx * dx + ocy * dy + ocz * dz;
-            const double disc = b * b - cBody;
-            if (disc < 0.0) continue;                    // луч мимо
-            const double t0 = -b - std::sqrt(disc);
-            if (t0 <= 0.0) continue;                     // сфера позади глаза
-            const double sx = ex + dx * t0, sy = ey + dy * t0, sz = ez + dz * t0;
-            const double nx = (sx - cx) / Rb, ny = (sy - cy) / Rb, nz = (sz - cz) / Rb;
+            // При расколе (§22.2) вместо неё — ближайший из РАЗЪЕХАВШИХСЯ клиньев.
+            double t0, disc, sx, sy, sz, nx, ny, nz;
+            double edge01 = 0.0, shardA = 1.0;
+            if (brk <= 0.0) {
+                const double b = ocx * dx + ocy * dy + ocz * dz;
+                disc = b * b - cBody;
+                if (disc < 0.0) continue;                // луч мимо
+                t0 = -b - std::sqrt(disc);
+                if (t0 <= 0.0) continue;                 // сфера позади глаза
+                sx = ex + dx * t0; sy = ey + dy * t0; sz = ez + dz * t0;
+                nx = (sx - cx) / Rb; ny = (sy - cy) / Rb; nz = (sz - cz) / Rb;
+            } else {
+                bool got = false;
+                t0 = disc = sx = sy = sz = nx = ny = nz = 0.0;
+                for (int k = 0; k < K; ++k) {
+                    if (shA[k] <= 0.004) continue;       // этот кусок уже растворился
+                    const double b = shOX[k] * dx + shOY[k] * dy + shOZ[k] * dz;
+                    const double dd = b * b - shC[k];
+                    if (dd < 0.0) continue;
+                    const double t = -b - std::sqrt(dd);
+                    if (t <= 0.0) continue;
+                    if (got && t >= t0) continue;        // дальше уже найденного — не спорит
+                    const double hx = ex + dx * t, hy = ey + dy * t, hz = ez + dz * t;
+                    // Нормаль осколка = она же направление точки на ИСХОДНОЙ сфере: клин
+                    // переносится целиком, поэтому и текстура, и освещение едут вместе с ним.
+                    const double onx = (hx - shKX[k]) / Rb;
+                    const double ony = (hy - shKY[k]) / Rb;
+                    const double onz = (hz - shKZ[k]) / Rb;
+                    // Чей это клин? Ближайшее опорное направление; второе по близости даёт
+                    // расстояние до ребра скола (там светится рез).
+                    double d1 = -2.0, d2 = -2.0; int win = -1;
+                    for (int j = 0; j < K; ++j) {
+                        const double dp = onx * shDX[j] + ony * shDY[j] + onz * shDZ[j];
+                        if (dp > d1) { d2 = d1; d1 = dp; win = j; }
+                        else if (dp > d2) { d2 = dp; }
+                    }
+                    if (win != k) continue;              // чужая территория — здесь щель
+                    got = true;
+                    t0 = t; disc = dd; sx = hx; sy = hy; sz = hz;
+                    nx = onx; ny = ony; nz = onz;
+                    shardA = shA[k];
+                    const double ew = (d1 - d2) / 0.13;
+                    edge01 = ew >= 1.0 ? 0.0 : (1.0 - ew);
+                }
+                if (!got) continue;
+            }
 
             // Координата выборки шума во вращающейся системе камня (tumbling вокруг Z).
             const double qx = nx * ca - ny * sa;
@@ -636,7 +727,11 @@ static bool renderRockLit(SDL_Renderer* renderer, const LocalScene& scene,
                                   * std::sin(qy * 17.0 - seed * 1.7)
                                   * std::sin(qz * 16.0 + seed);
             double crater = cf * cf; crater *= crater;   // ^4 — маленькие тёмные ядра
-            const double surf = mott * (1.0 - 0.55 * crater);
+            double surf = mott * (1.0 - 0.55 * crater);
+            // (§22.2) Кромка скола ТЕМНЕЕ поверхности: клин — это кусок оболочки, и без
+            // затемнения по ребру осколки читались бы бумажными лепестками. Тёмный ободок
+            // держится и после того, как рез остынет, — именно он даёт кускам толщину.
+            if (brk > 0.0) surf *= (1.0 - 0.50 * edge01);
 
             double cr = baseR * surf * lightF;
             double cg = baseG * surf * lightF;
@@ -672,11 +767,27 @@ static bool renderRockLit(SDL_Renderer* renderer, const LocalScene& scene,
                 }
             }
 
+            // (§22.2) РАСКАЛЁННЫЙ РЕЗ. Породу режет реактор, и свежий скол светится: эмиссия
+            // сидит на РЁБРАХ клиньев (edge01) и гаснет с heat, поэтому первый кадр раскола —
+            // сетка огненных трещин по целой ещё глыбе, а потом просто разлетающийся холодный
+            // камень. Плюс общая вспышка по всему куску в первый миг (heat*0.5): без неё
+            // разлом читается вяло на тёмной, не освещённой звездой стороне.
+            if (brk > 0.0) {
+                const double glow = edge01 * heat;
+                const double flash = heat * 0.5;
+                cr += glow * 255.0 + baseR * flash;
+                cg += glow * 145.0 + baseG * flash;
+                cb += glow * 45.0  + baseB * flash;
+            }
+
             cr *= fade01; cg *= fade01; cb *= fade01;    // глубинный фейд сцены
             const Uint32 ir = cr > 255.0 ? 255u : (cr < 0.0 ? 0u : (Uint32)cr);
             const Uint32 ig = cg > 255.0 ? 255u : (cg < 0.0 ? 0u : (Uint32)cg);
             const Uint32 ib = cb > 255.0 ? 255u : (cb < 0.0 ? 0u : (Uint32)cb);
-            row[bx - bx0] = 0xFF000000u | (ir << 16) | (ig << 8) | ib;
+            // Альфа осколка: куски растворяются вразнобой (shA), целый камень непрозрачен.
+            const double av = shardA * 255.0;
+            const Uint32 ia = av > 255.0 ? 255u : (av < 0.0 ? 0u : (Uint32)av);
+            row[bx - bx0] = (ia << 24) | (ir << 16) | (ig << 8) | ib;
         }
     }
     SDL_UnlockTexture(tex);
@@ -1203,16 +1314,23 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     //     Орто-карта (§2.7) — по-прежнему ровный диск (br=1.0), побитово не тронута.
     for (size_t i = 0; i < scene.rocks.size(); ++i) {
         const LocalRock& rk = scene.rocks[i];
+        if (rk.gone) continue;                 // (§22) выработанная глыба осыпалась — её нет
         ProjectedPoint p = projectPointWithBasis(rk.x, rk.y, rk.z, winW, winH, view, basis);
         if (view.perspective && p.behind) continue;
         if (p.x < -100 || p.x > winW + 100 || p.y < -100 || p.y > winH + 100) continue;
         if (occ(rk.x, rk.y, rk.z)) continue;   // астероид за звездой — скрыт
         double f = sceneFade(p.depth);
+        // (§22) Ход раскола, 0..1 — общий и для шейдера, и для дешёвого диска-фолбэка.
+        double brk = rk.breakT > 0.0 ? rk.breakT / LocalCfg::ROCK_BREAK_TIME : 0.0;
+        if (brk > 1.0) brk = 1.0;
         int r = std::min(400, std::max(1, radiusPx(rk.radius, p.depth, view)));
         bool drew = false;
         if (view.perspective)
-            drew = renderRockLit(renderer, scene, view, basis, winW, winH, rk, p, f, (unsigned)i);
+            drew = renderRockLit(renderer, scene, view, basis, winW, winH, rk, p, f, (unsigned)i, brk);
         if (!drew) {
+            // Далёкая крапинка/орто-карта: клинья на ней не разглядеть, поэтому раскол
+            // читается тем, чем читается пятно, — оно вспухает и гаснет.
+            if (brk > 0.0) { f *= (1.0 - brk * brk); r = std::max(1, (int)(r * (1.0 + brk * 0.9))); }
             double br = 1.0;                   // фаза только в перспективе (орто не трогаем)
             if (view.perspective && scene.hasStar) {
                 const double lx = -rk.x, ly = -rk.y, lz = -rk.z;                       // к звезде (0,0,0)

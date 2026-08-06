@@ -303,7 +303,7 @@ HUD is a view over simulation state. It must not own gameplay rules.
 
 Current prototype constants:
 
-- `STAR_COUNT = 10000`;
+- `STAR_COUNT = 8192` (one number: both the world size and the density denominator; see master_prompt §22.3 — all-pairs routing makes the cost quadratic);
 - `RESOURCE_TYPES = 118`;
 - faction count is derived from star count and currently capped small;
 - trader/military/colonist counts are derived from star count and currently capped for the SDL prototype.
