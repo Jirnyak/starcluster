@@ -4018,7 +4018,6 @@ void Game::init(size_t num_stars) {
 
     seedAnomalies();
     pushNews("Welcome, Captain. Trade, mine, and grow your fleet.", 0);
-    pushNews("Press M in a system to mine ore, then sell it for credits.", 0);
 
     resizeFactionKnowledge();
     for (size_t factionIndex = 0; factionIndex < factions.size(); ++factionIndex) {

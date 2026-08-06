@@ -267,7 +267,6 @@ const Entry WORDS[] = {
     {"YES", "ДА"},
     {"DONE", "ГОТОВО"},
     {"OK", "ОК"},
-    {"AUTO", "АВТО"},
     {"MAX", "МАКС"},
     {"OPTIMAL", "ОПТИМУМ"},
     {"OPTIMUM", "ОПТИМУМ"},
@@ -408,7 +407,6 @@ const Entry WORDS[] = {
 
     // ---------------- подсказки-действия ----------------
     {"FLY THE SYSTEM: PRESS L", "ЛЕТАТЬ В СИСТЕМЕ: L"},
-    {"MINE ORE: DOCK + PRESS M", "ДОБЫЧА РУДЫ: СТЫКОВКА + M"},
     {"REPAIR HULL: DOCK + PRESS J", "РЕМОНТ КОРПУСА: СТЫКОВКА + J"},
     {"SCAN ANOMALY: PRESS K", "СКАН АНОМАЛИИ: K"},
     {"UPGRADE: SHIPYARD", "УЛУЧШЕНИЕ: ВЕРФЬ"},

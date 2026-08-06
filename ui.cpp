@@ -28,7 +28,6 @@ struct TradeLayout {
     SDL_Rect buy = {0, 0, 0, 0};
     SDL_Rect sell = {0, 0, 0, 0};
     SDL_Rect sellAll = {0, 0, 0, 0};
-    SDL_Rect autoTrade = {0, 0, 0, 0};
     SDL_Rect refuel = {0, 0, 0, 0};
     SDL_Rect hold = {0, 0, 0, 0};
 };
@@ -211,10 +210,9 @@ TradeLayout tradeLayoutForWindow(const Window& window) {
     // только без выбора элемента. Иначе конец рейса превращается в перебор
     // таблицы по буквам ради того, чтобы вспомнить, что вообще лежит в трюме.
     layout.sellAll = {bx, layout.tableY + 72, buttonW, 28};
-    layout.autoTrade = {bx, layout.tableY + 108, buttonW, 28};
-    layout.refuel = {bx, layout.tableY + 144, buttonW, 28};
+    layout.refuel = {bx, layout.tableY + 108, buttonW, 28};
     // Ручной перелив живёт в окне HOLD: там видны обе ёмкости и их состав.
-    layout.hold = {bx, layout.tableY + 180, buttonW, 28};
+    layout.hold = {bx, layout.tableY + 144, buttonW, 28};
     return layout;
 }
 
@@ -1299,13 +1297,6 @@ bool handleTradeWindowMouseDown(WindowState& state, Game& game, const Window& wi
     if (contains(layout.sellAll, mouseX, mouseY)) {
         if (liveMarket && game.agentSellAllCargo(game.playerAgent) > 0) {
             selection.agent = game.playerAgent;
-        }
-        return true;
-    }
-    if (contains(layout.autoTrade, mouseX, mouseY)) {
-        if (liveMarket && game.agentAutoTrade(game.playerAgent)) {
-            selection.agent = game.playerAgent;
-            selection.followAgent = true;
         }
         return true;
     }
@@ -2666,7 +2657,6 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     drawButton(renderer, layout.sell, freeMarket ? "GIVE" : "SELL", P.amber, liveMarket);
     drawButton(renderer, layout.sellAll, freeMarket ? "GIVE ALL" : "SELL ALL", P.amber,
                liveMarket && hasCargo);
-    drawButton(renderer, layout.autoTrade, "AUTO", P.cyan, liveMarket);
     drawButton(renderer, layout.refuel, freeMarket ? "FILL FUEL+PROP" : "BUY FUEL+PROP", P.amber, liveMarket);
     drawButton(renderer, layout.hold, "HOLD / TANKS", P.cyan, true);
 
@@ -3044,7 +3034,7 @@ static SDL_Color hullColor(double frac) {
 }
 
 static void drawShipTechPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w) {
-    panel(renderer, x, y, w, 120);
+    panel(renderer, x, y, w, 106);
     drawText(renderer, x + 10, y + 9, "SHIP SYSTEMS", P.cyan, 1);
 
     char line[160];
@@ -3060,21 +3050,15 @@ static void drawShipTechPanel(SDL_Renderer* renderer, const Game& game, int x, i
     std::snprintf(line, sizeof(line), "%.0F/%.0F", hull, hullMax);
     drawText(renderer, x + w - 66, y + 26, line, P.text, 1);
 
-    if (game.playerMining) {
-        const char* nm = (game.miningStar >= 0 && game.miningStar < int(game.cluster.stars.size()))
-            ? game.cluster.stars[game.miningStar].name.c_str() : "-";
-        std::snprintf(line, sizeof(line), "MINING @ %s  +%.0F", nm, game.miningYieldAccum);
-        drawText(renderer, x + 10, y + 40, line, P.green, 1);
-    } else {
-        drawText(renderer, x + 10, y + 40, "MINING OFF  (DOCK + M)", P.dim, 1);
-    }
-
+    // Строки про добычу здесь не место: бурение живёт в локальном полёте и там
+    // же себя и показывает (`MINING … GRADE …` над камнем). В обзоре скопления
+    // это была вечная «ДОБЫЧА ВЫКЛ» — подсказка о клавише, которая тут не нужна.
     const double threshold = 100.0 + game.tech.cores * 40.0;
     const double rprog = clamp01(threshold > 0.0 ? game.tech.research / threshold : 0.0);
     std::snprintf(line, sizeof(line), "CORES %d", game.tech.cores);
-    drawText(renderer, x + 10, y + 54, line, P.amber, 1);
-    drawText(renderer, x + 92, y + 54, "RSCH", P.dim, 1);
-    bar(renderer, x + 128, y + 53, w - 138, 7, rprog, P.cyan);
+    drawText(renderer, x + 10, y + 40, line, P.amber, 1);
+    drawText(renderer, x + 92, y + 40, "RSCH", P.dim, 1);
+    bar(renderer, x + 128, y + 39, w - 138, 7, rprog, P.cyan);
 
     const char* codes[7] = {"IN", "CH", "MA", "TA", "KI", "SE", "LU"};
     const double vals[7] = {game.tech.intellect, game.tech.charisma, game.tech.materials,
@@ -3084,7 +3068,7 @@ static void drawShipTechPanel(SDL_Renderer* renderer, const Game& game, int x, i
         char cell[24];
         std::snprintf(cell, sizeof(cell), "%s%.2F", codes[i], vals[i]);
         const SDL_Color cc = vals[i] > 1.0001 ? P.green : P.dim;
-        drawText(renderer, x + 10 + col * 78, y + 72 + rowi * 12, cell, cc, 1);
+        drawText(renderer, x + 10 + col * 78, y + 58 + rowi * 12, cell, cc, 1);
     }
 }
 
@@ -3098,7 +3082,6 @@ static void drawObjectivesPanel(SDL_Renderer* renderer, const Game& game, int x,
         // Локальный полёт — самая зрелищная часть игры и при этом дальше всего
         // от глаз новичка: без явной цели о клавише L никто не узнаёт.
         objs.push_back({"FLY THE SYSTEM: PRESS L", game.everEnteredLocal});
-        objs.push_back({"MINE ORE: DOCK + PRESS M", game.miningYieldAccum > 0.0 || game.playerMining});
         objs.push_back({"UPGRADE: SHIPYARD (U)", !sh.modules.empty()});
         objs.push_back({"RESEARCH A CHROMOCORE", game.tech.cores > 0});
         bool anomalyKnown = false;
@@ -3207,7 +3190,7 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
     }
 
     drawShipTechPanel(renderer, game, 12, y, leftW);
-    y += 130;
+    y += 116;
 
     drawStarPanel(renderer, game, selection.star, selection.element, 12, y, leftW);
     y += 160;
