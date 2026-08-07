@@ -19,7 +19,7 @@ namespace {
 const int SCREEN_W = 1440;
 const int SCREEN_H = 900;
 
-void shot(const char* name, Game& game, UI::WindowState& ui, const UI::HudSelection& sel) {
+void shotImpl(const char* name, Game& game, UI::WindowState& ui, const UI::HudSelection& sel, bool novel) {
     SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, SCREEN_W, SCREEN_H, 32, SDL_PIXELFORMAT_RGB888);
     SDL_Renderer* r = SDL_CreateSoftwareRenderer(surf);
     SDL_SetRenderDrawColor(r, 5, 8, 16, 255);
@@ -27,12 +27,23 @@ void shot(const char* name, Game& game, UI::WindowState& ui, const UI::HudSelect
     UI::updateExchangeBoard(ui, game);
     UI::drawHud(r, game, SCREEN_W, SCREEN_H, sel);
     UI::drawWindows(r, game, SCREEN_W, SCREEN_H, sel, ui);
+    // Портрет Тимертии не грузим: он рисуется поверх правого края и к раскладке
+    // текста отношения не имеет, а без окна SDL картинку неоткуда взять.
+    if (novel) UI::drawVisualNovel(r, ui, SCREEN_W, SCREEN_H, NULL);
     SDL_RenderPresent(r);
     const std::string path = std::string("uishot_") + name + ".bmp";
     SDL_SaveBMP(surf, path.c_str());
     std::printf("shot: %s\n", path.c_str());
     SDL_DestroyRenderer(r);
     SDL_FreeSurface(surf);
+}
+
+void shot(const char* name, Game& game, UI::WindowState& ui, const UI::HudSelection& sel) {
+    shotImpl(name, game, ui, sel, false);
+}
+
+void vnShot(const char* name, Game& game, UI::WindowState& ui, const UI::HudSelection& sel) {
+    shotImpl(name, game, ui, sel, true);
 }
 
 }  // namespace
@@ -138,6 +149,54 @@ int main(int argc, char** argv) {
         UI::WindowState ui;
         UI::openTransactionsWindow(ui, SCREEN_W, SCREEN_H);
         shot((std::string("log_") + tag).c_str(), game, ui, sel);
+    }
+    {
+        // Вступительная новелла Тимертии. Коробка диалога — фиксированные 150 px:
+        // текст начинается на +60 и живёт в пяти строках по 16 px. Русская реплика
+        // длиннее английской, поэтому каждый шаг прогоняется и меряется; на экран
+        // сохраняется самый длинный — тот, который сломается первым.
+        // Меряем по УЗКОМУ окну, а не по снимаемому: на 1440 px в строку влезает
+        // 113 символов и не переполнится ничего, а игра запускается и в 960.
+        const int NARROW_W = 960;
+        const int maxChars = (NARROW_W - 40 - 40) / 12;
+        const int maxLines = 5;
+        int worstStep = 0, worstLines = 0;
+        {
+            UI::WindowState ui;
+            ui.vnState.active = true;
+            UI::updateVisualNovel(ui, game, 0.0, SCREEN_W, SCREEN_H);
+            for (int guard = 0; guard < 400 && ui.vnState.active; ++guard) {
+                const int step = ui.vnState.tutorialStep;
+                const std::string wrapped = UI::wrapText(ui.vnState.targetText, maxChars);
+                int lines = 1;
+                for (size_t i = 0; i < wrapped.size(); ++i) {
+                    if (wrapped[i] == '\n') ++lines;
+                }
+                if (lines > worstLines) { worstLines = lines; worstStep = step; }
+                if (lines > maxLines) std::printf("VN OVERFLOW: step %d takes %d lines\n", step, lines);
+                UI::advanceVisualNovel(ui, game, SCREEN_W, SCREEN_H);  // дописать реплику
+                UI::advanceVisualNovel(ui, game, SCREEN_W, SCREEN_H);  // следующий шаг
+            }
+        }
+        std::printf("vn: worst step %d, %d/%d lines\n", worstStep, worstLines, maxLines);
+
+        // Два снимка: самая длинная реплика (проверка коробки) и топливный шаг —
+        // там новелла САМА открывает окно ТРЮМ/БАКИ, и видно, не легла ли коробка
+        // диалога поверх того самого окна, о котором Тимертия рассказывает.
+        const int VN_FUEL_STEP = 16;   // ручки ТЯГА и КРЕЙСЕР
+        const int shots[2] = {worstStep, VN_FUEL_STEP};
+        const char* names[2] = {"vn_", "vnfuel_"};
+        for (int s = 0; s < 2; ++s) {
+            UI::WindowState ui;
+            ui.vnState.active = true;
+            UI::updateVisualNovel(ui, game, 0.0, SCREEN_W, SCREEN_H);
+            while (ui.vnState.active && ui.vnState.tutorialStep < shots[s]) {
+                UI::advanceVisualNovel(ui, game, SCREEN_W, SCREEN_H);
+                UI::advanceVisualNovel(ui, game, SCREEN_W, SCREEN_H);
+            }
+            UI::advanceVisualNovel(ui, game, SCREEN_W, SCREEN_H);  // машинка до конца строки
+            vnShot((std::string(names[s]) + tag).c_str(), game, ui, sel);
+        }
     }
     {
         UI::WindowState ui;

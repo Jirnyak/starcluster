@@ -107,6 +107,9 @@ void drawAgentPanel(SDL_Renderer* renderer, const Game& game, int agentIndex, in
 void drawFactionPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w);
 // Карточка управления по центру экрана: F1 в игре и финальный экран оболочки.
 void drawControlsCard(SDL_Renderer* renderer, int screenW, int screenH);
+// Перенос по словам. Наружу вынесен ради скриншот-харнеса: он меряет, во
+// сколько строк ложится реплика Тимертии, — коробка диалога держит только пять.
+std::string wrapText(const std::string& text, int maxChars);
 bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH);
 void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, int screenH);
 void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int screenW, int screenH, SDL_Texture* tex);

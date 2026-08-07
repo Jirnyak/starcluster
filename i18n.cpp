@@ -73,6 +73,8 @@ const Entry EXACT[] = {
     {"Congratulations on obtaining your trading licence!",
      "Поздравляю с получением торговой лицензии!"},
     {"You can view your balance here.", "Твой баланс - вот здесь."},
+    {"The licence is a lease, not a gift. The banks audit it every period: pay the QUOTA out of your tariff or the terminals go dark. That counter is the real clock of your life here.",
+     "Лицензия - это аренда, а не подарок. Раз в период банки её проверяют: плати КВОТУ из тарифа, иначе терминалы погаснут. Этот счётчик - настоящие часы твоей жизни здесь."},
     {"You own 1 space ship unit for now.", "Пока у тебя один корабль."},
     {"My subagents will monitor its system states here.",
      "Мои субагенты будут следить за его системами здесь."},
@@ -87,18 +89,51 @@ const Entry EXACT[] = {
     {"The local model suggests you buy %s.", "Местная модель советует купить: %s."},
     {"We also have insight that the best place to sell it right now is %s. Remember that name, Master: %s!",
      "Есть данные: лучше всего сбыть это сейчас в системе %s. Запомни это имя, хозяин: %s!"},
+    // Топливный блок (§12): термины взяты ровно те, что подписаны в окне
+    // ТРЮМ/БАКИ — БУНКЕР, ТРЮМ, БАК, ТЯГА, КРЕЙСЕР, ОПТИМУМ. Иначе игрок
+    // прочитает объяснение и не найдёт в окне того, о чём ему рассказали.
+    {"Nothing crosses the void for free, though. This is the hold: BUNKER on the left, CARGO in the middle, TANK on the right.",
+     "Только пустота даром никого не пропускает. Вот твои ёмкости: слева БУНКЕР, посередине ТРЮМ, справа БАК."},
+    {"Fuel in the bunker is what BURNS. Propellant in the tank is what is THROWN. The drive spends the energy of the fuel to hurl the propellant astern - and only thrown mass moves a hull.",
+     "Топливо в бункере - то, что ГОРИТ. Рабочее тело в баке - то, что ВЫБРАСЫВАЕТСЯ. Двигатель тратит энергию топлива, чтобы швырнуть рабочее тело назад: корпус двигает только выброшенная масса."},
+    {"In port the short answer is the BUY FUEL+PROP button on the market window: I will choose sane elements and fill both for you.",
+     "В порту короткий путь - кнопка КУПИТЬ ТОПЛ+РАБ.ТЕЛО в окне рынка: я сама подберу разумные элементы и залью обе ёмкости."},
+    {"The long answer is these arrows. Buy any element into the cargo, then pour it left into the bunker or right into the tank. Light elements throw best, energetic ones burn best.",
+     "Длинный путь - вот эти стрелки. Купи любой элемент в трюм, а потом перелей его влево в бункер или вправо в бак. Лёгкие элементы лучше бросать, энергичные - жечь."},
+    {"THROTTLE decides what you spend: to the left the drive throws more propellant and spares fuel, to the right it burns fuel hard and spares propellant. CRUISE decides your speed, and speed is paid for out of both.",
+     "Ручка ТЯГА решает, чем ты платишь: влево - двигатель бросает больше рабочего тела и бережёт топливо, вправо - жжёт топливо и бережёт рабочее тело. Ручка КРЕЙСЕР задаёт скорость, а за скорость платят обе ёмкости."},
+    {"Name a destination, then press OPTIMAL and I will set both knobs at local prices. Once you are under way they LOCK: a route is costed by the engine you left port with.",
+     "Назначь цель и нажми ОПТИМУМ - я выставлю обе ручки по здешним ценам. С уходом в рейс они ЗАПИРАЮТСЯ: маршрут считается по тому двигателю, с которым ты покинул порт."},
+    {"Read the tanks before every hop, Master. A hull out of propellant does not drift home, it simply drifts - and if the route is beyond your tanks, the terminal will refuse to plot it at all.",
+     "Смотри на ёмкости перед каждым прыжком, хозяин. Корпус без рабочего тела не дрейфует домой - он просто дрейфует. А если маршрут не по бакам, терминал откажется его прокладывать."},
+
+    // Заказы и репутация (§23, §24).
+    {"Ports also post JOBS: a cargo, a destination, a deadline. Deliver and your name grows; miss the date and it shrinks.",
+     "Ещё порты вывешивают ЗАКАЗЫ: груз, точка назначения, срок. Довезёшь - имя растёт, просрочишь - падает."},
+    {"Weigh every job in credits per year of flight against what a free run would earn on the same road. Nothing else about it matters.",
+     "Меряй любой заказ в кредитах за год полёта и сравнивай со свободным рейсом по той же дороге. Больше в нём ничего не важно."},
+    {"Your name is the ceiling of everything: better standing means heavier jobs offered and more hulls allowed in your fleet.",
+     "Имя - потолок всего: чем выше репутация, тем крупнее предлагают заказы и тем больше корпусов разрешено держать во флоте."},
+
+    {"Press L to fall into the system itself. There you fly the hull by hand, mine rock with M and dock with K - the belts are where cheap matter comes from.",
+     "Нажми L, чтобы провалиться в саму систему. Там корпус ведёшь руками, камень бурится на M, стыковка на K - дешёвое вещество берут в поясах."},
+    {"When the vault allows it, press C and buy a system outright. It pays you rent, berths your fleet, and takes any name you care to write on it.",
+     "Когда касса позволит, нажми C и купи систему целиком. Она платит ренту, даёт стоянку флоту и носит любое имя, какое ты ей напишешь."},
     {"Finally, the new technology of applied color superconductivity has produced novel AI cores.",
      "И последнее: новая технология цветовой сверхпроводимости дала ИИ-кристаллы нового типа."},
     {"They are still prototypes and very rare. Be sure to privatise every one you find.",
      "Это пока прототипы, и они очень редки. Приватизируй каждый, который найдёшь."},
     {"By the way, you can also upgrade your vessel and purchase more trading licenses.",
      "Кстати, корабль можно улучшать, а лицензии - докупать."},
-    {"I am at your service with more insights at any time, Master. [V]",
-     "Я всегда на связи и готова подсказать ещё, хозяин. [V]"},
+    {"F1 lists every control. I am at your service with more insights at any time, Master. [V]",
+     "F1 покажет всё управление. Я всегда на связи и готова подсказать ещё, хозяин. [V]"},
     {"Care for a market report, Master? Local scans show peak supply of %s at %s, and highest demand for %s at %s.",
      "Сводку по рынку, хозяин? Сканы дают пик предложения %s в %s, а высший спрос на %s - в %s."},
     {"no destination set: open a system and press DESTINATION",
      "цель не задана: откройте систему и нажмите НАЗНАЧЕНИЕ"},
+    // Стрелка-указка новеллы. Одной строкой, потому что «TARGET» в одиночку
+    // словарём не переводится, а по-русски здесь нужно «СЮДА», а не «ЦЕЛЬ».
+    {"<-- TARGET", "<-- СЮДА"},
 
     // --- шапка биржевой таблицы ---
     //

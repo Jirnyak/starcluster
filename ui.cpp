@@ -3381,17 +3381,31 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
     }
 }
 
-std::string getTutorialText(const Game& game, int step, int& outArrowTarget, bool& outOpenSystem, bool& outOpenTrade) {
-    outArrowTarget = 0;
-    outOpenSystem = false;
-    outOpenTrade = false;
+// Что реплика Тимертии делает с интерфейсом: куда ткнуть стрелкой и какое окно
+// раскрыть под руку игроку. Раньше это были три out-параметра подряд; топливный
+// блок добавил четвёртое окно, и список параметров перестал читаться.
+struct TutorialCue {
+    int arrow = 0;                              // см. таблицу координат в drawVisualNovel; 0 — без стрелки
+    bool openWindow = false;
+    WindowKind window = WindowKind::SystemInfo; // значимо только при openWindow
+};
+
+// Последний шаг вступительной новеллы. Дальше tutorialCompleted, и Тимертия
+// говорит только по делу (шаг 100 — сводка по новой системе).
+const int TUTORIAL_LAST_STEP = 27;
+
+std::string getTutorialText(const Game& game, int step, TutorialCue& cue) {
+    cue = TutorialCue();
     switch (step) {
         case 0: return I18N::tr("Master, I am Timertia - your AI core Agent.");
         case 1: return I18N::tr("Congratulations on obtaining your trading licence!");
-        case 2: outArrowTarget = 1; return I18N::tr("You can view your balance here.");
-        case 3: return I18N::tr("You own 1 space ship unit for now.");
-        case 4: outArrowTarget = 2; return I18N::tr("My subagents will monitor its system states here.");
-        case 5: {
+        case 2: cue.arrow = 1; return I18N::tr("You can view your balance here.");
+        // Квота — главный таймер партии (§21), и до сих пор новелла о нём молчала:
+        // игрок узнавал про отзыв лицензии только когда терминалы гасли.
+        case 3: cue.arrow = 6; return I18N::tr("The licence is a lease, not a gift. The banks audit it every period: pay the QUOTA out of your tariff or the terminals go dark. That counter is the real clock of your life here.");
+        case 4: return I18N::tr("You own 1 space ship unit for now.");
+        case 5: cue.arrow = 2; return I18N::tr("My subagents will monitor its system states here.");
+        case 6: {
             std::string starName = I18N::tr("Unknown Node");
             if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
                 int starId = game.agents[game.playerAgent].currentStar;
@@ -3399,16 +3413,16 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
                     starName = game.cluster.stars[starId].name;
                 }
             }
-            outArrowTarget = 0;
-            outOpenSystem = true;
+            cue.openWindow = true;
+            cue.window = WindowKind::SystemInfo;
             char buf[256];
             std::snprintf(buf, sizeof(buf), I18N::tr("Your vessel is currently at %s. You can access a model of local star system here.").c_str(), starName.c_str());
             return buf;
         }
-        case 6: outArrowTarget = 0; outOpenTrade = true; return I18N::tr("With your trading licence you can perform HIGH-FREQUENCY BROKERAGE on local market.");
-        case 7: return I18N::tr("A periodic table based on standard supersymmetrical model is common CONVENTION of interstellar market.");
-        case 8: return I18N::tr("NASH EQUILIBRIUM proves it is best to buy on supply and sell on demand.");
-        case 9: {
+        case 7: cue.openWindow = true; cue.window = WindowKind::Trade; return I18N::tr("With your trading licence you can perform HIGH-FREQUENCY BROKERAGE on local market.");
+        case 8: return I18N::tr("A periodic table based on standard supersymmetrical model is common CONVENTION of interstellar market.");
+        case 9: return I18N::tr("NASH EQUILIBRIUM proves it is best to buy on supply and sell on demand.");
+        case 10: {
             std::string element = I18N::tr("isotopes");
             if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
                 int starId = game.agents[game.playerAgent].currentStar;
@@ -3432,7 +3446,7 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
             std::snprintf(buf, sizeof(buf), I18N::tr("The local model suggests you buy %s.").c_str(), element.c_str());
             return buf;
         }
-        case 10: {
+        case 11: {
             std::string starName = I18N::tr("an adjacent node");
             if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
                 int starId = game.agents[game.playerAgent].currentStar;
@@ -3474,10 +3488,32 @@ std::string getTutorialText(const Game& game, int step, int& outArrowTarget, boo
             std::snprintf(buf, sizeof(buf), I18N::tr("We also have insight that the best place to sell it right now is %s. Remember that name, Master: %s!").c_str(), starName.c_str(), starName.c_str());
             return buf;
         }
-        case 11: return I18N::tr("By the way, you can also upgrade your vessel and purchase more trading licenses.");
-        case 12: return I18N::tr("Finally, the new technology of applied color superconductivity has produced novel AI cores.");
-        case 13: outArrowTarget = 0; return I18N::tr("They are still prototypes and very rare. Be sure to privatise every one you find.");
-        case 14: return I18N::tr("I am at your service with more insights at any time, Master. [V]");
+        // --- Топливный блок (§12) ---------------------------------------------
+        // Двигательная модель — самая дорогая для новичка часть игры: маршрут
+        // отказывается строиться, а почему — нигде не сказано. Поэтому окно
+        // ТРЮМ/БАКИ открывается прямо здесь, как система и рынок выше.
+        case 12: cue.openWindow = true; cue.window = WindowKind::Cargo;
+            return I18N::tr("Nothing crosses the void for free, though. This is the hold: BUNKER on the left, CARGO in the middle, TANK on the right.");
+        case 13: return I18N::tr("Fuel in the bunker is what BURNS. Propellant in the tank is what is THROWN. The drive spends the energy of the fuel to hurl the propellant astern - and only thrown mass moves a hull.");
+        case 14: return I18N::tr("In port the short answer is the BUY FUEL+PROP button on the market window: I will choose sane elements and fill both for you.");
+        case 15: return I18N::tr("The long answer is these arrows. Buy any element into the cargo, then pour it left into the bunker or right into the tank. Light elements throw best, energetic ones burn best.");
+        case 16: return I18N::tr("THROTTLE decides what you spend: to the left the drive throws more propellant and spares fuel, to the right it burns fuel hard and spares propellant. CRUISE decides your speed, and speed is paid for out of both.");
+        case 17: return I18N::tr("Name a destination, then press OPTIMAL and I will set both knobs at local prices. Once you are under way they LOCK: a route is costed by the engine you left port with.");
+        case 18: return I18N::tr("Read the tanks before every hop, Master. A hull out of propellant does not drift home, it simply drifts - and if the route is beyond your tanks, the terminal will refuse to plot it at all.");
+
+        // --- Заказы и репутация (§23, §24) ------------------------------------
+        case 19: cue.openWindow = true; cue.window = WindowKind::Contracts;
+            return I18N::tr("Ports also post JOBS: a cargo, a destination, a deadline. Deliver and your name grows; miss the date and it shrinks.");
+        case 20: return I18N::tr("Weigh every job in credits per year of flight against what a free run would earn on the same road. Nothing else about it matters.");
+        case 21: return I18N::tr("Your name is the ceiling of everything: better standing means heavier jobs offered and more hulls allowed in your fleet.");
+
+        // --- Что ещё есть в игре ----------------------------------------------
+        case 22: return I18N::tr("Press L to fall into the system itself. There you fly the hull by hand, mine rock with M and dock with K - the belts are where cheap matter comes from.");
+        case 23: return I18N::tr("By the way, you can also upgrade your vessel and purchase more trading licenses.");
+        case 24: return I18N::tr("When the vault allows it, press C and buy a system outright. It pays you rent, berths your fleet, and takes any name you care to write on it.");
+        case 25: return I18N::tr("Finally, the new technology of applied color superconductivity has produced novel AI cores.");
+        case 26: return I18N::tr("They are still prototypes and very rare. Be sure to privatise every one you find.");
+        case 27: return I18N::tr("F1 lists every control. I am at your service with more insights at any time, Master. [V]");
         case 100: {
             std::string supplyStr = I18N::tr("none");
             std::string demandStr = I18N::tr("none");
@@ -3552,19 +3588,24 @@ bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH) {
     } else {
         if (!vn.tutorialCompleted) {
             vn.tutorialStep++;
-            if (vn.tutorialStep > 14) {
+            if (vn.tutorialStep > TUTORIAL_LAST_STEP) {
                 vn.tutorialCompleted = true;
                 vn.active = false;
             } else {
-                bool openSystem = false;
-                bool openTrade = false;
-                vn.targetText = getTutorialText(game, vn.tutorialStep, vn.arrowTarget, openSystem, openTrade);
+                TutorialCue cue;
+                vn.targetText = getTutorialText(game, vn.tutorialStep, cue);
+                vn.arrowTarget = cue.arrow;
                 vn.textProgress = 0.0f;
-                if (openSystem && game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
-                    openSystemWindow(state, game.agents[game.playerAgent].currentStar, winW, winH);
-                }
-                if (openTrade && game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
-                    openTradeWindow(state, game.agents[game.playerAgent].currentStar, winW, winH);
+                if (cue.openWindow && game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
+                    const int star = game.agents[game.playerAgent].currentStar;
+                    // Окно раскрывается ровно под ту реплику, которая о нём говорит:
+                    // рассказывать про бункер и бак, пока их не видно, бесполезно.
+                    switch (cue.window) {
+                        case WindowKind::Trade:     openTradeWindow(state, star, winW, winH); break;
+                        case WindowKind::Cargo:     openCargoWindow(state, star, winW, winH); break;
+                        case WindowKind::Contracts: openContractsWindow(state, star, winW, winH); break;
+                        default:                    openSystemWindow(state, star, winW, winH); break;
+                    }
                 }
             }
         } else {
@@ -3584,8 +3625,9 @@ void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, i
             if (currentStar >= 0 && vn.visitedSystems.find(currentStar) == vn.visitedSystems.end()) {
                 vn.visitedSystems.insert(currentStar);
                 vn.tutorialStep = 100;
-                bool dummySys, dummyTrade;
-                vn.targetText = getTutorialText(game, 100, vn.arrowTarget, dummySys, dummyTrade);
+                TutorialCue cue;
+                vn.targetText = getTutorialText(game, 100, cue);
+                vn.arrowTarget = cue.arrow;
                 vn.textProgress = 0.0f;
                 vn.currentText = "";
                 vn.active = true;
@@ -3593,8 +3635,9 @@ void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, i
         }
     } else {
         if (vn.targetText.empty() && vn.tutorialStep == 0) {
-            bool dummySys = false, dummyTrade = false;
-            vn.targetText = getTutorialText(game, vn.tutorialStep, vn.arrowTarget, dummySys, dummyTrade);
+            TutorialCue cue;
+            vn.targetText = getTutorialText(game, vn.tutorialStep, cue);
+            vn.arrowTarget = cue.arrow;
         }
     }
     
@@ -3773,12 +3816,15 @@ void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int scree
     std::string wrapped = wrapText(state.vnState.currentText, maxChars);
     drawText(renderer, boxX + 20, boxY + 60, wrapped, {214, 228, 238, 255}, 2);
     
+    // Координаты привязаны к левой колонке HUD (см. drawHud): панель СТАТУС
+    // ИГРОКА стоит на y=84, строка квоты внутри неё — на y+45.
     int ax = 0, ay = 0;
     if (state.vnState.arrowTarget == 1) { ax = 350; ay = 94; }
     else if (state.vnState.arrowTarget == 2) { ax = 350; ay = 148; }
     else if (state.vnState.arrowTarget == 3) { ax = 350; ay = 278; }
     else if (state.vnState.arrowTarget == 4) { ax = screenW / 2 + 150; ay = 100; }
     else if (state.vnState.arrowTarget == 5) { ax = 350; ay = 250; }
+    else if (state.vnState.arrowTarget == 6) { ax = 350; ay = 126; }
     
     if (ax > 0 && ay > 0) {
         if ((SDL_GetTicks() / 300) % 2 == 0) {
