@@ -1,0 +1,69 @@
+apply plugin: 'com.android.application'
+
+// Ассеты не лежат в проекте: они в корне репозитория, и класть весь корень в apk
+// нельзя (там гигабайты сборок и скриншотов). Копируем ровно то, что игре нужно.
+// Список ДОЛЖЕН совпадать с ASSETS в android/support/android_support.cpp —
+// gradle кладёт файл в apk, а распаковщик достаёт его по имени.
+def gameRoot = file('../..')
+def stagedAssets = layout.buildDirectory.dir('starcluster-assets')
+
+task stageAssets(type: Copy) {
+    into stagedAssets
+    from(gameRoot) { include 'timertia.png' }
+    from(gameRoot) { include 'comic/slide*.png' }
+    from(gameRoot) { include 'music/processed/*.mp3' }
+}
+
+android {
+    namespace "org.starcluster.game"
+    compileSdkVersion 34
+    // Прибито гвоздями к тому, что ставит setup_toolchain.sh: иначе AGP молча
+    // возьмёт свою версию по умолчанию, и сборка упадёт на отсутствующем NDK.
+    ndkVersion "26.1.10909125"
+    defaultConfig {
+        applicationId "org.starcluster.game"
+        minSdkVersion 21
+        targetSdkVersion 34
+        versionCode 1
+        versionName "1.0"
+        externalNativeBuild {
+            ndkBuild {
+                // SUPPORT_WAVPACK по умолчанию включён, а external/wavpack в
+                // релизном тарболе SDL2_mixer нет (только download.sh). Гасим:
+                // mp3/ogg/flac играются встроенными декодерами.
+                arguments "APP_PLATFORM=android-21", "SUPPORT_WAVPACK=false"
+                abiFilters 'arm64-v8a'
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    applicationVariants.all { variant ->
+        tasks["merge${variant.name.capitalize()}Assets"]
+            .dependsOn("externalNativeBuild${variant.name.capitalize()}", stageAssets)
+    }
+    sourceSets.main {
+        jniLibs.srcDir 'libs'
+        assets.srcDirs += stagedAssets
+    }
+    externalNativeBuild {
+        ndkBuild {
+            path 'jni/Android.mk'
+        }
+    }
+    // Музыку сжимать нечем (mp3 уже сжат), а несжатые ассеты SDL читает быстрее.
+    androidResources {
+        noCompress 'mp3'
+    }
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+}

@@ -1,4 +1,9 @@
+// На Android точку входа зовёт Java-активность, и она ищет в библиотеке именно
+// SDL_main — переименование делает SDL_main.h, которого SDL_MAIN_HANDLED его
+// лишает. На десктопе всё наоборот: там мы запускаемся сами.
+#ifndef __ANDROID__
 #define SDL_MAIN_HANDLED
+#endif
 #include "game.h"
 #include "econ.h"
 #include "ui.h"
@@ -7,6 +12,10 @@
 #include "render2d.h"
 #include "shell.h"
 #include "i18n.h"
+#ifdef __ANDROID__
+#include "android_support.h"
+#include <sys/stat.h>
+#endif
 #include <SDL.h>
 #include <SDL_mixer.h>
 #include "stb_image.h"
@@ -57,6 +66,16 @@ const char* SAVE_FILE_NAME = "starcluster.save";
 std::string assetPath(const std::string& relative) {
     static std::string base;
     static bool baseResolved = false;
+#ifdef __ANDROID__
+    // На Android «рядом с бинарём» не существует: ассеты лежат внутри apk.
+    // Ищем их там, куда их распаковал AndroidPort::extractAssets(). Проверяем
+    // через stat, а не fopen: сюда приходит и каталог музыки, а не только файлы.
+    if (!AndroidPort::assetRoot().empty()) {
+        const std::string candidate = AndroidPort::assetRoot() + relative;
+        struct stat st;
+        if (stat(candidate.c_str(), &st) == 0) return candidate;
+    }
+#endif
     if (!baseResolved) {
         baseResolved = true;
         if (char* p = SDL_GetBasePath()) {
@@ -89,6 +108,17 @@ std::string savePath() {
         }
     }
     return path;
+}
+
+// Состояние клавиатуры для опроса УДЕРЖАНИЯ (полёт, вращение камеры). Везде,
+// кроме Android, это ровно SDL_GetKeyboardState; на Android поверх подмешаны
+// залипшие нажатия с экранной клавиатуры — см. android_support.h.
+const Uint8* gameKeyboardState() {
+#ifdef __ANDROID__
+    return AndroidPort::keyboardState();
+#else
+    return SDL_GetKeyboardState(nullptr);
+#endif
 }
 
 double clampDouble(double value, double lo, double hi) {
@@ -463,6 +493,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+#ifdef __ANDROID__
+    // Строго ДО первого assetPath(): распаковка задаёт корень, в котором он ищет.
+    AndroidPort::extractAssets();
+#endif
+
     int winW = 1200;
     int winH = 900;
     SDL_Window* window = SDL_CreateWindow("Starcluster", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, winW, winH, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
@@ -483,7 +518,15 @@ int main(int argc, char** argv) {
         return 1;
     }
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    
+
+#ifdef __ANDROID__
+    // Весь ввод игры — клавиатура (38 хоткеев). Физической на телефоне нет,
+    // поэтому поднимаем системную экранную и держим поднятой: она же и есть
+    // управление. SDL сам превращает набранные символы в SDL_KEYDOWN со
+    // скан-кодами, так что игровые привязки работают как есть.
+    SDL_StartTextInput();
+#endif
+
     SDL_Texture* timertiaTex = nullptr;
     int timertiaW, timertiaH, timertiaChannels;
     unsigned char* timertiaData = stbi_load(assetPath("timertia.png").c_str(), &timertiaW, &timertiaH, &timertiaChannels, 4);
@@ -950,6 +993,22 @@ int main(int argc, char** argv) {
                 UI::handleTextInput(ui, e.text.text);
             }
             if (e.type == SDL_KEYDOWN) {
+#ifdef __ANDROID__
+                // Экранная клавиатура шлёт нажатие и отпускание в одном кадре;
+                // полёт опрашивает удержание. Запоминаем нажатие, чтобы оно
+                // «продержалось» четверть секунды (см. AndroidPort::noteKeyDown).
+                AndroidPort::noteKeyDown(e.key.keysym.scancode);
+                // Системная «назад» на телефоне — это ESC игры. Заодно
+                // возвращаем клавиатуру, если игрок смахнул её этим же жестом.
+                if (e.key.keysym.sym == SDLK_AC_BACK) {
+                    if (!SDL_IsTextInputActive()) { SDL_StartTextInput(); continue; }
+                    SDL_Event esc = e;
+                    esc.key.keysym.sym = SDLK_ESCAPE;
+                    esc.key.keysym.scancode = SDL_SCANCODE_ESCAPE;
+                    SDL_PushEvent(&esc);
+                    continue;
+                }
+#endif
                 if (e.key.keysym.sym == SDLK_F1) {
                     showHelp = !showHelp;
                     continue;
@@ -1138,7 +1197,7 @@ int main(int argc, char** argv) {
         }
 
         if (!localScene.active && !ui.tradeAmountEditing) {
-            updateCameraRotation(view, SDL_GetKeyboardState(nullptr), std::min(realDt, MAX_CAMERA_DT_SECONDS));
+            updateCameraRotation(view, gameKeyboardState(), std::min(realDt, MAX_CAMERA_DT_SECONDS));
         }
 
         // Мышь-взгляд (шутер): в кокпите захватываем указатель (relative mode) — курсор скрыт,
@@ -1155,7 +1214,7 @@ int main(int argc, char** argv) {
         const double simYearsPerSecond = BASE_SIM_YEARS_PER_SECOND * simSpeed;
         if (localScene.active) {
             // Локальный режим: собираем ввод и продвигаем сцену; макро-симуляция заморожена.
-            const Uint8* ks = SDL_GetKeyboardState(nullptr);
+            const Uint8* ks = gameKeyboardState();
             LocalInput li;
             li.thrust = ks[SDL_SCANCODE_W] != 0;
             li.brake  = ks[SDL_SCANCODE_S] != 0;

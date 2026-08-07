@@ -157,6 +157,14 @@ SDL_VIDEODRIVER=dummy ./game --smoke
 `0mac_make/Makefile` and `0windows_make/Makefile` are legacy build sketches that
 still reference `uni.cpp`; they are not the current project build path.
 
+### Android
+
+The same sources also build for Android (arm64) through `android/`, which holds a
+gradle project wrapping the root `Makefile` source list in an `Android.mk`. Input
+is the system on-screen keyboard, so the game's keyboard bindings work unchanged;
+touch doubles as mouse for the windowed UI. See `android/README.md` for the build
+steps, the asset-extraction layer, and the list of keys the IME cannot produce.
+
 ## Controls
 
 ### View And Simulation

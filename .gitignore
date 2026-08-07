@@ -51,6 +51,7 @@ SDL2-*.dmg
 /Starcluster-Multiplatform/
 # Собранная папка релиза для игроков (её же кладём в zip).
 /Starcluster/
+/Starcluster 2/
 /starcluster_crossplatform/
 /final_release/
 /final_release_build/
@@ -58,6 +59,17 @@ SDL2-*.dmg
 /downloaded_artifact/
 /starcluster-linux
 /test_rng
+
+# Android-сборка. В git едут только каркас проекта (gradle, манифест, Android.mk)
+# и android/support; исходники SDL, вывод gradle/ndk и путь к SDK — нет.
+/android/deps/
+/android/app/build/
+/android/build/
+/android/.gradle/
+/android/local.properties
+/android/app/jni/SDL
+/android/app/jni/SDL2_mixer
+/android/libs/
 
 # Одноразовые скрипты правки исходников из прошлых сессий (уже применены).
 /patch_*.py

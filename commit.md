@@ -16,6 +16,7 @@ Pushing to the `main` branch triggers the GitHub Actions workflow (`.github/work
 - **macOS**: Installs SDL2 via Homebrew, builds the binary, packages it into a standard `Starcluster.app` bundle, and generates a `.dmg` disk image.
 - **Windows**: Uses MSYS2 and MinGW-w64 to compile a Windows executable, bundles it with `SDL2.dll`, and compresses it into a `.zip` archive.
 - **Linux**: Installs `libsdl2-dev` via APT, compiles the binary, and publishes it as an executable file.
+- **Android**: Fetches the SDL2 and SDL2_mixer release tarballs, builds them from source together with the game via `ndk-build`, and packages a debug-signed arm64 APK. See `android/README.md`.
 
 ## 3. Downloading Launchers
 To access the compiled launchers:

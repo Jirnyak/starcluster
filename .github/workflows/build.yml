@@ -170,8 +170,47 @@ jobs:
           name: Starcluster-Linux
           path: dist/
 
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Fetch SDL sources
+        run: |
+          # Android собирает SDL из ИСХОДНИКОВ (на маке и в Windows берутся
+          # готовые фреймворки/пакеты) — своего SDL в системе там нет.
+          mkdir -p android/deps && cd android/deps
+          curl -LO https://github.com/libsdl-org/SDL/releases/download/release-2.30.10/SDL2-2.30.10.tar.gz
+          curl -LO https://github.com/libsdl-org/SDL_mixer/releases/download/release-2.8.0/SDL2_mixer-2.8.0.tar.gz
+          tar xzf SDL2-2.30.10.tar.gz
+          tar xzf SDL2_mixer-2.8.0.tar.gz
+          cd ..
+          ln -sfn ../../deps/SDL2-2.30.10 app/jni/SDL
+          ln -sfn ../../deps/SDL2_mixer-2.8.0 app/jni/SDL2_mixer
+      - name: Install NDK
+        run: |
+          # Версия прибита в android/app/build.gradle. Ставим ровно её, а не ту,
+          # что случайно оказалась предустановлена на раннере.
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;26.1.10909125"
+      - name: Build APK
+        run: |
+          cd android
+          ./gradlew assembleDebug
+          mkdir -p ../dist-android
+          cp app/build/outputs/apk/debug/app-debug.apk ../dist-android/starcluster-android-arm64.apk
+      - name: Upload Android Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Starcluster-Android
+          path: dist-android/
+
   package-multiplatform:
-    needs: [build-mac, build-windows, build-linux]
+    needs: [build-mac, build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -188,6 +227,9 @@ jobs:
           cp -R all-builds/Starcluster-Linux/. Starcluster-Multiplatform/
           # macOS самодостаточен: ассеты уже внутри .app.
           mv all-builds/Starcluster-macOS/Starcluster.dmg Starcluster-Multiplatform/
+          # Android самодостаточен тем более: ассеты внутри apk, игра
+          # распаковывает их при первом запуске (см. android/README.md).
+          mv all-builds/Starcluster-Android/starcluster-android-arm64.apk Starcluster-Multiplatform/
       - name: Upload Multiplatform Artifact
         uses: actions/upload-artifact@v4
         with:
