@@ -1,6 +1,7 @@
 #include "game.h"
 #include "drive.h"
 #include "econ.h"
+#include "i18n.h"
 #include "modules.h"
 #include <algorithm>
 #include <cctype>
@@ -3423,6 +3424,9 @@ bool Game::loadFromFile(const std::string& path) {
         star.name = loadToken(name);
         star.economyRole = loadToken(role);
     }
+    // Имена пришли из файла, а не из seed (сейв мог быть снят другой сборкой),
+    // поэтому реестр локализации пересобираем по загруженным именам.
+    loaded.cluster.registerNames();
 
     if (!expectTag(in, "MARKETS") || !(in >> count) || count != starCount) {
         lastEvent = "load failed: markets";
@@ -6315,6 +6319,43 @@ bool Game::playerBuySystem() {
     boughtSystems += 1;
     player.lastAction = "bought system";
     lastEvent = "player bought " + star.name;
+    return true;
+}
+
+// Своя система — своё имя. Номер звезды остаётся: он адрес, по которому систему
+// находят в списках и заказах, и трогать его нельзя (§25). Игрок правит только
+// основу, и она сразу идёт в тот же реестр имён, что и сгенерированные, —
+// поэтому «HOME-212» на русском покажется «ХОМЕ-212», а не латиницей посреди
+// кириллической строки.
+bool Game::playerRenameSystem(int starIndex, const std::string& stem) {
+    if (!validStar(*this, starIndex) || !playerOwnsStar(starIndex)) return false;
+    // Стоя в системе, как и всё остальное в окне собственности: империю
+    // облетают, а не переименовывают из списка (§13).
+    if (!playerAtStar(starIndex)) {
+        lastEvent = "rename blocked: dock in the system first";
+        return false;
+    }
+    // Обрезка пробелов по краям: имя из одних пробелов — это пустое имя.
+    size_t from = 0, to = stem.size();
+    while (from < to && (unsigned char)stem[from] <= ' ') ++from;
+    while (to > from && (unsigned char)stem[to - 1] <= ' ') --to;
+    const std::string clean = stem.substr(from, to - from);
+    if (clean.empty()) {
+        lastEvent = "rename blocked: name is empty";
+        return false;
+    }
+
+    ClusterStar& star = cluster.stars[starIndex];
+    const std::string before = star.name;
+    star.name = clean + "-" + std::to_string(starIndex);
+    // Латинское имя читается кириллицей той же таблицей фонем; набранное
+    // кириллицей регистрировать незачем — словарь ключуется латиницей.
+    bool ascii = true;
+    for (size_t i = 0; i < clean.size(); ++i) {
+        if ((unsigned char)clean[i] > 127) { ascii = false; break; }
+    }
+    if (ascii) I18N::registerProperNoun(clean, starNameCyrillic(clean));
+    lastEvent = "renamed " + before + " to " + star.name;
     return true;
 }
 

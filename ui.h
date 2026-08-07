@@ -70,6 +70,10 @@ struct WindowState {
     int draggingId = -1;
     std::string tradeAmount;
     bool tradeAmountEditing = false;
+    // Переименование своей системы (§25): индекс звезды, чьё имя правится
+    // прямо сейчас, и набранная основа. -1 — никто не правится.
+    int renameStar = -1;
+    std::string renameText;
     int confirmBuyShipIndex = -1;
     VisualNovelState vnState;
 };
@@ -93,7 +97,9 @@ bool handleMouseDown(WindowState& state, Game& game, HudSelection& selection, in
 void handleMouseMove(WindowState& state, int screenW, int screenH, int mouseX, int mouseY);
 void handleMouseUp(WindowState& state);
 void handleTextInput(WindowState& state, const char* text);
-bool handleKeyDown(WindowState& state, SDL_Keycode key);
+// Game нужен, потому что Enter в поле имени системы СРАЗУ применяет
+// переименование — иначе клавиатуре пришлось бы возвращать наружу «что нажали».
+bool handleKeyDown(WindowState& state, Game& game, SDL_Keycode key);
 void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH, const HudSelection& selection);
 void drawWindows(SDL_Renderer* renderer, const Game& game, int screenW, int screenH, const HudSelection& selection, const WindowState& state);
 void drawStarPanel(SDL_Renderer* renderer, const Game& game, int starIndex, int elementIndex, int x, int y, int w);

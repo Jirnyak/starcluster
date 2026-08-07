@@ -1,6 +1,8 @@
 #include "i18n.h"
 
+#include <atomic>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -471,6 +473,12 @@ const Entry WORDS[] = {
     {"VS CLUSTER", "ПРОТИВ СКОПЛЕНИЯ"},
     {"FREE MARKET - TAKE AND GIVE AT ZERO", "СВОБОДНЫЙ РЫНОК - БЕРИТЕ И ОТДАВАЙТЕ ПО НУЛЮ"},
     {"COLONY VAULT", "КАЗНА КОЛОНИИ"},
+    // Переименование своей системы (§25). Подсказки уложены в 28 знаков — это
+    // ширина колонки действий в окне собственности.
+    {"SYSTEM NAME", "ИМЯ СИСТЕМЫ"},
+    {"CLICK TO RENAME", "КЛИК - ПЕРЕИМЕНОВАТЬ"},
+    {"RENAME ON SITE ONLY", "ПЕРЕИМЕНОВАТЬ НА МЕСТЕ"},
+    {"ENTER APPLIES / ESC CANCELS", "ВВОД ПРИМЕНИТ / ESC ОТМЕНИТ"},
     {"THE COLONY SPENDS ITS OWN VAULT", "КОЛОНИЯ ТРАТИТ СВОЮ КАЗНУ"},
     {"IDLE - IT WILL START A BUILD WHEN FUNDED", "ПРОСТОЙ - НАЧНЁТ СТРОЙКУ, КОГДА БУДУТ СРЕДСТВА"},
     {"QUEUE EMPTY", "ОЧЕРЕДЬ ПУСТА"},
@@ -846,11 +854,36 @@ Dict& wordDict() {
     return d;
 }
 
+// Имена собственные (основы имён систем). Живут ОТДЕЛЬНО от словаря интерфейса
+// и наполняются на лету — при генерации скопления и при загрузке сейва.
+Dict& properDict() {
+    static Dict d;
+    return d;
+}
+
+// ⚠️ ПОТОКИ. Мир генерируется В ФОНОВОМ ПОТОКЕ (shell.cpp), пока главный рисует
+// комикс и переводит его подписи. Именно фоновый поток регистрирует имена
+// систем, поэтому таблицы — единственное в i18n, что пишется и читается
+// одновременно. Замок берётся один раз на весь разбор строки: translate()
+// зовётся только при промахе кэша, так что на кадр приходится считанные
+// захваты, а не по одному на каждый токен.
+std::mutex& dictMutex() {
+    static std::mutex m;
+    return m;
+}
+
+// Поколение реестра. Кэш переводов у каждого потока свой (иначе ссылка, которую
+// вернул tr, могла бы протухнуть под чужой рукой), и общей чистки у него нет —
+// вместо неё поток сравнивает поколение и чистит СВОЙ кэш. Без этого запись
+// «ЦЕЛЬ: VAREN-417», сделанная до регистрации имени, осталась бы латиницей.
+std::atomic<unsigned> gRegistryGeneration(0);
+
 size_t gMaxPhraseWords = 1;
 
 // Слово — пробег из букв, цифр и `_`. Подчёркивание внутри слова важно: имена
-// звёзд вида `Star_37` должны остаться именами собственными, а не превратиться
-// в «ЗВЕЗДА_37».
+// звёзд из СТАРЫХ сейвов (`Star_37`) должны остаться именами собственными, а не
+// превратиться в «ЗВЕЗДА_37». Нынешние имена (`Varen-417`) переводятся иначе —
+// через реестр имён собственных ниже.
 bool wordByte(char c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
 }
@@ -863,6 +896,18 @@ std::string upperAscii(const std::string& s) {
     return out;
 }
 
+// Сколько «слов» в ключе: разбор оборотов пробует ровно столько токенов подряд.
+size_t wordCount(const std::string& key) {
+    size_t words = 0;
+    bool inWord = false;
+    for (size_t k = 0; k < key.size(); ++k) {
+        const bool w = wordByte(key[k]);
+        if (w && !inWord) ++words;
+        inWord = w;
+    }
+    return words;
+}
+
 void buildDicts() {
     Dict& ex = exactDict();
     if (!ex.empty()) return;
@@ -873,13 +918,7 @@ void buildDicts() {
     for (size_t i = 0; i < sizeof(WORDS) / sizeof(WORDS[0]); ++i) {
         const std::string key = upperAscii(WORDS[i].en);
         wd[key] = WORDS[i].ru;
-        size_t words = 0;
-        bool inWord = false;
-        for (size_t k = 0; k < key.size(); ++k) {
-            const bool w = wordByte(key[k]);
-            if (w && !inWord) ++words;
-            inWord = w;
-        }
+        const size_t words = wordCount(key);
         if (words > gMaxPhraseWords) gMaxPhraseWords = words;
     }
 }
@@ -891,6 +930,9 @@ struct Tok {
 };
 
 std::string translate(const std::string& s) {
+    // Замок на весь разбор: таблицы читаются здесь и пишутся фоновым потоком,
+    // который в этот же момент может регистрировать имена систем.
+    std::lock_guard<std::mutex> guard(dictMutex());
     buildDicts();
 
     // 1. Строка целиком (предложения со знаками препинания, форматы с %s).
@@ -918,6 +960,7 @@ std::string translate(const std::string& s) {
     if (toks.empty()) return s;
 
     const Dict& wd = wordDict();
+    const Dict& pd = properDict();
     std::string out;
     out.reserve(s.size() + s.size() / 2);
     size_t copied = 0;
@@ -940,6 +983,10 @@ std::string translate(const std::string& s) {
             const std::string key = upperAscii(s.substr(from, to - from));
             Dict::const_iterator it = wd.find(key);
             if (it != wd.end()) { bestK = k; bestVal = &it->second; break; }
+            // Имена систем ищутся тем же куском строки: основа «KA'REN» или
+            // «VEL-TARRA» — это два токена, и ключом становится всё между ними.
+            Dict::const_iterator pit = pd.find(key);
+            if (pit != pd.end()) { bestK = k; bestVal = &pit->second; break; }
         }
 
         if (bestVal) {
@@ -968,11 +1015,52 @@ const std::string& tr(const std::string& s) {
     if (gLang == LANG_EN) return s;
     // Кэш: строки с числами меняются каждый кадр, поэтому он растёт. Потолок
     // держим руками — иначе за долгую партию сюда утекут все котировки подряд.
-    static std::unordered_map<std::string, std::string> memo;
+    // Кэш у каждого потока свой: ссылка, которую мы возвращаем, обязана жить,
+    // пока её читают, а чужой поток не должен иметь возможности её выбросить.
+    static thread_local std::unordered_map<std::string, std::string> memo;
+    static thread_local unsigned memoGeneration = 0;
+    const unsigned generation = gRegistryGeneration.load();
+    if (memoGeneration != generation) { memo.clear(); memoGeneration = generation; }
     if (memo.size() > 8192) memo.clear();
     std::unordered_map<std::string, std::string>::iterator it = memo.find(s);
     if (it != memo.end()) return it->second;
     return memo.insert(std::make_pair(s, translate(s))).first->second;
+}
+
+bool isInterfaceWord(const std::string& s) {
+    std::lock_guard<std::mutex> guard(dictMutex());
+    buildDicts();
+    const std::string key = upperAscii(s);
+    return wordDict().count(key) != 0 || exactDict().count(key) != 0;
+}
+
+void registerProperNoun(const std::string& en, const std::string& ru) {
+    std::lock_guard<std::mutex> guard(dictMutex());
+    buildDicts();
+    const std::string key = upperAscii(en);
+    if (key.empty() || ru.empty()) return;
+    // Интерфейс всегда важнее имени: если такое слово уже что-то значит, имя
+    // сюда не пускаем (генератор имён спрашивает isInterfaceWord заранее, так
+    // что до этой ветки доходят только совпадения из старых сейвов).
+    if (wordDict().count(key) != 0) return;
+    Dict& pd = properDict();
+    Dict::iterator it = pd.find(key);
+    if (it != pd.end()) {
+        if (it->second == ru) return;
+        it->second = ru;
+    } else {
+        pd.insert(std::make_pair(key, ru));
+        const size_t words = wordCount(key);
+        if (words > gMaxPhraseWords) gMaxPhraseWords = words;
+    }
+    // Кэши чужих потоков выбросить нельзя — им говорят, что реестр сменился.
+    gRegistryGeneration.fetch_add(1);
+}
+
+void clearProperNouns() {
+    std::lock_guard<std::mutex> guard(dictMutex());
+    properDict().clear();
+    gRegistryGeneration.fetch_add(1);
 }
 
 void loadPreference(const std::string& path) {

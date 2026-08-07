@@ -989,7 +989,7 @@ int main(int argc, char** argv) {
                     titleTick = 11;
                     continue;
                 }
-                if (UI::handleKeyDown(ui, e.key.keysym.sym)) continue;
+                if (UI::handleKeyDown(ui, game, e.key.keysym.sym)) continue;
                 
                 if (e.key.keysym.sym == SDLK_v) {
                     ui.vnState.active = !ui.vnState.active;

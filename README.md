@@ -217,7 +217,12 @@ outer halo:
 - core radius: about 18 light years;
 - deterministic RNG seed for reproducible starts;
 - per-star role, population, industry, habitability, defense, owner, resources,
-  demand bias, resource focus, and demand focus.
+  demand bias, resource focus, and demand focus;
+- a spoken name plus the star number — `Varen-417`. The name is built from
+  syllables (onset + vowel + optional coda) rather than letters, so it is
+  pronounceable in any language, and the same syllable table carries a Cyrillic
+  spelling: in Russian the very same system reads `Варен-417`. Names come from
+  their own hash of `(seed, index)` and never touch the cluster RNG stream.
 
 The current economic roles are:
 

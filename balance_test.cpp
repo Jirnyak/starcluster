@@ -18,6 +18,7 @@
 #include "modules.h"
 #include "drive.h"
 #include "local.h"
+#include "i18n.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -1783,6 +1784,113 @@ void testFleetCapacityGatesBigJobs() {
 
 // Сейв обязан переживать репутацию, тир и журнал — иначе весь грайнд сгорает
 // на первой же загрузке, а журнал (§23) снова становится одноразовым.
+// §25. Имя системы — «Varen-417», а не «Star_417». Проверяется не красота, а
+// три свойства, которые ломаются молча: имя выговариваемо (в каждом слоге есть
+// гласная, буквы не утраиваются), оно детерминировано от зерна (иначе звезда в
+// сейве и в новой партии с тем же зерном звалась бы по-разному) и НЕ совпадает
+// со словом интерфейса (иначе перевод превратит систему Mine в «ШАХТУ-417»).
+void testStarNamesAreNamesNotIndices() {
+    int bad = 0, noVowel = 0, tripled = 0, collided = 0, unstable = 0;
+    size_t longest = 0;
+    std::string worst;
+    for (unsigned seed = 1; seed <= 4; ++seed) {
+        for (size_t i = 0; i < 2048; ++i) {
+            const std::string name = starNameFor(seed, i);
+            if (starNameFor(seed, i) != name) ++unstable;
+            const size_t cut = name.find_last_of('-');
+            if (cut == std::string::npos || name.substr(cut + 1) != std::to_string(i)) { ++bad; continue; }
+            const std::string stem = name.substr(0, cut);
+            if (stem.size() < 3) { ++bad; worst = stem; continue; }
+            if (stem.size() > longest) { longest = stem.size(); worst = stem; }
+            std::string upper;
+            bool vowel = false;
+            for (size_t k = 0; k < stem.size(); ++k) {
+                const char c = stem[k];
+                const char low = (c >= 'A' && c <= 'Z') ? char(c - 'A' + 'a') : c;
+                if (low == 'a' || low == 'e' || low == 'i' || low == 'o' || low == 'u') vowel = true;
+                if (!((low >= 'a' && low <= 'z') || c == '\'')) ++bad;
+                if (k >= 2 && stem[k] == stem[k - 1] && stem[k] == stem[k - 2]) ++tripled;
+                upper += (c >= 'a' && c <= 'z') ? char(c - 'a' + 'A') : c;
+            }
+            if (!vowel) ++noVowel;
+            if (I18N::isInterfaceWord(upper)) { ++collided; worst = stem; }
+        }
+    }
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "8192 имён: битых %d, без гласной %d, с утроенной буквой %d, "
+                  "совпало со словом интерфейса %d, недетерминированных %d; длиннейшая основа %d (%s)",
+                  bad, noVowel, tripled, collided, unstable, int(longest), worst.c_str());
+    check(bad == 0 && noVowel == 0 && tripled == 0 && collided == 0 && unstable == 0 && longest <= 12,
+          "имя системы выговаривается и не спорит с интерфейсом", buf);
+}
+
+// §25. Имя должно говорить по-русски ВЕЗДЕ и переживать сейв. Реестр имён
+// собственных наполняется при генерации скопления, но сейв несёт имена строкой
+// — поэтому после загрузки реестр обязан собраться заново.
+void testStarNamesSpeakRussianAfterLoad() {
+    Game g; buildWorld(g, 7, 8);
+    const std::string path = "balance_name_probe.sav";
+    if (!g.saveToFile(path)) { check(false, "сейв имён: запись", "saveToFile вернул false"); return; }
+    Game loaded;
+    if (!loaded.loadFromFile(path)) { check(false, "сейв имён: чтение", "loadFromFile вернул false"); return; }
+    std::remove(path.c_str());
+
+    int mismatched = 0, latinLeft = 0;
+    const I18N::Lang before = I18N::lang();
+    I18N::setLang(I18N::LANG_RU);
+    std::string sample, sampleRu;
+    for (size_t i = 0; i < loaded.cluster.stars.size() && i < 512; ++i) {
+        const std::string& name = loaded.cluster.stars[i].name;
+        if (name != g.cluster.stars[i].name) ++mismatched;
+        // Перевод целой строки, а не голого имени: имя обязано находиться и
+        // внутри фразы журнала, иначе §14 его не увидит.
+        const std::string line = I18N::tr("DESTINATION: " + name);
+        for (size_t k = 0; k < line.size(); ++k) {
+            const char c = line[k];
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) { ++latinLeft; break; }
+        }
+        if (i == 3) { sample = name; sampleRu = line; }
+    }
+    I18N::setLang(before);
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "512 имён после загрузки: разошлось %d, с латинским огрызком в RU %d; «%s» -> «%s»",
+                  mismatched, latinLeft, sample.c_str(), sampleRu.c_str());
+    check(mismatched == 0 && latinLeft == 0, "имя системы переживает сейв и говорит по-русски", buf);
+}
+
+// §25. Своё имя системе. Проверяется не только успех, но и три отказа: чужую
+// систему не переименовать, из другой системы — тоже, пустое имя не проходит.
+void testPlayerRenamesOwnSystem() {
+    Game g; buildWorld(g, 11, 8);
+    const int here = g.agents[g.playerAgent].currentStar;
+    const int elsewhere = here == 0 ? 1 : 0;
+
+    const bool deniedForeign = !g.playerRenameSystem(here, "Perekat");
+    g.agents[g.playerAgent].money = 1.0e15;
+    const bool bought = g.playerBuySystem();
+    const std::string before = g.cluster.stars[here].name;
+    const bool renamed = g.playerRenameSystem(here, "Perekat");
+    const bool numberKept = g.cluster.stars[here].name == "Perekat-" + std::to_string(here);
+    const bool deniedEmpty = !g.playerRenameSystem(here, "   ");
+    const bool deniedRemote = !g.playerRenameSystem(elsewhere, "Perekat");
+
+    // Новое имя обязано сразу зазвучать по-русски: реестр §25 пополняется тем же
+    // вызовом, что и переименование, иначе имя останется латиницей в кириллице.
+    const I18N::Lang lang = I18N::lang();
+    I18N::setLang(I18N::LANG_RU);
+    const std::string ru = I18N::tr("DESTINATION: " + g.cluster.stars[here].name);
+    I18N::setLang(lang);
+    const bool speaksRussian = ru.find("Перекат") != std::string::npos;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "«%s» -> «%s»; RU «%s»; отказы: чужая=%d, пустое=%d, издалека=%d",
+                  before.c_str(), g.cluster.stars[here].name.c_str(), ru.c_str(),
+                  int(deniedForeign), int(deniedEmpty), int(deniedRemote));
+    check(bought && renamed && numberKept && deniedForeign && deniedEmpty && deniedRemote && speaksRussian,
+          "своя система переименовывается, номер цел", buf);
+}
+
 void testSaveKeepsReputationAndJournal() {
     Game g; buildWorld(g, 42, 60);
     g.resizeFactionReputation();
@@ -1964,6 +2072,9 @@ int main() {
     testReputationUnlocksBiggerJobs();
     testFleetCapacityGatesBigJobs();
     testSaveKeepsReputationAndJournal();
+    testPlayerRenamesOwnSystem();
+    testStarNamesAreNamesNotIndices();
+    testStarNamesSpeakRussianAfterLoad();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;
 }

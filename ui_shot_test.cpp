@@ -91,6 +91,32 @@ int main(int argc, char** argv) {
         shot((std::string(cases[i].name) + "_" + tag).c_str(), game, ui, sel);
     }
     {
+        // Окно собственности снимается ДВАЖДЫ: в списке выше система чужая, и
+        // видна только левая колонка с ценой. Своя система показывает кассу и
+        // поле имени (§25) — то есть ровно те строки, которые могут вылезти.
+        Game owned;
+        owned.init(300);
+        const int mine = owned.agents[owned.playerAgent].currentStar;
+        owned.agents[owned.playerAgent].money = 1.0e15;
+        owned.playerBuySystem();
+        UI::HudSelection osel;
+        osel.star = mine;
+        osel.agent = owned.playerAgent;
+        osel.element = 25;
+        {
+            UI::WindowState ui;
+            UI::openColonyWindow(ui, mine, SCREEN_W, SCREEN_H);
+            shot((std::string("colonyown_") + tag).c_str(), owned, ui, osel);
+        }
+        {
+            UI::WindowState ui;
+            UI::openColonyWindow(ui, mine, SCREEN_W, SCREEN_H);
+            ui.renameStar = mine;
+            ui.renameText = ru ? "\xD0\x94\xD0\xBE\xD0\xBC" : "HOME";  // «Дом»
+            shot((std::string("colonyrename_") + tag).c_str(), owned, ui, osel);
+        }
+    }
+    {
         // Журнал снимается ЗАПОЛНЕННЫМ. Пустой он показывал одну строку «ЖУРНАЛ
         // ПУСТ» и не проверял ничего: длинные русские строки заказов вылезают
         // за рамку только на настоящих записях (§23).

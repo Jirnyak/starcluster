@@ -177,6 +177,7 @@ struct ColonyLayout {
     SDL_Rect deposit = {0, 0, 0, 0};
     SDL_Rect withdraw = {0, 0, 0, 0};
     SDL_Rect withdrawAll = {0, 0, 0, 0};
+    SDL_Rect rename = {0, 0, 0, 0};
     int columnX = 0;
 };
 
@@ -191,6 +192,9 @@ ColonyLayout colonyLayout(const Window& window) {
     layout.deposit = {bx, by + 40, bw, 28};
     layout.withdraw = {bx, by + 74, bw, 28};
     layout.withdrawAll = {bx, by + 108, bw, 28};
+    // Поле имени — под кассой, отдельным ярусом: это единственное действие в
+    // окне, которое ничего не стоит и ничего не двигает, кроме карты игрока.
+    layout.rename = {bx, by + 158, bw, 28};
     return layout;
 }
 
@@ -1366,11 +1370,26 @@ bool handleColonyWindowMouseDown(WindowState& state, Game& game, const Window& w
 
     if (button == SDL_BUTTON_LEFT && contains(layout.amount, mouseX, mouseY)) {
         state.tradeAmountEditing = true;
+        state.renameStar = -1;
         SDL_StartTextInput();
         return true;
     }
     if (state.tradeAmountEditing) {
         state.tradeAmountEditing = false;
+        SDL_StopTextInput();
+    }
+    // Имя правится только у своей системы и только на месте — как и всё
+    // остальное в этом окне.
+    if (button == SDL_BUTTON_LEFT && owned && onSite && contains(layout.rename, mouseX, mouseY)) {
+        const ClusterStar* star = starAt(game, window.star);
+        state.renameStar = window.star;
+        state.renameText = star ? starNameStem(star->name) : std::string();
+        SDL_StartTextInput();
+        return true;
+    }
+    // Клик мимо поля — тихая отмена: набранное имя не применяется само.
+    if (state.renameStar >= 0) {
+        state.renameStar = -1;
         SDL_StopTextInput();
     }
 
@@ -1487,8 +1506,46 @@ void handleMouseUp(WindowState& state) {
     state.draggingId = -1;
 }
 
+namespace {
+
+// Длина строки в БУКВАХ, а не в байтах: имя можно набрать кириллицей, где
+// буква — два байта, и лимит в байтах урезал бы её вдвое.
+size_t glyphCount(const std::string& s) {
+    size_t n = 0;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80) ++n;
+    }
+    return n;
+}
+
+// Стереть последнюю букву целиком — иначе backspace рвёт кириллицу пополам и
+// оставляет в имени битый байт, который дойдёт до сейва.
+void popGlyph(std::string& s) {
+    while (!s.empty()) {
+        const unsigned char c = static_cast<unsigned char>(s[s.size() - 1]);
+        s.erase(s.size() - 1);
+        if ((c & 0xC0) != 0x80) break;
+    }
+}
+
+const size_t NAME_MAX_GLYPHS = 12;
+
+}  // namespace
+
 void handleTextInput(WindowState& state, const char* text) {
-    if (!state.tradeAmountEditing || !text) return;
+    if (!text) return;
+    if (state.renameStar >= 0) {
+        for (const char* p = text; *p; ++p) {
+            const unsigned char ch = static_cast<unsigned char>(*p);
+            // Пробелы и управляющие — мимо: имя системы одно слово. Всё
+            // печатное, включая кириллицу, пропускаем как есть.
+            if (ch <= ' ') continue;
+            if (glyphCount(state.renameText) >= NAME_MAX_GLYPHS && (ch & 0xC0) != 0x80) continue;
+            state.renameText.push_back(char(ch));
+        }
+        return;
+    }
+    if (!state.tradeAmountEditing) return;
     for (const char* p = text; *p; ++p) {
         const char ch = *p;
         if (ch >= '0' && ch <= '9') {
@@ -1499,7 +1556,23 @@ void handleTextInput(WindowState& state, const char* text) {
     }
 }
 
-bool handleKeyDown(WindowState& state, SDL_Keycode key) {
+bool handleKeyDown(WindowState& state, Game& game, SDL_Keycode key) {
+    if (state.renameStar >= 0) {
+        if (key == SDLK_BACKSPACE) { popGlyph(state.renameText); return true; }
+        if (key == SDLK_DELETE) { state.renameText.clear(); return true; }
+        if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
+            game.playerRenameSystem(state.renameStar, state.renameText);
+            state.renameStar = -1;
+            SDL_StopTextInput();
+            return true;
+        }
+        if (key == SDLK_ESCAPE) {
+            state.renameStar = -1;
+            SDL_StopTextInput();
+            return true;
+        }
+        return true;
+    }
     if (!state.tradeAmountEditing) return false;
     if (key == SDLK_BACKSPACE) {
         if (!state.tradeAmount.empty()) state.tradeAmount.pop_back();
@@ -2180,6 +2253,23 @@ void drawColonyWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
     drawButton(renderer, layout.deposit, "DEPOSIT", P.green, onSite && cash > 0.0);
     drawButton(renderer, layout.withdraw, "WITHDRAW", P.amber, onSite && vault > 0.0);
     drawButton(renderer, layout.withdrawAll, "TAKE ALL", P.amber, onSite && vault > 0.0);
+
+    // Имя своей системы. Номер не показываем в поле и не даём править: правится
+    // ОСНОВА, номер приписывается сам (§25).
+    const bool renaming = state.renameStar == window.star && active;
+    drawText(renderer, layout.rename.x, layout.rename.y - 12, "SYSTEM NAME", P.dim, 1);
+    fillRect(renderer, layout.rename.x, layout.rename.y, layout.rename.w, layout.rename.h, {9, 14, 26, 245});
+    strokeRect(renderer, layout.rename.x, layout.rename.y, layout.rename.w, layout.rename.h,
+               renaming ? P.cyan : P.border);
+    const std::string shown = renaming ? state.renameText + "_" : starNameStem(star->name);
+    drawText(renderer, layout.rename.x + 10, layout.rename.y + 10, shown,
+             renaming ? P.text : P.dim, 1);
+    // Подсказка не длиннее колонки: 168 px — это 28 знаков шрифта, и русская
+    // строка обязана уложиться в те же 28 (см. §14 про ширину колонок).
+    drawText(renderer, layout.rename.x, layout.rename.y + 34,
+             renaming ? "ENTER APPLIES / ESC CANCELS"
+                      : (onSite ? "CLICK TO RENAME" : "RENAME ON SITE ONLY"),
+             renaming ? P.cyan : P.dim, 1);
 }
 
 void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& window, const WindowState& state, bool active) {
