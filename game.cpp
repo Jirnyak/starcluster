@@ -1012,7 +1012,13 @@ Ship contractRouteShip(const Agent& agent, const Contract& contract) {
     if (contract.acceptedByAgent < 0 && contractUsesCargo(contract.type) &&
         contract.resource >= 0 && contract.resource < int(elementCount()) && contract.amount > 0.0) {
         routeShip.cargo.clear();
-        routeShip.cargo.emplace_back(elementDefinitions()[contract.resource].symbol, contract.amount);
+        // ⚠️ Больше СВОЕГО трюма этот корабль не повезёт: остальное уедет на
+        // других бортах каравана (§24). Без клампа прогноз крупного заказа
+        // считался бы для корабля с сорокакратным перегрузом — ETA уходила в
+        // бесконечность, и на доске крупный заказ выглядел нелетающим.
+        const double unitMass = std::max(0.001, resourceUnitMassByIndex(contract.resource));
+        const double share = std::min(contract.amount, routeShip.cargoCapacity / unitMass);
+        routeShip.cargo.emplace_back(elementDefinitions()[contract.resource].symbol, share);
     }
     return routeShip;
 }
@@ -1024,11 +1030,69 @@ Contract* activeContractForAgent(Game& game, int agentIndex) {
     return nullptr;
 }
 
+// Штраф за провал (§24). В отличие от успеха (всегда +1) он считается ПО
+// РАЗМЕРУ заказа: `2 * sqrt(масса / базовая масса)`. Корень здесь не украшение,
+// а единственное, что делает шкалу пригодной: масса растёт в 6667 раз от низа
+// к верху, и без него сорванный топовый заказ обнулял бы вообще всё.
+//
+// Замер по формуле: базовый (145 т) −3, крупный (30 000 т) −45, топовый
+// (400 000 т) −163 сданных заказа. Отсюда и вся острота верха лестницы:
+// репутация, которую копил тысячу заказов, ставится на кон каждым рейсом.
+double applyContractFailureReputation(Game& game, const Contract& contract) {
+    if (!validFaction(game, contract.issuerFaction)) return 0.0;
+    const double mass = std::max(JOB_CARGO_BASE, game.contractCargoMass(contract));
+    const double loss = REPUTATION_FAIL_FACTOR * std::sqrt(mass / JOB_CARGO_BASE);
+    game.resizeFactionReputation();
+    double& reputation = game.factionReputation[size_t(contract.issuerFaction)];
+    const double before = reputation;
+    reputation = std::max(0.0, reputation - loss);
+    return before - reputation;
+}
+
+// Надбавка за ДОСРОЧНУЮ сдачу (§24). Считается от доли срока, оставшейся к
+// моменту сдачи: привёз «в ноль времени» — надбавки нет, привёз вдвое быстрее —
+// половина максимума. Гнать становится осмысленно: хороший корпус и точный
+// расчёт маршрута окупаются деньгами, а не только спокойствием.
+double contractEarlyBonus(const Game& game, const Contract& contract) {
+    const double window = contract.deadline - contract.postedTime;
+    if (window <= 0.0) return 0.0;
+    const double leftShare = (contract.deadline - game.time) / window;
+    return JOB_EARLY_BONUS_MAX * std::max(0.0, std::min(1.0, leftShare));
+}
+
 bool payContractReward(Game& game, Contract& contract, Agent& agent, bool emitSignals) {
     if (!activeContract(contract)) return false;
-    const double lateFactor = game.time > contract.deadline ? 0.45 : 1.0;
-    const double payout = contract.reward * lateFactor;
+    const bool late = game.time > contract.deadline;
+    const double lateFactor = late ? CONTRACT_LATE_FACTOR : 1.0;
+    // Просрочка и досрочность взаимоисключающи — одно из двух всегда 0.
+    const double earlyBonus = late ? 0.0 : contractEarlyBonus(game, contract);
+    const double payout = contract.reward * lateFactor * (1.0 + earlyBonus);
     agent.money += payout;
+
+    // Репутация. УСПЕХ ВСЕГДА +1, независимо от размера: единица шкалы — один
+    // сданный заказ, и потолок честно стоит своей тысячи (§24). Асимметрия
+    // живёт на другой стороне — в штрафе за провал, который считается по массе.
+    if (agent.playerControlled && validFaction(game, contract.issuerFaction)) {
+        game.resizeFactionReputation();
+        double& reputation = game.factionReputation[size_t(contract.issuerFaction)];
+        reputation = std::min(REPUTATION_CAP_JOBS, reputation + 1.0);
+    }
+
+    if (agent.playerControlled) {
+        char paid[64];
+        std::snprintf(paid, sizeof(paid), " +%.0F Cr", payout);
+        std::string mark;
+        if (late) {
+            mark = " LATE";
+        } else if (earlyBonus > 0.01) {
+            char early[32];
+            std::snprintf(early, sizeof(early), " EARLY +%.0F%%", earlyBonus * 100.0);
+            mark = early;
+        }
+        game.pushJournal(JournalKind::JobCompleted,
+            game.contractJournalText(contract) + mark + paid, payout, agent.currentStar);
+        game.journalExplained += payout;
+    }
     agent.lastProfit = payout;
     agent.trades += 1;
     agent.lastAction = lateFactor < 1.0 ? "late contract" : std::string("completed ") + contractTypeLabel(contract.type);
@@ -1066,19 +1130,50 @@ int pickFactionOrderTarget(const Game& game, int factionIndex, FactionOrderType 
     return best;
 }
 
-int pickSurplusResource(const Game& game, int originStar) {
+// Что ЦЕЛЬ реально просит, а отправитель может дать (§24).
+//
+// ⚠️ Это замена прежнего `pickSurplusResource`, и замена принципиальная. Тот
+// выбирал груз по формуле `(1.18 - давление) * sqrt(запас) / удельная масса` —
+// то есть делил на массу и потому почти всегда выдавал ВОДОРОД и лёгкие газы.
+// Заказ был не «системе нужен вольфрам», а «у нас завалялось что полегче»:
+// доска не имела никакого отношения к тому, чем живут рынки, и это ровно тот
+// перекос плотности стоимости, что описан в §20.3-A.
+//
+// Теперь ведущая величина — НУЖДА ЦЕЛИ: годовое потребление (`demandRate`),
+// незакрытый спрос, ценовое давление и общая задыхаемость системы (`strain`).
+// Масса из выбора убрана совсем: сколько везти — решает тир (§24), а не то,
+// что легче поднять. Отправитель проверяется одним условием — хватает ли у
+// него запаса, чтобы столько отгрузить.
+int pickNeededResource(const Game& game, int originStar, int targetStar, double wantedMass) {
     if (!validStar(game, originStar) || originStar >= int(game.markets.size())) return -1;
+    if (!validStar(game, targetStar) || targetStar >= int(game.markets.size())) return -1;
 
-    const Market& market = game.markets[originStar];
+    const Market& origin = game.markets[originStar];
+    const Market& target = game.markets[targetStar];
     const std::vector<ElementDefinition>& elements = elementDefinitions();
+    const double strainBoost = 1.0 + target.strain * 2.0;
+
     int best = -1;
-    double bestScore = -std::numeric_limits<double>::max();
-    for (size_t i = 0; i < market.prices.size() && i < elements.size(); ++i) {
+    double bestScore = 0.0;
+    for (size_t i = 0; i < target.prices.size() && i < elements.size(); ++i) {
         const double reference = marketReferencePrice(int(i));
-        if (market.supply[i].amount <= 2.0 || reference <= 0.0) continue;
-        const double pressure = market.prices[i] / reference;
+        if (reference <= 0.0) continue;
         const double unitMass = std::max(0.001, resourceUnitMassByIndex(int(i)));
-        const double score = (1.18 - pressure) * std::sqrt(market.supply[i].amount) / unitMass;
+        // Отгрузить надо ПО МАССЕ, а запас на рынке — в единицах. Заказ не
+        // должен вычищать склад отправителя: берём не больше пятой части.
+        const double unitsWanted = wantedMass / unitMass;
+        if (origin.supply[i].amount < unitsWanted * 5.0) continue;
+
+        const double pressure = target.prices[i] / reference;
+        if (pressure < 1.02) continue;              // цель этим не бедствует
+        const double consumption = i < target.demandRate.size() ? target.demandRate[i] : 0.0;
+        const double unmet = i < target.demand.size() ? target.demand[i].amount : 0.0;
+        // Голод считается в МАССЕ, а не в молях: система просит тонны, а не
+        // штуки, и без этого лёгкие газы снова перевесили бы всё остальное.
+        const double hungerMass = (consumption * 4.0 + unmet) * unitMass;
+        if (hungerMass <= 0.0) continue;
+
+        const double score = hungerMass * pressure * strainBoost;
         if (score > bestScore) {
             bestScore = score;
             best = int(i);
@@ -1087,10 +1182,139 @@ int pickSurplusResource(const Game& game, int originStar) {
     return best;
 }
 
-int pickDeliveryTarget(const Game& game, int originStar, int resourceIndex) {
-    if (!validStar(game, originStar) || resourceIndex < 0 || resourceIndex >= int(elementCount())) return -1;
+// --- Срок и плата заказа считаются ОДНОЙ моделью полёта (§23) ---------------
+//
+// Заказчик не знает, кто возьмётся, поэтому мерит рейс по обычному грузовику —
+// стартовому «Hauler» с половинным трюмом. Важно, что мерит он ТОЙ ЖЕ
+// `travelTimeEstimate`, которой считается ETA игрока: до §23 срок был прямой
+// `distance / 0.11 + 3`, и на коротких плечах она врала в разы, потому что там
+// разгон и торможение — почти весь рейс, а в линейной формуле их нет вовсе.
+// Замер тогда дал 9 невыполнимых заказов из 15 видимых.
+const Ship& contractReferenceShip() {
+    static const Ship reference = [] {
+        Ship s("Hauler", 0.0, 0.0, 0.0, 0.12, -1);
+        s.acceleration = 0.22;
+        for (size_t c = 0; c < shipClasses().size(); ++c) {
+            if (shipClasses()[c].name != "Hauler") continue;
+            shipApplyClass(s, shipClasses()[c]);
+            break;
+        }
+        // Полный трюм. Пустой корпус разгоняется бодрее любого реального
+        // возчика, и срок вышел бы оптимистичным ровно там, где заказ И ЕСТЬ
+        // груз. Масса трюма здесь заодно стоит за баки: у опорного корпуса они
+        // пусты, а настоящий рейс везёт и топливо, и рабочее тело. Разница
+        // видна только на КОРОТКИХ плечах, где разгон и торможение — почти всё
+        // время рейса; на них замер и ловил единственный несдаваемый заказ.
+        s.cargo.emplace_back(elementDefinitions()[0].symbol,
+            s.cargoCapacity / std::max(0.001, resourceUnitMassByIndex(0)));
+        return s;
+    }();
+    return reference;
+}
 
-    const Market& origin = game.markets[originStar];
+}   // namespace
+
+// Сколько лет уйдёт у опорного корпуса на этот маршрут.
+//
+// Считается через `plannedRouteTravelTime` — ту же развилку «лечу напрямую или
+// прыжками», по которой считается ETA игрока. Через `cachedRouteTravelTime`
+// звать нельзя: она ВСЕГДА ведёт по прыжкам, а прыжковый маршрут разгоняется и
+// тормозит на каждом плече, и срок расходился с реальным рейсом в полтора раза.
+double contractRouteYears(const Game& game, int originStar, int targetStar) {
+    const double years = plannedRouteTravelTime(game, contractReferenceShip(), originStar, targetStar);
+    return years > 0.0 ? years : 0.0;
+}
+
+namespace {
+
+// Плата ЗА ПОЛЁТ: годовая ставка фрахта на время опорного рейса. Это весь
+// «скелет» награды; надбавки за дефицит, угрозу и вражду каждый тип заказа
+// добавляет сверху сам — они объясняют, чем ЭТОТ заказ особенный.
+double contractTripPay(const Game& game, int originStar, int targetStar) {
+    return CONTRACT_PAY_PER_YEAR * contractRouteYears(game, originStar, targetStar);
+}
+
+// Срок = опорный рейс плюс запас. Пола в 4 года хватает на соседнюю систему.
+double contractDeadlineFor(const Game& game, int originStar, int targetStar) {
+    return game.time + std::max(4.0, contractRouteYears(game, originStar, targetStar) * CONTRACT_DEADLINE_SLACK);
+}
+
+// --- Тир конкретного заказа (§24) -------------------------------------------
+//
+// Репутация задаёт ПОТОЛОК, а не сам заказ. Каждый заказ берёт свой тир
+// случайно в пределах этого потолка, и распределение смещено ВНИЗ (куб): на
+// доске у заслуженного возчика по-прежнему в основном обычная работа, а
+// крупное попадается редко. Ровно то, что просили: «базовые заказы и с
+// урежением высокие» — причём урежение выходит само, без отдельного списка
+// редкостей и без второго слота на доске.
+double rollContractTier(const Game& game, int issuerFaction) {
+    const double ceiling = game.factionJobTier(issuerFaction);
+    if (ceiling <= 0.0) return 0.0;
+    const double roll = double(randomer(rng, 1000)) / 1000.0;
+    return ceiling * roll * roll * roll;
+}
+
+// Сколько массы заказчик хочет отправить при таком тире. Разброс ±25%, чтобы
+// два заказа одного тира не выглядели близнецами.
+double rollContractCargoMass(double tier) {
+    const double spread = 0.75 + double(randomer(rng, 500)) / 1000.0;
+    return Game::jobCargoForTier(tier) * spread;
+}
+
+// Тир двигает и ДАЛЬНОСТЬ: базовый заказ — к соседям, топовый — через всё
+// скопление. Возвращает долю радиуса скопления, в которой ищется цель.
+double contractRangeShare(double tier) {
+    return JOB_RANGE_BASE + (JOB_RANGE_TOP - JOB_RANGE_BASE) * tier;
+}
+
+// Казна выдающей фракции — ПОТОЛОК награды (§24, решение пользователя).
+// Фракция не выставляет заказ, который не может оплатить, поэтому миллиардные
+// заказы водятся только у богатых и редко: «урежение» верха выходит из
+// экономики, а не из искусственного рандома. Берём не всю казну — государство
+// не тратит на один рейс всё, что у него есть.
+double contractTreasuryCeiling(const Game& game, int issuerFaction) {
+    if (!validFaction(game, issuerFaction)) return 0.0;
+    return std::max(0.0, game.factions[size_t(issuerFaction)].treasury * 0.35);
+}
+
+// Срочный заказ: срок урезан, ставка поднята, и обе вещи видны на доске ДО
+// взятия. Выбор делается на берегу, а не в полёте (§24).
+void applyRushRoll(Game& game, Contract& contract) {
+    if (double(randomer(rng, 1000)) / 1000.0 >= JOB_RUSH_CHANCE) return;
+    contract.rushFactor = JOB_RUSH_PAY;
+    contract.reward *= JOB_RUSH_PAY;
+    const double window = std::max(0.0, contract.deadline - game.time);
+    contract.deadline = game.time + std::max(3.0, window * JOB_RUSH_DEADLINE);
+}
+
+// Общий финал всех генераторов: обрезать награду казной и раскатать срочность.
+// Возвращает false, если заказчик не тянет даже урезанный заказ — тогда заказ
+// просто не выставляется.
+bool finishContract(Game& game, Contract& contract) {
+    const double ceiling = contractTreasuryCeiling(game, contract.issuerFaction);
+    if (ceiling <= 0.0) {
+        // Безденежная или ничейная фракция всё ещё может дать мелкую работу:
+        // иначе доска в бедных краях вымирает совсем.
+        contract.reward = std::min(contract.reward, 400.0);
+    } else if (contract.reward > ceiling) {
+        contract.reward = ceiling;
+    }
+    if (contract.reward < 50.0) return false;
+    applyRushRoll(game, contract);
+    game.contracts.push_back(contract);
+    publishContractPosting(game, game.contracts.back());
+    return true;
+}
+
+// Цель ищется НА ЗАДАННОЙ ДАЛЬНОСТИ (её диктует тир) и по тому, насколько
+// тяжело там живётся. До §24 цель выбиралась по спреду и штрафовалась за
+// расстояние, поэтому все заказы были одинаково короткими: дальность вообще не
+// была осью, по которой заказы различались.
+int pickNeedyTarget(const Game& game, int originStar, double rangeShare) {
+    if (!validStar(game, originStar)) return -1;
+
+    // Радиус скопления оцениваем один раз по опорному рейсу до самой дальней
+    // из выборки — брать «настоящий» диаметр неоткуда и незачем.
     int best = -1;
     double bestScore = 0.0;
     const int samples = std::min(72, std::max(12, int(game.cluster.stars.size())));
@@ -1099,13 +1323,17 @@ int pickDeliveryTarget(const Game& game, int originStar, int resourceIndex) {
         if (target == originStar || target < 0 || target >= int(game.markets.size())) continue;
 
         const Market& market = game.markets[target];
-        const double base = marketReferencePrice(resourceIndex);
-        const double pressure = base > 0.0 ? market.prices[resourceIndex] / base : 1.0;
-        const double spread = market.prices[resourceIndex] - origin.prices[resourceIndex];
-        if (pressure < 1.08 || spread <= 0.0) continue;
-
         const double distance = cachedRouteDistance(game, originStar, target);
-        const double score = (spread * 0.75 + market.demand[resourceIndex].amount * 0.012) * pressure / (std::sqrt(distance) + 1.0);
+        if (distance <= 0.0) continue;
+
+        // Чем выше тир, тем дальше «своя» дистанция. Близость к ней и есть
+        // главный вес: заказ должен ЛЕЖАТЬ в своём поясе дальности, а не быть
+        // просто самым выгодным из ближних.
+        const double wanted = 6.0 + 90.0 * rangeShare;
+        const double miss = std::abs(distance - wanted) / wanted;
+        const double rangeFit = 1.0 / (1.0 + miss * miss);
+        const double score = rangeFit * (0.25 + market.strain) *
+            (0.5 + starPopulationWeight(game.cluster.stars[target]) * 0.5 + market.pricePressure());
         if (score > bestScore) {
             bestScore = score;
             best = target;
@@ -1116,48 +1344,69 @@ int pickDeliveryTarget(const Game& game, int originStar, int resourceIndex) {
 
 bool tryCreateDeliveryContract(Game& game, int originStar) {
     if (!validStar(game, originStar) || originStar >= int(game.markets.size())) return false;
-    if (activeContractsAtOrigin(game, originStar) >= 4) return false;
+    if (activeContractsAtOrigin(game, originStar) >= CONTRACTS_PER_SYSTEM) return false;
 
-    const int resourceIndex = pickSurplusResource(game, originStar);
-    const int targetStar = pickDeliveryTarget(game, originStar, resourceIndex);
+    // Порядок обратный прежнему и это суть §24: сперва решаем, КАКОЙ ВЕЛИЧИНЫ
+    // будет заказ (тир от репутации), потом ищем цель на подходящей дальности,
+    // и только потом — что именно ей нужно. Раньше первым шагом был груз «что
+    // полегче лежит на складе», а величина не выбиралась вовсе.
+    //
+    // ⚠️ Заказчик — владелец системы ОТПРАВЛЕНИЯ, то есть той доски, у которой
+    // игрок стоит. До §24 доставку выдавал владелец ЦЕЛИ, и с репутацией это
+    // разъехалось бы насмерть: тир открывала бы одна фракция, а росла
+    // репутация у другой. Теперь тир, оплата и репутация — про одну и ту же
+    // фракцию, и остальные шесть типов заказа давно делают именно так.
+    const int issuer = validFaction(game, game.cluster.stars[originStar].ownerFaction) ?
+        game.cluster.stars[originStar].ownerFaction : -1;
+    const double tier = rollContractTier(game, issuer);
+    const int targetStar = pickNeedyTarget(game, originStar, contractRangeShare(tier));
     if (!validStar(game, targetStar)) return false;
+
+    const double wantedMass = rollContractCargoMass(tier);
+    const int resourceIndex = pickNeededResource(game, originStar, targetStar, wantedMass);
+    if (resourceIndex < 0) return false;
 
     Market& origin = game.markets[originStar];
     const Market& target = game.markets[targetStar];
     const double unitMass = std::max(0.001, resourceUnitMassByIndex(resourceIndex));
-    const double cargoMass = 18.0 + double(randomer(rng, 42));
-    const double amount = std::min(origin.supply[resourceIndex].amount * 0.18, std::min(160.0, cargoMass / unitMass));
+    const double amount = std::min(origin.supply[resourceIndex].amount * 0.18, wantedMass / unitMass);
     if (amount <= 0.25) return false;
+    const double cargoMass = amount * unitMass;
 
     const double distance = cachedRouteDistance(game, originStar, targetStar);
     const double spread = std::max(0.0, target.prices[resourceIndex] - origin.prices[resourceIndex]);
     const double scarcityPay = amount * (spread * 0.055 + target.prices[resourceIndex] * 0.012);
-    const double distancePay = distance * (3.5 + 0.012 * cargoMass);
+    // Плата за рейс × множитель тира. Именно множитель и делает верх лестницы
+    // выгоднее торговли. Доля `cargoMass / номинал тира` — чтобы разброс массы
+    // ±25% внутри одного тира честно отражался в цене: два заказа одного тира
+    // не обязаны стоить одинаково, если один тяжелее другого на четверть.
+    const double nominalMass = std::max(1.0, Game::jobCargoForTier(tier));
+    const double tripPay = contractTripPay(game, originStar, targetStar) *
+        Game::jobPayMultiplierForTier(tier) * (cargoMass / nominalMass);
 
     Contract contract;
     contract.id = game.nextContractId++;
     contract.type = ContractType::Delivery;
+    contract.tier = tier;
     contract.originStar = originStar;
     contract.targetStar = targetStar;
     contract.resource = resourceIndex;
     contract.amount = amount;
-    contract.reward = std::max(80.0, scarcityPay + distancePay);
+    contract.reward = std::max(80.0, scarcityPay + tripPay);
     contract.deposit = 0.0;
     contract.postedTime = game.time;
-    contract.deadline = game.time + std::max(4.0, distance / 0.11 + 3.0);
+    contract.deadline = contractDeadlineFor(game, originStar, targetStar);
     contract.risk = std::min(1.0, distance / 95.0);
-    contract.issuerFaction = game.cluster.stars[targetStar].ownerFaction >= 0 ?
-        game.cluster.stars[targetStar].ownerFaction : game.cluster.stars[originStar].ownerFaction;
+    contract.issuerFaction = validFaction(game, issuer) ? issuer : game.cluster.stars[targetStar].ownerFaction;
     contract.risk = std::min(1.0, contract.risk + game.factionRouteThreatRisk(contract.issuerFaction, originStar, targetStar) * 0.12);
-    game.contracts.push_back(contract);
-    publishContractPosting(game, game.contracts.back());
-    return true;
+    return finishContract(game, contract);
 }
 
 bool tryCreateCourierContract(Game& game, int originStar) {
     if (!validStar(game, originStar)) return false;
-    if (activeContractsAtOrigin(game, originStar) >= 5) return false;
+    if (activeContractsAtOrigin(game, originStar) >= CONTRACTS_PER_SYSTEM) return false;
 
+    const double tier = rollContractTier(game, game.cluster.stars[originStar].ownerFaction);
     int best = -1;
     double bestScore = -std::numeric_limits<double>::max();
     const int samples = std::min(64, std::max(12, int(game.cluster.stars.size())));
@@ -1166,7 +1415,10 @@ bool tryCreateCourierContract(Game& game, int originStar) {
         if (target == originStar || !validStar(game, target)) continue;
         const double distance = cachedRouteDistance(game, originStar, target);
         const double ownerValue = game.cluster.stars[target].ownerFaction >= 0 ? 2.0 : 0.0;
-        const double score = ownerValue + game.cluster.stars[target].industry * 0.8 + starPopulationWeight(game.cluster.stars[target]) * 0.66 - distance * 0.025;
+        // Штраф за дальность тает с тиром: заслуженному курьеру дают дальние
+        // концы, новичку — соседей. Массы у курьера нет, поэтому ДАЛЬНОСТЬ и
+        // есть его тир (§24).
+        const double score = ownerValue + game.cluster.stars[target].industry * 0.8 + starPopulationWeight(game.cluster.stars[target]) * 0.66 - distance * 0.025 * (1.0 - tier);
         if (score > bestScore) {
             bestScore = score;
             best = target;
@@ -1178,26 +1430,30 @@ bool tryCreateCourierContract(Game& game, int originStar) {
     Contract contract;
     contract.id = game.nextContractId++;
     contract.type = ContractType::Courier;
+    contract.tier = tier;
     contract.originStar = originStar;
     contract.targetStar = best;
-    contract.reward = 65.0 + distance * 5.6;
+    // Курьер везёт пакет, а не тонны: трюм свободен, поэтому платят скромнее
+    // доставки — но всё равно за годы полёта, а не за расстояние по линейке.
+    // Тир для него — это не масса (её нет), а ДАЛЬНОСТЬ и ставка.
+    contract.reward = 65.0 + contractTripPay(game, originStar, best) * 0.75 *
+        Game::jobPayMultiplierForTier(tier);
     contract.deposit = 0.0;
     contract.postedTime = game.time;
-    contract.deadline = game.time + std::max(2.5, distance / 0.16 + 2.0);
+    contract.deadline = contractDeadlineFor(game, originStar, best);
     contract.risk = std::min(1.0, distance / 120.0);
     contract.issuerFaction = game.cluster.stars[originStar].ownerFaction;
     contract.risk = std::min(1.0, contract.risk + game.factionRouteThreatRisk(contract.issuerFaction, originStar, best) * 0.10);
-    game.contracts.push_back(contract);
-    publishContractPosting(game, game.contracts.back());
-    return true;
+    return finishContract(game, contract);
 }
 
 bool tryCreateScoutContract(Game& game, int originStar) {
     if (!validStar(game, originStar)) return false;
-    if (activeContractsAtOrigin(game, originStar) >= 5) return false;
+    if (activeContractsAtOrigin(game, originStar) >= CONTRACTS_PER_SYSTEM) return false;
 
     const int issuer = game.cluster.stars[originStar].ownerFaction;
     if (!validFaction(game, issuer)) return false;
+    const double tier = rollContractTier(game, issuer);
 
     int best = -1;
     double bestScore = 0.0;
@@ -1216,7 +1472,8 @@ bool tryCreateScoutContract(Game& game, int originStar) {
         const ClusterStar& star = game.cluster.stars[target];
         const double unknownValue = (!ownerKnown ? 28.0 : std::min(18.0, ownerAge * 0.24)) +
             (!marketKnown ? 20.0 : std::min(16.0, marketAge * 0.18));
-        const double score = unknownValue + star.industry * 1.2 + star.habitability * 3.0 - distance * 0.12;
+        // Как и у курьера, тир разведки — это дальность заброса.
+        const double score = unknownValue + star.industry * 1.2 + star.habitability * 3.0 - distance * 0.12 * (1.0 - tier);
         if (score > bestScore) {
             bestScore = score;
             best = target;
@@ -1231,23 +1488,33 @@ bool tryCreateScoutContract(Game& game, int originStar) {
     contract.issuerFaction = issuer;
     contract.originStar = originStar;
     contract.targetStar = best;
-    contract.reward = 90.0 + bestScore * 2.2 + distance * 3.1;
+    // Разведка платит за полёт плюс за ценность неизвестного (`bestScore`).
+    contract.tier = tier;
+    contract.reward = 90.0 + bestScore * 2.2 +
+        contractTripPay(game, originStar, best) * Game::jobPayMultiplierForTier(tier);
     contract.deposit = 0.0;
     contract.postedTime = game.time;
-    contract.deadline = game.time + std::max(4.0, distance / 0.22 + 4.0);
+    // Разведке мало долететь — на месте ещё смотрят и ждут ухода сигнала,
+    // поэтому сверх дороги ей даётся четверть рейса, как охоте и конвою.
+    contract.deadline = contractDeadlineFor(game, originStar, best) +
+        contractRouteYears(game, originStar, best) * 0.25;
     contract.risk = std::min(1.0, 0.16 + distance / 135.0);
     contract.risk = std::min(1.0, contract.risk + game.factionRouteThreatRisk(issuer, originStar, best) * 0.10);
-    game.contracts.push_back(contract);
-    publishContractPosting(game, game.contracts.back());
-    return true;
+    return finishContract(game, contract);
 }
 
 bool tryCreateColonySupplyContract(Game& game, int originStar) {
     if (!validStar(game, originStar) || originStar >= int(game.markets.size())) return false;
-    if (activeContractsAtOrigin(game, originStar) >= 5) return false;
+    if (activeContractsAtOrigin(game, originStar) >= CONTRACTS_PER_SYSTEM) return false;
 
-    const int resourceIndex = pickSurplusResource(game, originStar);
-    if (resourceIndex < 0) return false;
+    // Тот же порядок, что и у доставки (§24): величина -> цель -> что везём.
+    // Отличие снабжения — цель обязана быть КОЛОНИЕЙ, поэтому дальность здесь
+    // не «пояс», а фильтр: колоний в скоплении немного, и требовать от них ещё
+    // и попадания в радиус тира значило бы вовсе не выдавать этот тип.
+    const int issuer = validFaction(game, game.cluster.stars[originStar].ownerFaction) ?
+        game.cluster.stars[originStar].ownerFaction : -1;
+    const double tier = rollContractTier(game, issuer);
+    const double wantedMass = rollContractCargoMass(tier);
 
     int best = -1;
     double bestScore = 0.0;
@@ -1258,12 +1525,10 @@ bool tryCreateColonySupplyContract(Game& game, int originStar) {
         if (colonyIndexAt(game, target) < 0) continue;
 
         const Market& targetMarket = game.markets[target];
-        const double base = marketReferencePrice(resourceIndex);
-        const double pressure = base > 0.0 ? targetMarket.prices[resourceIndex] / base : 1.0;
-        if (pressure < 1.16) continue;
-
         const double distance = cachedRouteDistance(game, originStar, target);
-        const double score = pressure * 18.0 + starPopulationWeight(game.cluster.stars[target]) * 0.53 + game.cluster.stars[target].industry * 1.4 - distance * 0.11;
+        const double score = (0.25 + targetMarket.strain) * 18.0 +
+            starPopulationWeight(game.cluster.stars[target]) * 0.53 +
+            game.cluster.stars[target].industry * 1.4 - distance * 0.11 * (1.0 - tier);
         if (score > bestScore) {
             bestScore = score;
             best = target;
@@ -1271,11 +1536,13 @@ bool tryCreateColonySupplyContract(Game& game, int originStar) {
     }
     if (!validStar(game, best)) return false;
 
+    const int resourceIndex = pickNeededResource(game, originStar, best, wantedMass);
+    if (resourceIndex < 0) return false;
+
     Market& origin = game.markets[originStar];
     const Market& target = game.markets[best];
     const double unitMass = std::max(0.001, resourceUnitMassByIndex(resourceIndex));
-    const double cargoMass = 22.0 + double(randomer(rng, 58));
-    const double amount = std::min(origin.supply[resourceIndex].amount * 0.16, std::min(180.0, cargoMass / unitMass));
+    const double amount = std::min(origin.supply[resourceIndex].amount * 0.16, wantedMass / unitMass);
     if (amount <= 0.25) return false;
 
     const double distance = cachedRouteDistance(game, originStar, best);
@@ -1284,32 +1551,33 @@ bool tryCreateColonySupplyContract(Game& game, int originStar) {
     Contract contract;
     contract.id = game.nextContractId++;
     contract.type = ContractType::ColonySupply;
-    contract.issuerFaction = game.cluster.stars[best].ownerFaction;
+    contract.tier = tier;
+    contract.issuerFaction = validFaction(game, issuer) ? issuer : game.cluster.stars[best].ownerFaction;
     contract.originStar = originStar;
     contract.targetStar = best;
     contract.resource = resourceIndex;
     contract.amount = amount;
-    contract.reward = std::max(100.0, amount * target.prices[resourceIndex] * 0.035 + scarcity * 120.0 + distance * 4.2);
+    contract.reward = std::max(100.0,
+        amount * target.prices[resourceIndex] * 0.035 + scarcity * 120.0 +
+        contractTripPay(game, originStar, best) * Game::jobPayMultiplierForTier(tier));
     contract.deposit = 0.0;
     contract.postedTime = game.time;
-    contract.deadline = game.time + std::max(4.0, distance / 0.12 + 3.0);
+    contract.deadline = contractDeadlineFor(game, originStar, best);
     contract.risk = std::min(1.0, 0.12 + distance / 110.0);
     contract.risk = std::min(1.0, contract.risk + game.factionRouteThreatRisk(contract.issuerFaction, originStar, best) * 0.12);
-    game.contracts.push_back(contract);
-    publishContractPosting(game, game.contracts.back());
-    return true;
+    return finishContract(game, contract);
 }
 
 bool tryCreateBountyContract(Game& game, int originStar) {
     if (!validStar(game, originStar)) return false;
-    if (activeContractsAtOrigin(game, originStar) >= 5) return false;
+    if (activeContractsAtOrigin(game, originStar) >= CONTRACTS_PER_SYSTEM) return false;
     const int issuer = game.cluster.stars[originStar].ownerFaction;
     if (!validFaction(game, issuer)) return false;
+    const double tier = rollContractTier(game, issuer);
 
     const ThreatCandidate report = bestThreatReportAt(game, issuer, originStar, true);
     if (!report.valid) return false;
 
-    const double distance = cachedRouteDistance(game, originStar, report.starIndex);
     Contract contract;
     contract.id = game.nextContractId++;
     contract.type = ContractType::Bounty;
@@ -1317,21 +1585,24 @@ bool tryCreateBountyContract(Game& game, int originStar) {
     contract.originStar = originStar;
     contract.targetStar = report.starIndex;
     contract.targetAgent = report.sourceAgent;
-    contract.reward = 180.0 + report.threatValue * 64.0 + report.cargoValue * 0.018 + distance * 4.0;
+    contract.tier = tier;
+    contract.reward = 180.0 + report.threatValue * 64.0 + report.cargoValue * 0.018 +
+        contractTripPay(game, originStar, report.starIndex) * Game::jobPayMultiplierForTier(tier);
     contract.deposit = 0.0;
     contract.postedTime = game.time;
-    contract.deadline = game.time + std::max(4.0, distance / 0.22 + 6.0);
+    // Охоте нужен запас сверх дороги: цель ещё надо застать на месте.
+    contract.deadline = contractDeadlineFor(game, originStar, report.starIndex) +
+        contractRouteYears(game, originStar, report.starIndex) * 0.25;
     contract.risk = std::min(1.0, 0.28 + report.threatValue / 24.0 + std::min(0.25, (game.time - report.observedAt) * 0.018));
-    game.contracts.push_back(contract);
-    publishContractPosting(game, game.contracts.back());
-    return true;
+    return finishContract(game, contract);
 }
 
 bool tryCreateRaidContract(Game& game, int originStar) {
     if (!validStar(game, originStar)) return false;
-    if (activeContractsAtOrigin(game, originStar) >= 5) return false;
+    if (activeContractsAtOrigin(game, originStar) >= CONTRACTS_PER_SYSTEM) return false;
     const int issuer = game.cluster.stars[originStar].ownerFaction;
     if (!validFaction(game, issuer)) return false;
+    const double tier = rollContractTier(game, issuer);
 
     int best = -1;
     int bestKnownOwner = -1;
@@ -1380,21 +1651,22 @@ bool tryCreateRaidContract(Game& game, int originStar) {
     contract.issuerFaction = issuer;
     contract.originStar = originStar;
     contract.targetStar = best;
-    contract.reward = 150.0 + bestScore * 12.0 + target.industry * 42.0 + hostility * 180.0 + distance * 4.4;
+    contract.tier = tier;
+    contract.reward = 150.0 + bestScore * 12.0 + target.industry * 42.0 + hostility * 180.0 +
+        contractTripPay(game, originStar, best) * Game::jobPayMultiplierForTier(tier);
     contract.deposit = 0.0;
     contract.postedTime = game.time;
-    contract.deadline = game.time + std::max(4.0, distance / 0.20 + 5.0);
+    contract.deadline = contractDeadlineFor(game, originStar, best);
     contract.risk = std::min(1.0, 0.24 + target.defense * 0.018 + distance / 125.0 + hostility * 0.20);
-    game.contracts.push_back(contract);
-    publishContractPosting(game, game.contracts.back());
-    return true;
+    return finishContract(game, contract);
 }
 
 bool tryCreateEscortContract(Game& game, int originStar) {
     if (!validStar(game, originStar)) return false;
-    if (activeContractsAtOrigin(game, originStar) >= 5) return false;
+    if (activeContractsAtOrigin(game, originStar) >= CONTRACTS_PER_SYSTEM) return false;
     const int issuer = game.cluster.stars[originStar].ownerFaction;
     if (!validFaction(game, issuer)) return false;
+    const double tier = rollContractTier(game, issuer);
     const double threatRisk = localEscortRisk(game, issuer, originStar);
     if (threatRisk <= 0.45) return false;
 
@@ -1441,14 +1713,16 @@ bool tryCreateEscortContract(Game& game, int originStar) {
     contract.originStar = originStar;
     contract.targetStar = targetStar;
     contract.targetAgent = escortAgent;
-    contract.reward = 120.0 + bestNeed * 12.0 + threatRisk * 80.0 + distance * 3.8;
+    contract.tier = tier;
+    contract.reward = 120.0 + bestNeed * 12.0 + threatRisk * 80.0 +
+        contractTripPay(game, originStar, targetStar) * Game::jobPayMultiplierForTier(tier);
     contract.deposit = 0.0;
     contract.postedTime = game.time;
-    contract.deadline = game.time + std::max(4.0, distance / 0.16 + 4.0);
+    // Конвой идёт не быстрее подопечного — срок щедрее обычного.
+    contract.deadline = contractDeadlineFor(game, originStar, targetStar) +
+        contractRouteYears(game, originStar, targetStar) * 0.25;
     contract.risk = std::min(1.0, 0.18 + distance / 140.0 + bestNeed * 0.01 + threatRisk * 0.12);
-    game.contracts.push_back(contract);
-    publishContractPosting(game, game.contracts.back());
-    return true;
+    return finishContract(game, contract);
 }
 
 bool agentCanLoadContract(const Game& game, const Agent& agent, const Contract& contract) {
@@ -2789,7 +3063,7 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 14 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 15 " << cluster.stars.size() << '\n';
     out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
@@ -2881,6 +3155,28 @@ bool Game::saveToFile(const std::string& path) {
             << int(contract.reportSignalPending) << ' ' << int(contract.reportDelivered) << ' '
             << int(contract.escortArrived) << ' ' << contract.acceptedByAgent << ' '
             << int(contract.completed) << ' ' << int(contract.failed) << '\n';
+    }
+
+    // --- Довески версии 15 (§24) ---------------------------------------------
+    // Новые поля вынесены в ОТДЕЛЬНЫЕ блоки, а не дописаны в конец строк
+    // `CONTRACT`/`FACTION`. Так сейв 14 читается прежним разбором строки без
+    // единой правки, и обратная совместимость достаётся даром: нет блока —
+    // остаются значения по умолчанию.
+    out << "JOBEXTRA " << contracts.size() << '\n';
+    for (const Contract& contract : contracts) {
+        out << "JOBX " << contract.id << ' ' << contract.tier << ' ' << contract.rushFactor << ' '
+            << contract.carriers.size();
+        for (int carrier : contract.carriers) out << ' ' << carrier;
+        out << '\n';
+    }
+
+    out << "REPUTATION " << factionReputation.size() << '\n';
+    for (double reputation : factionReputation) out << reputation << '\n';
+
+    out << "JOURNAL " << transactions.size() << '\n';
+    for (const Transaction& entry : transactions) {
+        out << "JLINE " << int(entry.kind) << ' ' << entry.time << ' ' << entry.starIndex << ' '
+            << entry.amount << ' ' << saveToken(entry.text) << '\n';
     }
 
     out << "AGENTS " << agents.size() << '\n';
@@ -3054,7 +3350,11 @@ bool Game::loadFromFile(const std::string& path) {
     std::string tag;
     int version = 0;
     size_t starCount = 0;
-    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" || version != 14) {
+    // Читаем 14 И 15. Ломать сохранения ради новых полей не нужно: всё, что
+    // добавила §24, лежит в отдельных блоках и при version==14 просто
+    // отсутствует (см. «довески версии 15» ниже).
+    if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" ||
+        version < 14 || version > 15) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -3291,6 +3591,80 @@ bool Game::loadFromFile(const std::string& path) {
         contract.completed = completed != 0;
         contract.failed = failed != 0;
         loaded.contracts.push_back(contract);
+    }
+
+    // --- Довески версии 15 (§24) ---------------------------------------------
+    // Сейв 14 этих блоков не содержит: тир, срочность, носители, репутация и
+    // журнал остаются нулевыми, и старая партия продолжается как заказы нулевой
+    // репутации. Ломать чужие сохранения ради новой механики не нужно.
+    if (version >= 15) {
+        if (!expectTag(in, "JOBEXTRA") || !(in >> count)) {
+            lastEvent = "load failed: job tiers";
+            return false;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            int id = 0;
+            size_t carriers = 0;
+            double tier = 0.0;
+            double rush = 1.0;
+            if (!expectTag(in, "JOBX") || !(in >> id >> tier >> rush >> carriers)) {
+                lastEvent = "load failed: job tier";
+                return false;
+            }
+            std::vector<int> carrierList;
+            carrierList.reserve(carriers);
+            for (size_t c = 0; c < carriers; ++c) {
+                int agentIndex = -1;
+                if (!(in >> agentIndex)) {
+                    lastEvent = "load failed: job carriers";
+                    return false;
+                }
+                carrierList.push_back(agentIndex);
+            }
+            // Блок пишется тем же порядком, что и `CONTRACTS`, но привязка идёт
+            // ПО ID, а не по индексу: так строка переживёт любую будущую чистку
+            // списка заказов между двумя блоками.
+            for (Contract& contract : loaded.contracts) {
+                if (contract.id != id) continue;
+                contract.tier = tier;
+                contract.rushFactor = rush;
+                contract.carriers = carrierList;
+                break;
+            }
+        }
+
+        if (!expectTag(in, "REPUTATION") || !(in >> count)) {
+            lastEvent = "load failed: reputation";
+            return false;
+        }
+        loaded.factionReputation.assign(count, 0.0);
+        for (size_t i = 0; i < count; ++i) {
+            if (!(in >> loaded.factionReputation[i])) {
+                lastEvent = "load failed: reputation value";
+                return false;
+            }
+        }
+
+        if (!expectTag(in, "JOURNAL") || !(in >> count)) {
+            lastEvent = "load failed: journal";
+            return false;
+        }
+        loaded.transactions.clear();
+        loaded.transactions.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            int kind = 0;
+            std::string text;
+            Transaction entry;
+            if (!expectTag(in, "JLINE") ||
+                !(in >> kind >> entry.time >> entry.starIndex >> entry.amount >> text)) {
+                lastEvent = "load failed: journal line";
+                return false;
+            }
+            entry.kind = kind >= 0 && kind <= int(JournalKind::JobFailed) ?
+                JournalKind(kind) : JournalKind::Money;
+            entry.text = loadToken(text);
+            loaded.transactions.push_back(entry);
+        }
     }
 
     if (!expectTag(in, "AGENTS") || !(in >> count)) {
@@ -3961,6 +4335,7 @@ void Game::init(size_t num_stars) {
     factions.back().expansionBias = 0.30;
     factions.back().defenseBias = 0.30;
     resizeFactionRelations();
+    resizeFactionReputation();
     for (size_t a = 0; a < factions.size(); ++a) {
         for (size_t b = 0; b < factions.size(); ++b) {
             if (a == b) {
@@ -4223,20 +4598,62 @@ void Game::update(double dt) {
     if (playerAgent >= 0 && playerAgent < int(agents.size())) {
         double currentMoney = agents[playerAgent].money;
         if (lastPlayerMoney >= 0.0) {
-            double diff = currentMoney - lastPlayerMoney;
+            // Из безымянной кассовой строки вычитается всё, что УЖЕ объяснено
+            // отдельной строкой журнала (награда за заказ). Иначе одна выплата
+            // ложилась бы в журнал дважды.
+            double diff = currentMoney - lastPlayerMoney - journalExplained;
             if (std::abs(diff) > 0.01) {
-                Transaction t;
-                t.time = time;
-                t.starIndex = agents[playerAgent].currentStar;
-                t.amount = diff;
-                transactions.push_back(t);
-                if (transactions.size() > 100) {
-                    transactions.erase(transactions.begin(), transactions.begin() + 20);
-                }
+                pushJournal(JournalKind::Money, std::string(), diff, agents[playerAgent].currentStar);
             }
         }
+        journalExplained = 0.0;
         lastPlayerMoney = currentMoney;
     }
+}
+
+// Журнал — лента событий игрока, а не только касса. Порядок записей —
+// хронологический; окно рисует их с конца.
+void Game::pushJournal(JournalKind kind, const std::string& text, double amount, int starIndex) {
+    Transaction t;
+    t.time = time;
+    t.starIndex = starIndex;
+    t.amount = amount;
+    t.kind = kind;
+    t.text = text;
+    transactions.push_back(t);
+    if (transactions.size() > 100) {
+        transactions.erase(transactions.begin(), transactions.begin() + 20);
+    }
+}
+
+// «Что и куда» одной строкой. Собирается ПО-АНГЛИЙСКИ — перевод делает словарь
+// в `UI::drawText` (§14), имена звёзд и числа он не трогает.
+std::string Game::contractJournalText(const Contract& contract) const {
+    // Тип пишется СЛОВОМ, а не трёхбуквенным `contractTypeLabel`: в тесной
+    // строке доски «DEL» экономит место, а в журнале читать нечего — и словарь
+    // §14 переводит только целые слова, так что «DEL» осталось бы латиницей.
+    const char* type = "JOB";
+    switch (contract.type) {
+    case ContractType::Delivery:     type = "DELIVERY"; break;
+    case ContractType::Courier:      type = "COURIER"; break;
+    case ContractType::Scout:        type = "SCOUT"; break;
+    case ContractType::Bounty:       type = "BOUNTY"; break;
+    case ContractType::Escort:       type = "ESCORT"; break;
+    case ContractType::Raid:         type = "RAID"; break;
+    case ContractType::ColonySupply: type = "COLONY SUPPLY"; break;
+    }
+    std::string out = "#" + std::to_string(contract.id) + " " + type;
+    if (contractUsesCargo(contract.type) &&
+        contract.resource >= 0 && contract.resource < int(elementCount())) {
+        char amount[32];
+        std::snprintf(amount, sizeof(amount), " %.0F ", contract.amount);
+        out += amount;
+        out += elementDefinitions()[size_t(contract.resource)].symbol;
+    }
+    if (validStar(*this, contract.targetStar)) {
+        out += " > " + cluster.stars[size_t(contract.targetStar)].name;
+    }
+    return out;
 }
 
 void Game::updateMarkets(double dt) {
@@ -4350,6 +4767,8 @@ void Game::updateColonies(double dt) {
 }
 
 void Game::updateContracts(double dt) {
+    // Невзятое объявление снимают с доски сразу по сроку. Проверка КАЖДЫЙ кадр,
+    // и это нарочно: она стоит одно сравнение на заказ.
     for (Contract& contract : contracts) {
         if (activeContract(contract) && contract.acceptedByAgent < 0 && contract.deadline < time) {
             contract.failed = true;
@@ -4358,6 +4777,37 @@ void Game::updateContracts(double dt) {
 
     contractUpdateTimer -= dt;
     if (contractUpdateTimer > 0.0 || cluster.stars.empty()) return;
+
+    // ВЗЯТЫЙ заказ до §23 не мог провалиться вообще: он висел вечно и платил
+    // 45% сколь угодно поздно. Замер: 443 года сверх срока — `failed=0`, заказ
+    // всё ещё на руках. Срок был не обязательством, а ценником. Теперь сверх
+    // срока даётся ещё один такой же рейс — и всё.
+    //
+    // ⚠️ Проверка стоит ПОСЛЕ таймера и за `deadline`-отсечкой: `contractRouteYears`
+    // обходит маршрут по прыжкам, а заказов бывает под тысячу. Каждый кадр по
+    // всем — это обход скопления на кадр. Такт в ~0.75 года против сроков в
+    // десятки лет не теряет ничего.
+    for (Contract& contract : contracts) {
+        if (!activeContract(contract) || contract.acceptedByAgent < 0) continue;
+        if (time <= contract.deadline) continue;
+        const double grace = std::max(4.0,
+            contractRouteYears(*this, contract.originStar, contract.targetStar) * CONTRACT_GRACE_FACTOR);
+        if (time <= contract.deadline + grace) continue;
+
+        contract.failed = true;
+        if (contract.acceptedByAgent >= int(agents.size())) continue;
+        Agent& holder = agents[contract.acceptedByAgent];
+        holder.lastAction = "contract expired";
+        if (!holder.playerControlled) continue;
+        lastEvent = "contract expired";
+        const double lost = applyContractFailureReputation(*this, contract);
+        // Текст журнала собирается ПО-АНГЛИЙСКИ: перевод делает сама
+        // `UI::drawText` по словарю (§14), числа и имена звёзд она не трогает.
+        char penalty[48];
+        std::snprintf(penalty, sizeof(penalty), " EXPIRED -%.0F REP", lost);
+        pushJournal(JournalKind::JobFailed,
+            contractJournalText(contract) + penalty, 0.0, holder.currentStar);
+    }
     contractUpdateTimer = 0.75 + 0.05 * double(randomer(rng, 10));
 
     if (playerAgent >= 0 && playerAgent < int(agents.size()) && !agents[playerAgent].ship.enRoute) {
@@ -4404,6 +4854,7 @@ void Game::updateFactions(double dt) {
     if (factionUpdateTimer > 0.0) return;
     factionUpdateTimer = 1.0;
     resizeFactionRelations();
+    resizeFactionReputation();
 
     for (size_t i = 0; i < factions.size(); ++i) {
         Faction& faction = factions[i];
@@ -5131,6 +5582,12 @@ bool Game::agentContractCargoFits(int agentIndex, int contractId) const {
     const Agent& agent = agents[agentIndex];
     if (!agent.ship.cargo.empty()) return false;
     const double cargoMass = contract->amount * resourceUnitMassByIndex(contract->resource);
+    // Мерка — ВЕСЬ ФЛОТ в системе отправления, а не один трюм (§24). Иначе
+    // крупный заказ был бы вечно серым: он и задуман как не влезающий в
+    // одиночку. Для обычного заказа ответ не меняется — капитан входит в флот.
+    if (agent.playerControlled) {
+        return cargoMass <= playerFleetCapacityAt(contract->originStar) + 0.001;
+    }
     return cargoMass <= agent.ship.cargoCapacity - shipCargoMass(agent.ship) + 0.001;
 }
 
@@ -5413,17 +5870,90 @@ bool Game::agentAcceptContract(int agentIndex, int contractId) {
         Market& origin = markets[contract->originStar];
         if (contract->resource >= int(origin.supply.size()) || origin.supply[contract->resource].amount < contract->amount) return false;
 
-        const double cargoMass = contract->amount * resourceUnitMassByIndex(contract->resource);
-        if (cargoMass > agent.ship.cargoCapacity - shipCargoMass(agent.ship) + 0.001) {
-            agent.lastAction = "contract too heavy";
-            return false;
+        const double unitMass = std::max(0.001, resourceUnitMassByIndex(contract->resource));
+        const double cargoMass = contract->amount * unitMass;
+
+        // --- Груз раскладывается ПО ФЛОТУ (§24) ------------------------------
+        //
+        // ⚠️ ТОЛЬКО У ИГРОКА. NPC грузится в свой единственный трюм, как и до
+        // §24. Первая версия этого не различала, и получилось буквально: NPC
+        // брал заказ, а «караваном» ему записывался стоявший рядом корабль
+        // ИГРОКА — тот молча улетал с чужим грузом, и доска у игрока пустела
+        // навсегда, потому что он вечно был в пути.
+        std::vector<int> carriers;
+        if (!agent.playerControlled) {
+            if (cargoMass > agent.ship.cargoCapacity - shipCargoMass(agent.ship) + 0.001) {
+                agent.lastAction = "contract too heavy";
+                return false;
+            }
+            agent.ship.cargo.emplace_back(elementDefinitions()[contract->resource].symbol, contract->amount);
+        } else {
+            // До §24 условие было «влезет ли в ОДИН трюм», и потолок заказа этим
+            // же и задавался: больше стартового трюма никто ничего не возил.
+            // Теперь считается суммарная свободная ёмкость бортов игрока,
+            // СТОЯЩИХ В ЭТОЙ системе, а груз режется между ними. Борт в пути не
+            // участвует — его здесь нет.
+            if (cargoMass > playerFleetCapacityAt(contract->originStar) + 0.001) {
+                agent.lastAction = "contract too heavy";
+                return false;
+            }
+
+            // Очередь погрузки: капитан, затем остальные борта по порядку.
+            // Капитан первым — чтобы одноместный заказ лёг именно в тот
+            // корабль, которым игрок управляет сейчас, а не в случайный борт
+            // с трюмом побольше.
+            std::vector<int> loadOrder;
+            loadOrder.push_back(agentIndex);
+            for (size_t i = 0; i < agents.size(); ++i) {
+                if (int(i) != agentIndex) loadOrder.push_back(int(i));
+            }
+
+            double left = contract->amount;
+            for (size_t i = 0; i < loadOrder.size() && left > 1e-9; ++i) {
+                Agent& carrier = agents[size_t(loadOrder[i])];
+                if (!carrier.playerControlled || carrier.ship.enRoute ||
+                    carrier.currentStar != contract->originStar) {
+                    continue;
+                }
+                const double room = carrier.ship.cargoCapacity - shipCargoMass(carrier.ship);
+                if (room <= 0.001) continue;
+                const double take = std::min(left, room / unitMass);
+                if (take <= 1e-9) continue;
+                carrier.ship.cargo.emplace_back(elementDefinitions()[contract->resource].symbol, take);
+                carrier.cargoCost = 0.0;
+                carriers.push_back(loadOrder[i]);
+                left -= take;
+            }
+            if (left > 1e-6) {
+                // Не влезло — откатываем всё, что уже нагрузили. Половина заказа
+                // в трюме и никакого заказа на руках была бы худшей из ошибок.
+                for (int index : carriers) {
+                    Ship& hold = agents[size_t(index)].ship;
+                    if (!hold.cargo.empty()) hold.cargo.pop_back();
+                }
+                agent.lastAction = "contract too heavy";
+                return false;
+            }
         }
 
         origin.applyTrade(contract->resource, -contract->amount);
-        agent.ship.cargo.emplace_back(elementDefinitions()[contract->resource].symbol, contract->amount);
+        contract->carriers = carriers;
     }
     agent.cargoCost = 0.0;
     contract->acceptedByAgent = agentIndex;
+
+    // Остальные носители уходят к цели САМИ (§24). Иначе игроку пришлось бы
+    // переключаться на каждый борт и вести его вручную по одному маршруту —
+    // работа без единого решения. Капитанский корабль не трогаем: им игрок
+    // управляет сам, и отнимать у него руль на взятии заказа нельзя.
+    for (int carrierIndex : contract->carriers) {
+        if (carrierIndex == agentIndex || carrierIndex < 0 || carrierIndex >= int(agents.size())) continue;
+        Agent& carrier = agents[size_t(carrierIndex)];
+        if (carrier.ship.enRoute || carrier.currentStar == contract->targetStar) continue;
+        startJourney(*this, carrier, contract->targetStar);
+        carrier.lastAction = "hauling contract";
+    }
+
     if (contract->type == ContractType::Escort &&
         contract->targetAgent >= 0 && contract->targetAgent < int(agents.size())) {
         Agent& escorted = agents[contract->targetAgent];
@@ -5434,6 +5964,13 @@ bool Game::agentAcceptContract(int agentIndex, int contractId) {
     }
     agent.lastAction = std::string("accepted ") + contractTypeLabel(contract->type);
     if (agent.playerControlled) {
+        // Белая строка журнала: взял — вот что и куда. Именно её не хватало:
+        // заказ брался, игрок улетал и терял из виду, ЧТО он везёт.
+        char due[48];
+        std::snprintf(due, sizeof(due), " DUE %.0FY", std::max(0.0, contract->deadline - time));
+        pushJournal(JournalKind::JobAccepted,
+            std::string("TOOK ") + contractJournalText(*contract) + due, 0.0, agent.currentStar);
+
         const double years = agentContractRouteTravelTime(agentIndex, contract->id);
         const double fuelNeeded = agentContractRouteFuelNeeded(agentIndex, contract->id);
         const double shortfall = agentContractRouteFuelShortfall(agentIndex, contract->id);
@@ -5463,29 +6000,50 @@ bool Game::agentCompleteContract(int agentIndex, int contractId) {
     if (agent.ship.enRoute || agent.currentStar != contract->targetStar) return false;
 
     if (contractUsesCargo(contract->type)) {
-        if (contract->resource < 0 || contract->resource >= int(elementCount()) || agent.ship.cargo.empty()) return false;
-        
-        double totalFound = 0.0;
-        const std::string& targetSymbol = elementDefinitions()[contract->resource].symbol;
-        for (const Resource& res : agent.ship.cargo) {
-            if (res.element == targetSymbol) totalFound += res.amount;
+        if (contract->resource < 0 || contract->resource >= int(elementCount())) return false;
+
+        // Сдаёт ВЕСЬ КАРАВАН (§24). Список носителей — те борта, по которым
+        // груз разложили при взятии; пустой список означает обычный одиночный
+        // рейс, и тогда носитель ровно один — капитан.
+        std::vector<int> haulers = contract->carriers;
+        if (haulers.empty()) haulers.push_back(agentIndex);
+
+        // Все обязаны быть ЗДЕСЬ. Половина каравана на месте — это не половина
+        // сдачи, а несдача: заказчику нужен весь объём разом.
+        for (int index : haulers) {
+            if (index < 0 || index >= int(agents.size())) return false;
+            const Agent& hauler = agents[size_t(index)];
+            if (hauler.ship.enRoute || hauler.currentStar != contract->targetStar) {
+                agent.lastAction = "fleet still inbound";
+                return false;
+            }
         }
-        
+
+        const std::string& targetSymbol = elementDefinitions()[contract->resource].symbol;
+        double totalFound = 0.0;
+        for (int index : haulers) {
+            for (const Resource& res : agents[size_t(index)].ship.cargo) {
+                if (res.element == targetSymbol) totalFound += res.amount;
+            }
+        }
         if (totalFound + 0.001 < contract->amount) return false;
-        
+
         double remainingToTake = contract->amount;
-        for (auto it = agent.ship.cargo.begin(); it != agent.ship.cargo.end() && remainingToTake > 0.001; ) {
-            if (it->element == targetSymbol) {
-                if (it->amount > remainingToTake) {
-                    it->amount -= remainingToTake;
-                    remainingToTake = 0.0;
-                    ++it;
+        for (size_t h = 0; h < haulers.size() && remainingToTake > 0.001; ++h) {
+            std::vector<Resource>& hold = agents[size_t(haulers[h])].ship.cargo;
+            for (auto it = hold.begin(); it != hold.end() && remainingToTake > 0.001; ) {
+                if (it->element == targetSymbol) {
+                    if (it->amount > remainingToTake) {
+                        it->amount -= remainingToTake;
+                        remainingToTake = 0.0;
+                        ++it;
+                    } else {
+                        remainingToTake -= it->amount;
+                        it = hold.erase(it);
+                    }
                 } else {
-                    remainingToTake -= it->amount;
-                    it = agent.ship.cargo.erase(it);
+                    ++it;
                 }
-            } else {
-                ++it;
             }
         }
         Market& target = markets[contract->targetStar];
@@ -5549,6 +6107,13 @@ bool Game::agentCompleteContract(int agentIndex, int contractId) {
             contract->failed = true;
             agent.lastAction = "raid target stale";
             lastEvent = "raid contract stale: " + targetStar.name;
+            if (agent.playerControlled) {
+                const double lost = applyContractFailureReputation(*this, *contract);
+                char penalty[56];
+                std::snprintf(penalty, sizeof(penalty), " TARGET STALE -%.0F REP", lost);
+                pushJournal(JournalKind::JobFailed,
+                    contractJournalText(*contract) + penalty, 0.0, agent.currentStar);
+            }
             return false;
         }
 
@@ -5950,6 +6515,10 @@ double Game::playerColonyWithdraw(double amount) {
 // Квота растёт с числом лицензий: каждая лицензия — это разрешение на ещё один
 // борт, но и обязательство наторговать на него. Расширяться = добровольно
 // поднимать себе ставку.
+//
+// Ставка ЛИНЕЙНА: одна лицензия — одна квота. При `LICENCE_QUOTA_PER_EXTRA = 1`
+// формула сводится к `licenceQuotaBase * licenceCount`, и планка считается в
+// уме — три борта, тридцать тысяч (§21: читаемость шкалы важнее точности).
 double Game::licenceQuotaTarget() const {
     return licenceQuotaBase * (1.0 + LICENCE_QUOTA_PER_EXTRA * double(std::max(0, licenceCount - 1)));
 }
@@ -6709,6 +7278,85 @@ void Game::absorbLocalSignalsForFaction(int factionIndex, int observerStar, bool
             playerKnowledge[index].visited = playerKnowledge[index].visited || record.subjectStar == observerStar;
         }
     }
+}
+
+// --- Репутация игрока у фракций (§24) ---------------------------------------
+//
+// Одна величина на фракцию, в СДАННЫХ ЗАКАЗАХ. Всё остальное — размер груза,
+// дальность, множитель платы, звание — чистые функции от неё, и живут здесь
+// же, чтобы генератор, интерфейс и регрессии считали ОДНУ кривую, а не три
+// похожие.
+void Game::resizeFactionReputation() {
+    if (factionReputation.size() != factions.size()) {
+        factionReputation.resize(factions.size(), 0.0);
+    }
+}
+
+double Game::factionReputationOf(int factionIndex) const {
+    if (factionIndex < 0 || factionIndex >= int(factionReputation.size())) return 0.0;
+    return factionReputation[size_t(factionIndex)];
+}
+
+// Тир растёт как КОРЕНЬ из доли пройденного пути. Именно этот корень и есть
+// «рано видно, верх далеко»: первые десятки заказов заметно двигают потолок,
+// но последняя треть лестницы стоит сотен сдач.
+double Game::factionJobTier(int factionIndex) const {
+    const double share = factionReputationOf(factionIndex) / REPUTATION_CAP_JOBS;
+    return std::max(0.0, std::min(1.0, std::sqrt(std::max(0.0, share))));
+}
+
+// Масса — экспонента от тира: равные шаги тира дают равные ПРОЦЕНТЫ роста,
+// поэтому лестница корпусов проходится ровно, без ступенек и провалов.
+double Game::jobCargoForTier(double tier) {
+    const double t = std::max(0.0, std::min(1.0, tier));
+    return JOB_CARGO_BASE * std::pow(JOB_CARGO_TOP / JOB_CARGO_BASE, t);
+}
+
+// Плата за рейс тоже растёт с тиром, и БЫСТРЕЕ инфляции размера: топовый заказ
+// обязан быть выгоднее торговли, иначе тысяча сдач ничего не покупает.
+double Game::jobPayMultiplierForTier(double tier) {
+    const double t = std::max(0.0, std::min(1.0, tier));
+    return std::pow(JOB_TIER_PAY_TOP, t);
+}
+
+const char* Game::jobRankName(double tier) {
+    if (tier < 0.08) return "NOBODY";
+    if (tier < 0.22) return "KNOWN";
+    if (tier < 0.40) return "TRUSTED";
+    if (tier < 0.60) return "CONTRACTOR";
+    if (tier < 0.80) return "MASTER";
+    if (tier < 0.95) return "LEGEND";
+    return "PRIME CARRIER";
+}
+
+// --- Флот как ёмкость (§24) --------------------------------------------------
+//
+// Крупный заказ не влезает в один корпус, и это не препятствие, а содержание:
+// «взять» его можно, только если СУММАРНЫЙ свободный трюм бортов игрока,
+// СТОЯЩИХ В ЭТОЙ системе, покрывает груз. Борт в пути не считается — он не
+// здесь. Отсюда и смысл лицензий: флот перестаёт быть украшением.
+double Game::playerFleetCapacityAt(int starIndex) const {
+    if (!validStar(*this, starIndex)) return 0.0;
+    double free = 0.0;
+    for (const Agent& agent : agents) {
+        if (!agent.playerControlled || agent.ship.enRoute || agent.currentStar != starIndex) continue;
+        free += std::max(0.0, agent.ship.cargoCapacity - shipCargoMass(agent.ship));
+    }
+    return free;
+}
+
+double Game::contractCargoMass(const Contract& contract) const {
+    if (!contractUsesCargo(contract.type)) return 0.0;
+    if (contract.resource < 0 || contract.resource >= int(elementCount())) return 0.0;
+    return contract.amount * resourceUnitMassByIndex(contract.resource);
+}
+
+bool Game::playerFleetFitsContract(int contractId) const {
+    const Contract* contract = contractById(*this, contractId);
+    if (!contract) return false;
+    const double needed = contractCargoMass(*contract);
+    if (needed <= 0.0) return true;
+    return playerFleetCapacityAt(contract->originStar) + 0.001 >= needed;
 }
 
 void Game::resizeFactionRelations() {

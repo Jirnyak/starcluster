@@ -1529,6 +1529,391 @@ void testWorldPopulationScalesWithSize() {
           "население мира идёт от его размера", buf);
 }
 
+// --- Доска заказов (§23) ----------------------------------------------------
+//
+// До §23 доска была мёртвым содержимым, и обе поломки были невидимы глазами:
+// заказ платил 0.5..1.7 Cr за год полёта против 7.6..23.2 Cr/год, которые тот
+// же НИЩИЙ игрок снимал свободной торговлей (в 10..30 раз меньше, да ещё и с
+// занятым трюмом), а 9 сроков из 15 нельзя было выдержать в принципе.
+//
+// ⚠️ Мера здесь — только Cr за ГОД ПОЛЁТА, и только против свободного рейса
+// ТОГО ЖЕ кошелька (§17.5 п.2 + §19.4: величину, на которую делишь, надо
+// выдать и сделку исполнить). В кредитах проверка бессмысленна и переживёт
+// любую поломку.
+
+// Фактическая прибыль лучшей сделки сводки и время рейса под неё.
+double freeRunPerYear(Game& g, double wallet) {
+    const int pa = g.playerAgent;
+    const int home = g.agents[pa].currentStar;
+    g.agents[pa].money = wallet;
+    const std::vector<ArbitrageDeal> board = g.playerArbitrageBoard(home, 1, -1);
+    if (board.empty()) return -1.0;
+    const ArbitrageDeal& d = board[0];
+    const double years = g.agentRouteTravelTime(pa, d.targetStar);
+    if (years <= 0.0) return -1.0;
+    const double before = g.agents[pa].money;
+    if (!g.agentBuyElementAmount(pa, d.element, d.units)) return -1.0;
+    g.agents[pa].currentStar = d.targetStar;
+    g.agents[pa].ship.enRoute = false;
+    g.agentSellCargoAmount(pa, 1e18, d.element);
+    return (g.agents[pa].money - before) / years;
+}
+
+// 1. Заказ — ровня небогатому рейсу, а не милостыня и не золотая жила.
+void testJobPaysLikeARun() {
+    double worstRatio = 1e9;
+    double bestRatio = 0.0;
+    char detail[220] = "нет данных";
+    for (unsigned seed : {42u, 7u, 1337u}) {
+        Game g; buildWorld(g, seed, 200);
+        const int pa = g.playerAgent;
+        const int home = g.agents[pa].currentStar;
+
+        double jobSum = 0.0;
+        int jobs = 0;
+        const std::vector<Contract> visible = g.playerVisibleContractsAt(home);
+        for (const Contract& c : visible) {
+            const double years = g.agentContractRouteTravelTime(pa, c.id);
+            if (years <= 0.0) continue;
+            jobSum += c.reward / years;
+            ++jobs;
+        }
+        if (jobs == 0) continue;
+
+        // Кошелёк выдаётся ОТДЕЛЬНОМУ миру: исполнение сделки двигает рынок,
+        // и мерить по нему заказы того же мира уже нельзя.
+        Game h; buildWorld(h, seed, 200);
+        const double runRate = freeRunPerYear(h, 100.0);
+        if (runRate <= 0.0) continue;
+
+        const double ratio = (jobSum / jobs) / runRate;
+        worstRatio = std::min(worstRatio, ratio);
+        bestRatio = std::max(bestRatio, ratio);
+        std::snprintf(detail, sizeof(detail),
+            "seed %u: заказ %.1f Cr/год, свободный рейс (100 Cr) %.1f Cr/год => %.2fx",
+            seed, jobSum / jobs, runRate, ratio);
+    }
+    // Полоса широкая нарочно: ловим не число, а МЕХАНИЗМ — заказ снова стал
+    // платить за расстояние по линейке (уедет в 0.0x) или начал печатать
+    // деньги (уедет за 3x). Внутри полосы баланс — дело вкуса.
+    check(worstRatio > 0.25 && bestRatio < 3.0,
+          "заказ платит соизмеримо свободному рейсу", detail);
+}
+
+// 2. Срок заказа выполним тем самым кораблём, которым его повезут.
+void testJobDeadlinesAreReachable() {
+    int total = 0;
+    int reachable = 0;
+    int rushTotal = 0;
+    int rushReachable = 0;
+    for (unsigned seed : {42u, 7u, 1337u}) {
+        Game g; buildWorld(g, seed, 200);
+        const int pa = g.playerAgent;
+        const int home = g.agents[pa].currentStar;
+        for (const Contract& c : g.playerVisibleContractsAt(home)) {
+            const double eta = g.agentContractRouteTravelTime(pa, c.id);
+            if (eta <= 0.0) continue;
+            const bool fits = eta <= c.deadline - g.time;
+            // СРОЧНЫЕ заказы считаются отдельно: им тугой срок положен по
+            // замыслу (§24), и мешать их с обычными — значит мерить среднее по
+            // больнице. Смешанный счёт как раз и провалил эту проверку, когда
+            // срез срока стоял на 0.62.
+            if (c.rushFactor > 1.01) {
+                ++rushTotal;
+                if (fits) ++rushReachable;
+            } else {
+                ++total;
+                if (fits) ++reachable;
+            }
+        }
+    }
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "обычные: %d из %d; срочные: %d из %d",
+        reachable, total, rushReachable, rushTotal);
+    // Замер до §23 давал 6 из 15 на обычных. Требуем подавляющее большинство,
+    // но не все: тугой срок — законный заказ, он просто платит 45%.
+    // У срочных планка ниже: они ставка, а не гарантия. Но НУЛЁМ она быть не
+    // должна — недостижимый срочный заказ это ловушка, а не выбор.
+    check(total >= 9 && reachable * 100 >= total * 80 &&
+          (rushTotal == 0 || rushReachable > 0),
+          "срок заказа выполним стартовым кораблём", buf);
+}
+
+// --- Репутация и тиры (§24) --------------------------------------------------
+
+// Кривая обязана быть МОНОТОННОЙ и покрывать всю лестницу корпусов: от того,
+// что влезает в стартовый трюм, до того, что не влезает ни в один корпус игры.
+// Ломается это молча — числа остаются «похожими на правду».
+void testJobTierCurveSpansTheHullLadder() {
+    double prevCargo = -1.0;
+    double prevPay = -1.0;
+    bool monotone = true;
+    for (int i = 0; i <= 100; ++i) {
+        const double t = double(i) / 100.0;
+        const double cargo = Game::jobCargoForTier(t);
+        const double pay = Game::jobPayMultiplierForTier(t);
+        if (cargo < prevCargo || pay < prevPay) monotone = false;
+        prevCargo = cargo;
+        prevPay = pay;
+    }
+    const double bottom = Game::jobCargoForTier(0.0);
+    const double top = Game::jobCargoForTier(1.0);
+
+    // ⚠️ Мерить надо против ДОСТИЖИМОЙ части лестницы корпусов, а не против
+    // самого большого трюма в таблице. В ней есть Tera-Freighter (2 000 000 т)
+    // за 8 ТРИЛЛИОНОВ и Fortress за 900 триллионов — заказами такое не
+    // окупается никогда (топовый заказ платит порядка 6e8), это фантазийный
+    // верх, живущий отдельно от экономики. Порог в 100 млрд отсекает его и
+    // оставляет Giga-Freighter (150 000 т, 12 млрд) — реальный потолок
+    // грузовика, до которого игрок может дойти.
+    const double reachablePrice = 1e11;
+    double reachableHull = 0.0;
+    std::string reachableName = "-";
+    for (const ShipClass& sc : shipClasses()) {
+        if (sc.price > reachablePrice) continue;
+        if (sc.cargoCapacity > reachableHull) {
+            reachableHull = sc.cargoCapacity;
+            reachableName = sc.name;
+        }
+    }
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "низ %.0f т (старт 110), верх %.0f т; крупнейший достижимый корпус %s %.0f т => нужно %.1f борта",
+        bottom, top, reachableName.c_str(), reachableHull, top / std::max(1.0, reachableHull));
+    check(monotone && bottom <= 110.0 && top > reachableHull * 2.0,
+          "кривая тира кроет лестницу от старта до флота", buf);
+}
+
+// Репутация растёт на +1 за сдачу и падает ПО РАЗМЕРУ заказа. Асимметрия — это
+// вся суть верха лестницы, и потерять её проще всего.
+void testFailureCostsMoreThanSuccessGives() {
+    const double base = REPUTATION_FAIL_FACTOR * std::sqrt(Game::jobCargoForTier(0.0) / JOB_CARGO_BASE);
+    const double mid  = REPUTATION_FAIL_FACTOR * std::sqrt(Game::jobCargoForTier(0.707) / JOB_CARGO_BASE);
+    const double top  = REPUTATION_FAIL_FACTOR * std::sqrt(Game::jobCargoForTier(1.0) / JOB_CARGO_BASE);
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "успех всегда +1; провал: базовый -%.0f, средний -%.0f, топовый -%.0f заказов",
+        base, mid, top);
+    check(base >= 1.0 && base <= 5.0 && mid > base * 5.0 && top > mid * 2.0 && top < REPUTATION_CAP_JOBS * 0.5,
+          "провал бьёт по размеру, успех даёт единицу", buf);
+}
+
+// Репутация ОТКРЫВАЕТ работу: на нуле доска даёт мелочь, на потолке — то, что
+// не влезает в один корпус. Проверяется на живом мире, а не на формуле.
+void testReputationUnlocksBiggerJobs() {
+    double lowBest = 0.0;
+    double highBest = 0.0;
+    double highMass = 0.0;
+    for (int pass = 0; pass < 2; ++pass) {
+        Game g; buildWorld(g, 42, 200);
+        const int home = g.agents[g.playerAgent].currentStar;
+        g.resizeFactionReputation();
+        for (size_t f = 0; f < g.factionReputation.size(); ++f) {
+            g.factionReputation[f] = pass == 0 ? 0.0 : REPUTATION_CAP_JOBS;
+        }
+        // ⚠️ Доску надо СНЕСТИ: она уже забита заказами, созданными до
+        // выставления репутации, и новых просто не будет (потолок на систему).
+        // Пробник без этого показывал тир 0.000 даже на максимуме.
+        g.contracts.clear();
+        for (int y = 0; y < 400; ++y) g.update(1.0);
+        // Смотрим ВЕСЬ мир, а не одну доску. Тир каждого заказа кидается
+        // кубически смещённым броском, поэтому попадание в самый верх редко:
+        // на восьми строках одной системы его может не случиться вовсе, и
+        // проверка ловила бы удачу броска, а не работу механики.
+        (void)home;
+        for (const Contract& c : g.contracts) {
+            if (pass == 0) {
+                lowBest = std::max(lowBest, c.reward);
+            } else if (c.reward > highBest) {
+                highBest = c.reward;
+                highMass = g.contractCargoMass(c);
+            }
+        }
+    }
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "на нуле лучший %.0f Cr; на потолке %.0f Cr за %.0f т (x%.0f)",
+        lowBest, highBest, highMass, lowBest > 0.0 ? highBest / lowBest : 0.0);
+    check(lowBest > 0.0 && highBest > lowBest * 1000.0 && highBest > 1e8,
+          "репутация открывает заказы на порядки крупнее", buf);
+}
+
+// Крупный заказ не влезает в один корпус — и это ПРОВЕРЯЕТСЯ при взятии.
+// Иначе весь смысл флота и лицензий пропадает.
+void testFleetCapacityGatesBigJobs() {
+    Game g; buildWorld(g, 42, 200);
+    const int pa = g.playerAgent;
+    const int home = g.agents[pa].currentStar;
+    const double oneHold = g.agents[pa].ship.cargoCapacity;
+    const double fleetAlone = g.playerFleetCapacityAt(home);
+
+    // Заказ ровно вдвое больше одного трюма: одним бортом не взять.
+    Contract big;
+    big.id = g.nextContractId++;
+    big.type = ContractType::Delivery;
+    big.originStar = home;
+    big.targetStar = home == 0 ? 1 : 0;
+    big.resource = 0;
+    big.amount = oneHold * 2.0 / std::max(0.001, resourceUnitMassByIndex(0));
+    big.reward = 1000.0;
+    big.postedTime = g.time;
+    big.deadline = g.time + 500.0;
+    g.contracts.push_back(big);
+
+    const bool refusedAlone = !g.playerFleetFitsContract(big.id) && !g.agentAcceptContract(pa, big.id);
+
+    // Добавляем второй борт в ТОЙ ЖЕ системе — теперь флот покрывает объём.
+    Agent second = g.agents[pa];
+    second.ship.cargo.clear();
+    second.currentStar = home;
+    second.ship.enRoute = false;
+    second.playerControlled = true;
+    g.agents.push_back(second);
+    const double fleetWithTwo = g.playerFleetCapacityAt(home);
+    const bool acceptedWithFleet = g.playerFleetFitsContract(big.id) && g.agentAcceptContract(pa, big.id);
+
+    const Contract* stored = nullptr;
+    for (const Contract& c : g.contracts) if (c.id == big.id) stored = &c;
+    const size_t carriers = stored ? stored->carriers.size() : 0;
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "трюм борта %.0f, флот 1 борт %.0f -> отказ=%d; 2 борта %.0f -> взят=%d, носителей %d",
+        oneHold, fleetAlone, int(refusedAlone), fleetWithTwo, int(acceptedWithFleet), int(carriers));
+    check(refusedAlone && acceptedWithFleet && carriers == 2,
+          "крупный заказ требует флота и делится по бортам", buf);
+}
+
+// Сейв обязан переживать репутацию, тир и журнал — иначе весь грайнд сгорает
+// на первой же загрузке, а журнал (§23) снова становится одноразовым.
+void testSaveKeepsReputationAndJournal() {
+    Game g; buildWorld(g, 42, 60);
+    g.resizeFactionReputation();
+    for (size_t f = 0; f < g.factionReputation.size(); ++f) g.factionReputation[f] = 40.0 + double(f) * 7.0;
+    g.pushJournal(JournalKind::JobAccepted, "TOOK #7 DELIVERY 120 Fe > STAR_1", 0.0, 3);
+    g.pushJournal(JournalKind::JobCompleted, "#7 DELIVERY +9000 Cr", 9000.0, 3);
+    if (!g.contracts.empty()) {
+        g.contracts[0].tier = 0.63;
+        g.contracts[0].rushFactor = JOB_RUSH_PAY;
+        g.contracts[0].carriers.clear();
+        g.contracts[0].carriers.push_back(0);
+        g.contracts[0].carriers.push_back(1);
+    }
+    const int probeId = g.contracts.empty() ? -1 : g.contracts[0].id;
+    const double repBefore = g.factionReputationOf(1);
+    const size_t linesBefore = g.transactions.size();
+
+    const std::string path = "balance_save_probe.sav";
+    if (!g.saveToFile(path)) { check(false, "сейв: запись", "saveToFile вернул false"); return; }
+    Game loaded;
+    if (!loaded.loadFromFile(path)) { check(false, "сейв: чтение", "loadFromFile вернул false"); return; }
+    std::remove(path.c_str());
+
+    const Contract* restored = nullptr;
+    for (const Contract& c : loaded.contracts) if (c.id == probeId) restored = &c;
+    int journalKinds = 0;
+    for (const Transaction& t : loaded.transactions) {
+        if (t.kind == JournalKind::JobAccepted || t.kind == JournalKind::JobCompleted) ++journalKinds;
+    }
+    const bool textKept = !loaded.transactions.empty() &&
+        loaded.transactions.front().text.find("DELIVERY") != std::string::npos;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "репутация %.0f->%.0f, строк журнала %d->%d (видов %d, текст цел=%d), тир %.2f, носителей %d",
+        repBefore, loaded.factionReputationOf(1), int(linesBefore), int(loaded.transactions.size()),
+        journalKinds, int(textKept), restored ? restored->tier : -1.0,
+        restored ? int(restored->carriers.size()) : -1);
+    check(std::abs(loaded.factionReputationOf(1) - repBefore) < 0.001 &&
+          loaded.transactions.size() == linesBefore && journalKinds == 2 && textKept &&
+          restored && std::abs(restored->tier - 0.63) < 0.001 && restored->carriers.size() == 2,
+          "сейв переживает репутацию, журнал и тир заказа", buf);
+}
+
+// 3. Срок обязателен: взятый заказ можно ПРОВАЛИТЬ.
+// До §23 взятый заказ не сгорал никогда — 443 года сверх срока, и он всё ещё
+// висел на руках, готовый заплатить 45%. Срок был ценником, а не обязательством.
+void testTakenJobCanExpire() {
+    Game g; buildWorld(g, 42, 200);
+    const int pa = g.playerAgent;
+    const int home = g.agents[pa].currentStar;
+
+    int taken = -1;
+    double deadline = 0.0;
+    for (const Contract& c : g.playerVisibleContractsAt(home)) {
+        if (c.acceptedByAgent >= 0 || !g.agentContractCargoFits(pa, c.id)) continue;
+        if (!g.agentAcceptContract(pa, c.id)) continue;
+        taken = c.id;
+        deadline = c.deadline;
+        break;
+    }
+    if (taken < 0) { check(false, "провал заказа: заказ удалось взять", "ни один не взялся"); return; }
+
+    // Сидим на месте и не везём. Заказ обязан сгореть, а не ждать вечно.
+    //
+    // Ищем след в ЖУРНАЛЕ, а не флаг в списке: сгоревшие заказы через 18 лет
+    // выметаются чисткой `updateContracts`, и проверка по `contract.failed`
+    // ловила бы гонку с уборщиком, а не саму механику.
+    const std::string mark = "#" + std::to_string(taken) + " ";
+    bool journalled = false;
+    double failedAt = 0.0;
+    for (int y = 0; y < 4000 && !journalled; ++y) {
+        g.update(1.0);
+        for (const Transaction& t : g.transactions) {
+            if (t.kind != JournalKind::JobFailed || t.text.find(mark) == std::string::npos) continue;
+            journalled = true;
+            failedAt = t.time;
+        }
+    }
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "заказ #%d, срок %.0fY, сгорел на %.0fY (прокручено %.0fY)",
+        taken, deadline, failedAt, g.time);
+    check(journalled, "просроченный заказ сгорает и попадает в журнал", buf);
+}
+
+// 4. Журнал не считает одну выплату дважды.
+// Награда пишется отдельной ЗЕЛЁНОЙ строкой, а безымянная кассовая лента
+// обязана на эту же сумму уменьшиться — иначе игрок видит свой заработок
+// дважды и не понимает, сколько на самом деле заработал.
+void testJournalCountsPayoutOnce() {
+    Game g; buildWorld(g, 42, 200);
+    const int pa = g.playerAgent;
+    const int home = g.agents[pa].currentStar;
+
+    // Нужен именно ГРУЗОВОЙ заказ: разведка на сдаче сначала лишь отправляет
+    // отчёт (возвращает true, но не платит), и мерить выплату по ней нельзя.
+    int taken = -1;
+    for (const Contract& c : g.playerVisibleContractsAt(home)) {
+        if (c.acceptedByAgent >= 0 || c.resource < 0) continue;
+        if (!g.agentContractCargoFits(pa, c.id)) continue;
+        if (!g.agentAcceptContract(pa, c.id)) continue;
+        taken = c.id;
+        break;
+    }
+    if (taken < 0) { check(false, "журнал: грузовой заказ удалось взять", "ни один не взялся"); return; }
+
+    const Contract* c = nullptr;
+    for (const Contract& x : g.contracts) if (x.id == taken) c = &x;
+    if (!c) { check(false, "журнал: заказ на месте", "исчез"); return; }
+
+    const int target = c->targetStar;
+    const double moneyBefore = g.agents[pa].money;
+    g.transactions.clear();
+    g.agents[pa].currentStar = target;
+    g.agents[pa].ship.enRoute = false;
+    if (!g.agentCompleteContract(pa, taken)) { check(false, "журнал: заказ сдался", "сдать не вышло"); return; }
+    g.update(1.0);   // прокрутка, на которой пишется кассовая строка
+
+    const double earned = g.agents[pa].money - moneyBefore;
+    double logged = 0.0;
+    int green = 0;
+    for (const Transaction& t : g.transactions) {
+        logged += t.amount;
+        if (t.kind == JournalKind::JobCompleted) ++green;
+    }
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "кошелёк +%.0f, журнал суммарно +%.0f, зелёных строк %d, всего строк %d",
+        earned, logged, green, int(g.transactions.size()));
+    check(green == 1 && std::abs(logged - earned) < 1.0,
+          "выплата за заказ попадает в журнал ровно один раз", buf);
+}
+
 } // namespace
 
 int main() {
@@ -1570,6 +1955,15 @@ int main() {
     testMiningBurnsReactorFuel();
     testDrillScalesWithReactor();
     testWorldPopulationScalesWithSize();
+    testJobPaysLikeARun();
+    testJobDeadlinesAreReachable();
+    testTakenJobCanExpire();
+    testJournalCountsPayoutOnce();
+    testJobTierCurveSpansTheHullLadder();
+    testFailureCostsMoreThanSuccessGives();
+    testReputationUnlocksBiggerJobs();
+    testFleetCapacityGatesBigJobs();
+    testSaveKeepsReputationAndJournal();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;
 }

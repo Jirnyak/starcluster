@@ -62,6 +62,16 @@ int main(int argc, char** argv) {
         sel.star = here;
     }
 
+    // Репутация выставляется РАЗНОЙ у разных фракций (§24): панель фракций и
+    // шапка доски заказов на нулях показывают одно слово «НИКТО» и не проверяют
+    // ни длину званий, ни ширину шкалы — а русские звания заметно длиннее
+    // английских, и вылезают они только на настоящих значениях.
+    game.resizeFactionReputation();
+    for (size_t f = 0; f < game.factionReputation.size(); ++f) {
+        static const double ladder[] = {780.0, 240.0, 61.0, 9.0, 0.0, 1000.0};
+        game.factionReputation[f] = ladder[f % 6];
+    }
+
     // Каждое окно снимается отдельно: в каскаде они перекрываются и текст под
     // соседом не прочитать.
     struct Case { const char* name; void (*open)(UI::WindowState&, int, int, int); };
@@ -81,6 +91,24 @@ int main(int argc, char** argv) {
         shot((std::string(cases[i].name) + "_" + tag).c_str(), game, ui, sel);
     }
     {
+        // Журнал снимается ЗАПОЛНЕННЫМ. Пустой он показывал одну строку «ЖУРНАЛ
+        // ПУСТ» и не проверял ничего: длинные русские строки заказов вылезают
+        // за рамку только на настоящих записях (§23).
+        int shown = 0;
+        for (const Contract& c : game.contracts) {
+            if (shown >= 3) break;
+            game.pushJournal(JournalKind::JobAccepted, "TOOK " + game.contractJournalText(c) + " DUE 140Y", 0.0, here);
+            ++shown;
+        }
+        game.pushJournal(JournalKind::Money, std::string(), -1240.0, here);
+        if (!game.contracts.empty()) {
+            game.pushJournal(JournalKind::JobCompleted,
+                game.contractJournalText(game.contracts[0]) + " +1980 Cr", 1980.0, here);
+        }
+        if (game.contracts.size() > 1) {
+            game.pushJournal(JournalKind::JobFailed,
+                game.contractJournalText(game.contracts[1]) + " EXPIRED", 0.0, here);
+        }
         UI::WindowState ui;
         UI::openTransactionsWindow(ui, SCREEN_W, SCREEN_H);
         shot((std::string("log_") + tag).c_str(), game, ui, sel);

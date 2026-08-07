@@ -70,6 +70,10 @@ KnownFactionSummaryCache gKnownFactionSummaryCache;
 const int TITLE_H = 24;
 const int WINDOW_PAD = 10;
 const int CONTRACT_ROW_H = 34;
+// Высота шапки доски над списком (§24: две новых строки — репутация у
+// владельца системы и трюм флота здесь). Вынесена в константу, потому что
+// от неё зависят СРАЗУ ТРИ места: строки, кнопки и число влезающих строк.
+const int CONTRACT_HEADER_H = 24;
 
 bool contains(const SDL_Rect& rect, int x, int y) {
     return x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h;
@@ -704,30 +708,41 @@ void drawAgentPanel(SDL_Renderer* renderer, const Game& game, int agentIndex, in
     cx = drawStat(renderer, cx, y + 104, "TRADES ", buf3);
 }
 
+// Панель фракций. С §24 у неё две темы вместо одной: что мы про фракцию ЗНАЕМ
+// (сводки владельцев) и кто мы ДЛЯ НЕЁ (репутация возчика). Вторая строка
+// каждой записи отдана репутации, потому что именно она решает, какую работу
+// здесь дадут, — а карта владений без этого не подсказывала игроку ничего о
+// том, куда лететь работать.
 void drawFactionPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w) {
     const int rows = std::min(6, int(game.factions.size()));
     const std::vector<KnownFactionSummary>& summaries = knownFactionSummaries(game);
-    const int h = 44 + rows * 19;
+    const int h = 44 + rows * 30;
     panel(renderer, x, y, w, h);
     header(renderer, x + 10, y + 9, "FACTIONS");
-    drawText(renderer, x + 10, y + 30, "KNOWN OWNER REPORTS", P.dim, 1);
+    drawText(renderer, x + 10, y + 30, "STANDING AND KNOWN OWNER REPORTS", P.dim, 1);
     for (int i = 0; i < rows; ++i) {
         const Faction& faction = game.factions[i];
         const KnownFactionSummary known = i < int(summaries.size()) ? summaries[i] : KnownFactionSummary();
-        const int rowY = y + 46 + i * 19;
+        const int rowY = y + 46 + i * 30;
         fillRect(renderer, x + 10, rowY, 9, 9, factionColor(faction));
         drawText(renderer, x + 25, rowY, faction.name, P.text, 1);
         bar(renderer, x + w - 96, rowY - 1, 28, 7, known.confidence, factionColor(faction));
         char count[40];
         std::snprintf(count, sizeof(count), "KNOWN %d", known.knownSystems);
         drawText(renderer, x + w - 62, rowY, count, known.knownSystems > 0 ? P.dim : P.red, 1);
-        char meta[48];
-        if (known.newestAge >= 0.0) {
-            std::snprintf(meta, sizeof(meta), "LAST %.0FY CONF %.0F%%", known.newestAge, known.confidence * 100.0);
-        } else {
-            std::snprintf(meta, sizeof(meta), "LAST - CONF 0%%");
-        }
-        drawText(renderer, x + 25, rowY + 10, meta, known.knownSystems > 0 ? P.amber : P.dim, 1);
+
+        // Репутация: звание, шкала и «сколько заказов сдано». Число заказов
+        // держим на виду — это единица шкалы, и по ней игрок сам считает, что
+        // ему осталось (та же логика, что у квоты в §21).
+        const double tier = game.factionJobTier(int(i));
+        const double done = game.factionReputationOf(int(i));
+        char rep[72];
+        // «JOBS DONE» — ЦЕЛАЯ фраза словаря (§14): отдельного ключа "JOBS"
+        // заводить нельзя, он уже занят кнопкой доски и переводится как
+        // «ЗАКАЗЫ», а здесь нужен родительный падеж.
+        std::snprintf(rep, sizeof(rep), "%s  JOBS DONE %.0F", Game::jobRankName(tier), done);
+        drawText(renderer, x + 25, rowY + 10, rep, tier > 0.001 ? P.cyan : P.dim, 1);
+        bar(renderer, x + 25, rowY + 21, w - 45, 4, tier, tier > 0.001 ? P.cyan : P.dim);
     }
 }
 
@@ -857,20 +872,34 @@ void drawContractRouteLine(SDL_Renderer* renderer, const Game& game, const Contr
     const bool cargoFits = remoteOffer || game.agentContractCargoFits(game.playerAgent, contract.id);
     const SDL_Color c = !cargoFits ? P.red : (fuelShort ? P.amber : P.dim);
     char line[160];
+    // Крупный заказ серый не «просто так», а потому что не хватает ФЛОТА, и
+    // цифру нехватки надо назвать (§24). Без неё игрок видел бы недоступную
+    // строку и не знал, чего именно докупить.
+    const double needMass = game.contractCargoMass(contract);
+    const double fleetMass = game.playerFleetCapacityAt(contract.originStar);
+    char fleetNote[64] = "";
+    if (needMass > 0.0 && needMass > fleetMass + 0.001) {
+        std::snprintf(fleetNote, sizeof(fleetNote), " FLEET %.0F/%.0F T", fleetMass, needMass);
+    } else if (needMass > 0.0 && !cargoFits) {
+        std::snprintf(fleetNote, sizeof(fleetNote), " HOLD/HEAVY");
+    }
+
     if (fuelShort) {
         std::snprintf(line, sizeof(line), "%s %.0FY  FUEL %.0F SHORT %.0F  RISK %.0F%%%s",
-            remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, shortfall, risk * 100.0, cargoFits ? "" : " HOLD/HEAVY");
+            remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, shortfall, risk * 100.0, fleetNote);
     } else {
         std::snprintf(line, sizeof(line), "%s %.0FY  FUEL %.0F OK  RISK %.0F%%%s",
-            remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, risk * 100.0, cargoFits ? "" : " HOLD/HEAVY");
+            remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, risk * 100.0, fleetNote);
     }
     if (textWidth(line, 1) > maxW) {
+        // Короткая форма. Нехватка флота остаётся и здесь: она важнее топлива,
+        // потому что без неё кнопка серая и причина непонятна.
         if (fuelShort) {
             std::snprintf(line, sizeof(line), "%.0FY F%.0F S%.0F R%.0F%%%s",
-                years, fuelNeeded, shortfall, risk * 100.0, cargoFits ? "" : " HOLD/HEAVY");
+                years, fuelNeeded, shortfall, risk * 100.0, fleetNote);
         } else {
             std::snprintf(line, sizeof(line), "%.0FY F%.0F OK R%.0F%%%s",
-                years, fuelNeeded, risk * 100.0, cargoFits ? "" : " HOLD/HEAVY");
+                years, fuelNeeded, risk * 100.0, fleetNote);
         }
     }
     drawText(renderer, x, y, line, c, 1);
@@ -964,11 +993,12 @@ bool handleSystemWindowMouseDown(WindowState& state, Game& game, const Window& w
 }
 
 SDL_Rect contractButtonRect(const Window& window, int row) {
-    return {window.rect.x + window.rect.w - 96, window.rect.y + TITLE_H + 55 + row * CONTRACT_ROW_H, 82, 22};
+    return {window.rect.x + window.rect.w - 96,
+            window.rect.y + TITLE_H + CONTRACT_HEADER_H + 55 + row * CONTRACT_ROW_H, 82, 22};
 }
 
 int contractMaxRows(const Window& window) {
-    return std::max(1, (window.rect.h - TITLE_H - 64) / CONTRACT_ROW_H);
+    return std::max(1, (window.rect.h - TITLE_H - CONTRACT_HEADER_H - 64) / CONTRACT_ROW_H);
 }
 
 bool handleContractsWindowMouseDown(Game& game, const Window& window, HudSelection& selection, int mouseX, int mouseY) {
@@ -2434,7 +2464,7 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
 
 void drawContractRow(SDL_Renderer* renderer, const Game& game, const Window& window, const Contract& contract, int row, bool activeContractRow) {
     const int x = window.rect.x + WINDOW_PAD;
-    const int y = window.rect.y + TITLE_H + 52 + row * CONTRACT_ROW_H;
+    const int y = window.rect.y + TITLE_H + CONTRACT_HEADER_H + 52 + row * CONTRACT_ROW_H;
     const SDL_Rect button = contractButtonRect(window, row);
     const std::vector<ElementDefinition>& elements = elementDefinitions();
     const bool validResource = contract.resource >= 0 && contract.resource < int(elements.size());
@@ -2447,7 +2477,8 @@ void drawContractRow(SDL_Renderer* renderer, const Game& game, const Window& win
 
     char line[192];
     if (contractUsesCargo(contract.type)) {
-        std::snprintf(line, sizeof(line), "#%d %s %.0F %s > %s  CR %.0F  %.1FY",
+        std::snprintf(line, sizeof(line), "%s#%d %s %.0F %s > %s  CR %.0F  %.1FY",
+            contract.rushFactor > 1.01 ? "RUSH " : "",
             contract.id,
             validResource ? elements[contract.resource].symbol : "?",
             contract.amount,
@@ -2465,7 +2496,8 @@ void drawContractRow(SDL_Renderer* renderer, const Game& game, const Window& win
                 yearsLeft);
         }
     } else {
-        std::snprintf(line, sizeof(line), "#%d %s %s > %s  CR %.0F  %.1FY",
+        std::snprintf(line, sizeof(line), "%s#%d %s %s > %s  CR %.0F  %.1FY",
+            contract.rushFactor > 1.01 ? "RUSH " : "",
             contract.id,
             contractTypeLabel(contract.type),
             origin ? origin->name.c_str() : "-",
@@ -2481,7 +2513,12 @@ void drawContractRow(SDL_Renderer* renderer, const Game& game, const Window& win
                 yearsLeft);
         }
     }
-    drawText(renderer, x + 8, y + 2, line, activeContractRow ? P.amber : P.text, 1);
+    // Срочный заказ метится ПРЯМО В СТРОКЕ и цветом: его повышенная ставка уже
+    // сидит в награде, и игрок должен видеть, за что переплачивают, ДО взятия
+    // (§24). Иначе «дорогой заказ с коротким сроком» выглядел бы подарком.
+    const bool rush = contract.rushFactor > 1.01;
+    const SDL_Color rowColour = activeContractRow ? P.amber : (rush ? P.red : P.text);
+    drawText(renderer, x + 8, y + 2, line, rowColour, 1);
     drawContractRouteLine(renderer, game, contract, x + 8, y + 16, button.x - x - 18);
 
     if (activeContractRow) {
@@ -2525,6 +2562,23 @@ void drawContractsWindow(SDL_Renderer* renderer, const Game& game, const Window&
         drawText(renderer, x, y, "NO LOCAL OR SIGNAL JOB BOARD", P.red, 1);
     }
     y += 16;
+    // Кто ты ЗДЕСЬ. Тир доски задаёт репутация у владельца этой системы (§24),
+    // и без этой строки игрок не понимал бы, почему на соседней доске работа
+    // крупнее: разница объясняется именно здесь, у самой доски.
+    const int boardFaction = star->ownerFaction;
+    if (boardFaction >= 0 && boardFaction < int(game.factions.size())) {
+        const double tier = game.factionJobTier(boardFaction);
+        char standing[128];
+        std::snprintf(standing, sizeof(standing), "%s - %s, %.0F JOBS DONE, MAX LOAD %.0F T",
+            game.factions[boardFaction].name.c_str(), Game::jobRankName(tier),
+            game.factionReputationOf(boardFaction), Game::jobCargoForTier(tier));
+        drawText(renderer, x, y, standing, tier > 0.001 ? P.cyan : P.dim, 1);
+        y += 12;
+    }
+    char fleet[96];
+    std::snprintf(fleet, sizeof(fleet), "FLEET HOLD HERE %.0F T", game.playerFleetCapacityAt(window.star));
+    drawText(renderer, x, y, fleet, P.dim, 1);
+    y += 12;
     drawText(renderer, x, y, "ACTIVE JOBS + VISIBLE LISTINGS", P.dim, 1);
 
     int row = 0;
@@ -2543,7 +2597,7 @@ void drawContractsWindow(SDL_Renderer* renderer, const Game& game, const Window&
         }
     }
     if (row == 0) {
-        drawText(renderer, x, window.rect.y + TITLE_H + 54,
+        drawText(renderer, x, window.rect.y + TITLE_H + CONTRACT_HEADER_H + 54,
             liveBoard ? "NO LOCAL CONTRACTS RIGHT NOW" : "NO VISIBLE CONTRACT SIGNALS", P.dim, 1);
     }
 }
@@ -2746,17 +2800,33 @@ void drawTransactionsWindow(SDL_Renderer* renderer, const Game& game, const Wind
     for (auto it = game.transactions.rbegin(); it != game.transactions.rend(); ++it) {
         const auto& t = *it;
         if (y + 12 > window.rect.y + window.rect.h - 10) break;
-        
+
         char buf[256];
         std::string starName = "Deep Space";
         if (t.starIndex >= 0 && t.starIndex < int(game.cluster.stars.size())) {
             starName = game.cluster.stars[t.starIndex].name;
         }
-        
-        std::snprintf(buf, sizeof(buf), "[YEAR %.2f] @ %s : %c%.0f Cr", 
-            t.time, starName.c_str(), t.amount >= 0 ? '+' : '-', std::abs(t.amount));
-        
-        drawText(renderer, x, y, buf, t.amount >= 0 ? P.green : P.red, 1);
+
+        // Цвет — это ВИД записи, а не знак суммы. Заказ на руках белый (он ещё
+        // ничего не стоил и ничего не принёс), сданный зелёный, сгоревший
+        // красный; касса как была — приход зелёный, расход красный.
+        SDL_Color colour = t.amount >= 0 ? P.green : P.red;
+        switch (t.kind) {
+        case JournalKind::JobAccepted:  colour = P.text; break;
+        case JournalKind::JobCompleted: colour = P.green; break;
+        case JournalKind::JobFailed:    colour = P.red; break;
+        case JournalKind::Money:        break;
+        }
+
+        if (t.kind == JournalKind::Money) {
+            std::snprintf(buf, sizeof(buf), "[YEAR %.2f] @ %s : %c%.0f Cr",
+                t.time, starName.c_str(), t.amount >= 0 ? '+' : '-', std::abs(t.amount));
+        } else {
+            std::snprintf(buf, sizeof(buf), "[YEAR %.2f] @ %s : %s",
+                t.time, starName.c_str(), t.text.c_str());
+        }
+
+        drawText(renderer, x, y, buf, colour, 1);
         y += 16;
     }
 }

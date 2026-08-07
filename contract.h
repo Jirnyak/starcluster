@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 
 enum class ContractType {
     Delivery,
@@ -13,6 +14,15 @@ enum class ContractType {
 struct Contract {
     int id = 0;
     ContractType type = ContractType::Delivery;
+    // --- Тир заказа (§24) ---------------------------------------------------
+    // 0..1, НЕПРЕРЫВНО. Не ступеньки «мелкий/средний/крупный», а одно число,
+    // выведенное из репутации у выдающей фракции: от него идут и масса груза,
+    // и дальность, и множитель награды. Хранится в заказе, а не считается
+    // заново, потому что репутация к моменту сдачи уже другая.
+    double tier = 0.0;
+    // Множитель ставки за тугой срок (1.0 — обычный заказ, >1 — срочный).
+    // Виден на доске ДО взятия: риск оплачен вперёд, а не задним числом.
+    double rushFactor = 1.0;
     int issuerFaction = -1;
     int originStar = -1;
     int targetStar = -1;
@@ -29,6 +39,11 @@ struct Contract {
     bool reportDelivered = false;
     bool escortArrived = false;
     int acceptedByAgent = -1;
+    // Кто ФИЗИЧЕСКИ везёт груз (§24). Крупный заказ не влезает в один корпус,
+    // поэтому при взятии он раскладывается по бортам игрока, стоявшим в системе
+    // отправления, и сдать его можно только когда ВСЕ носители на месте.
+    // Пусто — заказ везёт один `acceptedByAgent` (обычный случай).
+    std::vector<int> carriers;
     bool completed = false;
     bool failed = false;
 };
