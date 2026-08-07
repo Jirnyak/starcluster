@@ -52,6 +52,13 @@ struct VisualNovelState {
     std::string currentText = "";
     std::unordered_set<int> visitedSystems;
     int arrowTarget = 0;
+    // Совет обучения (шаги 10 и 11) считается ОДИН раз и живёт здесь ЦЕЛИКОМ.
+    // Реплики «берите X» и «продайте в Y» обязаны говорить про ОДИН рейс, а между
+    // ними проходит столько времени, сколько игрок читает: мир идёт, цены ползут.
+    // Пересчёт на втором шаге назвал бы другой товар — или, хуже, оставил бы имя
+    // системы от первого расчёта, а цифры взял от второго.
+    TradeRun hintRun;
+    bool hintComputed = false;
 };
 
 struct WindowState {
@@ -110,6 +117,10 @@ void drawControlsCard(SDL_Renderer* renderer, int screenW, int screenH);
 // Перенос по словам. Наружу вынесен ради скриншот-харнеса: он меряет, во
 // сколько строк ложится реплика Тимертии, — коробка диалога держит только пять.
 std::string wrapText(const std::string& text, int maxChars);
+// Клавиша V: гасит коробку, а если она погашена — ПЕРЕСЧИТЫВАЕТ сводку по
+// нынешней обстановке и жжёт на это топливо реактора (§28). Во время обучения
+// остаётся простым выключателем.
+void toggleVisualNovel(WindowState& state, Game& game);
 bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH);
 void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, int screenH);
 void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int screenW, int screenH, SDL_Texture* tex);

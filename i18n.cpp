@@ -86,9 +86,21 @@ const Entry EXACT[] = {
      "Таблица элементов по стандартной суперсимметричной модели - общая КОНВЕНЦИЯ межзвёздного рынка."},
     {"NASH EQUILIBRIUM proves it is best to buy on supply and sell on demand.",
      "РАВНОВЕСИЕ НЭША доказывает: покупай там, где предложение, продавай там, где спрос."},
-    {"The local model suggests you buy %s.", "Местная модель советует купить: %s."},
-    {"We also have insight that the best place to sell it right now is %s. Remember that name, Master: %s!",
-     "Есть данные: лучше всего сбыть это сейчас в системе %s. Запомни это имя, хозяин: %s!"},
+    // Совет обучения. Числа в реплике настоящие: цена, отношение добычи к
+    // потреблению, дальность, годы, прибыль — всё из `Game::playerBestRun`.
+    {"The local model says: take %s. This port digs up %.1f times more of it than it burns, so it goes for a mere %.2f Cr.",
+     "Местная модель говорит: берите %s. Этот порт добывает его в %.1f раза больше, чем сжигает, оттого он и стоит всего %.2f Cr."},
+    {"The local model says: take %s - here it goes for a mere %.2f Cr.",
+     "Местная модель говорит: берите %s - здесь он стоит всего %.2f Cr."},
+    {"The local model finds nothing here worth a hold, Master. That happens: a port can be poor. Read the prices yourself - what is cheap here is what you load.",
+     "Местная модель не находит здесь ничего, достойного трюма, хозяин. Так бывает: порт беден. Читайте цены сами - что здесь дёшево, то и грузят."},
+    {"In %s they pay %.2f for it - %.1f ly, %.0f years under way, about %.0f Cr of profit. Remember that name, Master: %s!",
+    // ⚠️ Годы пишутся буквой Y, как везде в интерфейсе, а не словом: русское
+    // числительное требует согласования («24 года», но «25 лет»), а число сюда
+    // приходит из расчёта. «%.1f св.года» безопасно — там всегда дробь.
+     "В системе %s за него дают %.2f - это %.1f св.года, %.0f Y пути и около %.0f Cr прибыли. Запомните имя, хозяин: %s!"},
+    {"Where to sell is a question the ledger answers, Master: press E for the exchange. It weighs every market we have seen - and so far we have seen only this one.",
+     "Где сбыть - на это отвечает сводка, хозяин: биржа на E. Она взвешивает все рынки, что мы видели, - а видели мы пока только этот."},
     // Топливный блок (§12): термины взяты ровно те, что подписаны в окне
     // ТРЮМ/БАКИ — БУНКЕР, ТРЮМ, БАК, ТЯГА, КРЕЙСЕР, ОПТИМУМ. Иначе игрок
     // прочитает объяснение и не найдёт в окне того, о чём ему рассказали.
@@ -127,8 +139,33 @@ const Entry EXACT[] = {
      "Кстати, корабль можно улучшать, а лицензии - докупать."},
     {"F1 lists every control. I am at your service with more insights at any time, Master. [V]",
      "F1 покажет всё управление. Я всегда на связи и готова подсказать ещё, хозяин. [V]"},
-    {"Care for a market report, Master? Local scans show peak supply of %s at %s, and highest demand for %s at %s.",
-     "Сводку по рынку, хозяин? Сканы дают пик предложения %s в %s, а высший спрос на %s - в %s."},
+    // Сводка по прибытии (шаг 100). Считается ТОЛЬКО по разведанным рынкам,
+    // поэтому у неё три исхода: рейс есть, рынок пока один, и «видели много,
+    // а везти отсюда нечего».
+    {"A market report, Master: %s goes for %.2f here and fetches %.2f in %s - %.1f ly, %.0f years, some %.0f Cr. Best of everything we have seen.",
+    // ⚠️ Порядок %s и чисел обязан совпадать с английским ключом: snprintf берёт
+    // аргументы по счёту, а не по смыслу. Перестановка «%s ... %.2f» на
+    // «%.2f ... %s» здесь читала double как указатель и валила игру.
+     "Сводку по рынку, хозяин: %s здесь идёт по %.2f, а берут по %.2f в системе %s - это %.1f св.года, %.0f Y и около %.0f Cr. Лучшее из всего, что мы видели."},
+    {"No report yet, Master: this is the only market we have seen, and there is nothing to weigh it against. Fly, and I will keep the ledger.",
+     "Сводки пока нет, хозяин: этот рынок у нас единственный, и взвесить его не с чем. Летите, а счёт я поведу."},
+    {"No report yet, Master: this is the only market we have seen. They have a surplus of %s here at %.2f - fly and find who lacks it, and I will keep the ledger.",
+     "Сводки пока нет, хозяин: этот рынок у нас единственный. Здесь избыток - %s по %.2f. Летите и найдите, кому его не хватает, а счёт я поведу."},
+    {"Nothing worth the fuel, Master: of the %d markets we have seen, none pays for a run from here.",
+     "Ничего, что стоило бы топлива, хозяин: ни один из виденных нами рынков (%d) не окупает рейс отсюда."},
+    {"Nothing worth the fuel, Master: of the %d markets we have seen, none pays for a run from here. They do have a surplus of %s at %.2f - somewhere it will be wanted.",
+     "Ничего, что стоило бы топлива, хозяин: ни один из виденных нами рынков (%d) не окупает рейс отсюда. Зато здесь избыток - %s по %.2f, где-то он понадобится."},
+    // Глубокий просчёт по V (§28) — та же сводка, но вчетверо дальше и мимо
+    // разведки, за топливо реактора.
+    {"Deep model, Master - and the reactor pays for it: %s goes for %.2f here and fetches %.2f in %s, %.1f ly, %.0f years, some %.0f Cr. Nothing within reach beats it.",
+     "Глубокий просчёт, хозяин, и платит за него реактор: %s здесь идёт по %.2f, а берут по %.2f в системе %s, это %.1f св.года, %.0f Y и около %.0f Cr. Ближе ничего лучше нет."},
+    {"I ran the model, Master, and it comes back empty: with this hold and this purse there is no run out of here worth its fuel.",
+     "Просчёт сделан, хозяин, и он пуст: с таким трюмом и таким кошельком отсюда не выходит ни одного рейса, который окупил бы топливо."},
+    {"The bunker is dry, Master: there is nothing to think with. A model costs energy like everything else aboard.",
+     "Бункер сух, хозяин: думать не на чем. Просчёт стоит энергии, как и всё остальное на борту."},
+    {"model run: %.3F fuel burned", "просчёт: сожжено %.3F топлива"},
+    {"model run refused: bunker dry", "просчёт не вышел: бункер сух"},
+
     {"no destination set: open a system and press DESTINATION",
      "цель не задана: откройте систему и нажмите НАЗНАЧЕНИЕ"},
     // Стрелка-указка новеллы. Одной строкой, потому что «TARGET» в одиночку
@@ -1060,6 +1097,37 @@ const std::string& tr(const std::string& s) {
     std::unordered_map<std::string, std::string>::iterator it = memo.find(s);
     if (it != memo.end()) return it->second;
     return memo.insert(std::make_pair(s, translate(s))).first->second;
+}
+
+// Совпадают ли спецификаторы формата в паре «английский — русский». snprintf
+// берёт аргументы ПО СЧЁТУ, а не по смыслу: стоит переставить в переводе «%s ...
+// %.2f» на «%.2f ... %s» — и double читается как указатель, то есть игра падает
+// ровно там, где сработала реплика. Замечено на живой правке (совет Тимертии),
+// поймано глазами; здесь оно закрыто проверкой, потому что это класс ошибки,
+// который тихо переживает и сборку, и запуск на английском.
+bool formatSpecsConsistent(std::string* firstBad) {
+    static const std::string kFlags = "-+ #0123456789.";
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(EXACT) / sizeof(EXACT[0]); ++i) {
+        const std::string en(EXACT[i].en), ru(EXACT[i].ru);
+        std::vector<std::string> a, b;
+        for (int pass = 0; pass < 2; ++pass) {
+            const std::string& s = pass == 0 ? en : ru;
+            std::vector<std::string>& out = pass == 0 ? a : b;
+            for (size_t p = 0; p + 1 < s.size(); ++p) {
+                if (s[p] != '%') continue;
+                if (s[p + 1] == '%') { ++p; continue; }
+                size_t q = p + 1;
+                while (q < s.size() && kFlags.find(s[q]) != std::string::npos) ++q;
+                if (q < s.size()) out.push_back(std::string(1, s[q]));
+            }
+        }
+        if (a != b) {
+            ok = false;
+            if (firstBad && firstBad->empty()) *firstBad = en;
+        }
+    }
+    return ok;
 }
 
 bool isInterfaceWord(const std::string& s) {

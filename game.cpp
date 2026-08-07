@@ -4197,6 +4197,17 @@ void Game::init(size_t num_stars) {
     // влияло). Один seed ⇒ один и тот же мир: баг игрока воспроизводим, а
     // регресс-проверки (soak/shots) наконец сравнимы между прогонами.
     rng.seed(seed);
+    // Тот же довод, что и строкой выше, но для ВТОРОГО мира в одном процессе.
+    // `marketClusterLevel` — кэш в market.cpp; авторитетное значение живёт в
+    // `clusterPriceLevel` и проталкивается вниз, но ВПЕРВЫЕ это происходит уже
+    // после засева рынков (см. measureClusterPriceLevel ниже). До того рынки
+    // релаксируют цены под уровень ПРЕДЫДУЩЕЙ партии, и один и тот же seed даёт
+    // разную экономику: замер на трёх подряд мирах seed 42 — уровень до init
+    // 1.0000 / 0.2652 / 0.4641, добыча против потребления молибдена 5.8 / 13.1 /
+    // 7.2, цена сбыта 90.98 / 71.79 / 82.38. Первый мир в процессе всегда был
+    // прав, поэтому игра этого не показывала (одна партия — один процесс), зато
+    // балансовый стенд строит миры десятками и мерил их по остаткам соседа.
+    marketSetClusterLevel(1.0);
     cluster.generate(num_stars, seed);
     markets.clear();
     markets.resize(num_stars);
@@ -6845,6 +6856,108 @@ std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDea
     });
     if (int(deals.size()) > keep) deals.resize(size_t(keep));
     return deals;
+}
+
+TradeRun Game::playerBestRun(int originStar, int nearestSystems, bool knownOnly) const {
+    TradeRun best;
+    if (!validStar(*this, originStar) || originStar >= int(markets.size())) return best;
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return best;
+
+    const Agent& player = agents[playerAgent];
+    const Market& home = markets[originStar];
+    const ClusterStar& hs = cluster.stars[originStar];
+    const double freeMass = std::max(0.0, player.ship.cargoCapacity - shipCargoMass(player.ship));
+    if (freeMass <= 0.0 || player.money <= 0.0) return best;
+
+    const double sellTariff = licenceTariffRate;
+    const int elems = std::min(int(elementCount()), int(home.prices.size()));
+
+    // Что и сколько отсюда вообще можно увезти — считается один раз на элемент,
+    // как в `playerArbitrageBoard`: объём зависит от кошелька и трюма, а не от цели.
+    struct Leg { double maxUnits; bool usable; };
+    std::vector<Leg> legs(static_cast<size_t>(elems));
+    for (int e = 0; e < elems; ++e) {
+        Leg& leg = legs[size_t(e)];
+        leg.usable = false;
+        leg.maxUnits = 0.0;
+        if (home.prices[e] <= 0.001 || home.supply[e].amount < 1.0) continue;
+        const double unitMass = resourceUnitMassByIndex(e);
+        if (unitMass <= 0.0) continue;
+        double u = std::min(freeMass / unitMass, home.supply[e].amount);
+        for (int pass = 0; pass < 2 && u > 0.0; ++pass) {
+            const double avg = home.executionPrice(e, u, false);
+            u = std::min(u, player.money / std::max(1e-9, avg));
+        }
+        if (u <= 0.01) continue;
+        leg.maxUnits = u;
+        leg.usable = true;
+    }
+
+    // Ближайшие системы. Cr/год сама душит дальние цели, поэтому перебирать всё
+    // скопление незачем: замер на 8192 системах — 128 ближайших лежат в 1 мс и
+    // всегда содержат победителя, потому что он в двух-трёх световых годах.
+    std::vector<std::pair<double, int> > near;
+    near.reserve(size_t(std::max(1, nearestSystems)) * 2);
+    for (int i = 0; i < int(cluster.stars.size()) && i < int(markets.size()); ++i) {
+        if (i == originStar) continue;
+        if (knownOnly && !playerKnowsMarket(i)) continue;
+        near.push_back(std::make_pair(distanceBetween(hs, cluster.stars[i]), i));
+    }
+    if (near.empty()) return best;
+    const size_t keep = std::min(near.size(), size_t(std::max(1, nearestSystems)));
+    std::partial_sort(near.begin(), near.begin() + long(keep), near.end());
+    near.resize(keep);
+
+    for (size_t k = 0; k < near.size(); ++k) {
+        const int target = near[k].second;
+        // Цель, до которой маршрут не строится, — не совет, а ловушка (§12.5):
+        // корабль с такими баками туда просто не полетит.
+        if (!agentRouteCost(playerAgent, target).feasible) continue;
+        const double years = agentRouteTravelTime(playerAgent, target);
+        if (years <= 0.0) continue;
+
+        const Market& tm = markets[target];
+        for (int e = 0; e < elems; ++e) {
+            const Leg& leg = legs[size_t(e)];
+            if (!leg.usable) continue;
+            // Разведанное — по МОДЕЛИ (наблюдение стареет), обучающее всезнание —
+            // по живой котировке: врать первой целью партии нельзя.
+            const double sellPrice = knownOnly ? playerProjectedPrice(target, e)
+                                               : (e < int(tm.prices.size()) ? tm.prices[e] : 0.0);
+            if (sellPrice <= 0.0) continue;
+
+            const double targetDepth = tm.depthOf(e);
+            for (int step = 1; step <= 10; ++step) {
+                const double u = leg.maxUnits * double(step) / 10.0;
+                if (u <= 0.01) continue;
+                const double avgBuy = home.executionPrice(e, u, false);
+                const double cost = u * avgBuy;
+                const double rev = u * sellPrice * marketExecutionFactor(u, targetDepth, true) * (1.0 - sellTariff);
+                const double perYear = (rev - cost) / years;
+                if (rev - cost <= 0.0 || perYear <= best.perYear) continue;
+                best.element = e;
+                best.targetStar = target;
+                best.units = u;
+                best.buyPrice = avgBuy;
+                best.sellPrice = sellPrice;
+                best.profit = rev - cost;
+                best.years = years;
+                best.perYear = perYear;
+                best.distanceLy = near[k].first;
+                best.valid = true;
+            }
+        }
+    }
+
+    // ПОЧЕМУ здесь дёшево. Величина осмысленна только там, где элемент вообще
+    // потребляют: у синтетических сверхтяжёлых потребление нулевое, и отношение
+    // улетает в 1e12 — такое не произносят, а молчат о нём (см. ui.cpp).
+    if (best.valid) {
+        const double cons = best.element < int(home.demandRate.size()) ? home.demandRate[best.element] : 0.0;
+        const double prod = best.element < int(home.productionRate.size()) ? home.productionRate[best.element] : 0.0;
+        best.pressure = cons > 1e-6 ? prod / cons : -1.0;
+    }
+    return best;
 }
 
 double Game::licencePrice() const {

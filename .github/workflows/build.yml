@@ -97,15 +97,50 @@ jobs:
           mv game.exe starcluster.exe
           mkdir -p dist
           cp starcluster.exe dist/
-          cp /mingw64/bin/SDL2.dll dist/
-          cp /mingw64/bin/SDL2_mixer.dll dist/
-          cp /mingw64/bin/libwinpthread-1.dll dist/
+          # ТРАНЗИТИВНОЕ замыкание зависимостей, а не список из трёх DLL.
+          # Ручной список был неполон и ломал релиз молча: SDL2_mixer.dll ЖЁСТКО
+          # импортирует кодеки (libmpg123-0, libFLAC, libopusfile-0,
+          # libvorbisfile-3, libwavpack-1, libxmp), а те тянут libogg/libopus/
+          # libvorbis. Windows разрешает импорты при ЗАГРУЗКЕ, поэтому нехватка
+          # даёт не «музыка молчит», а «приложение не запускается».
+          # Обходим импорты вширь через objdump; своим считаем всё, что лежит в
+          # /mingw64/bin, остальное — системные DLL Windows.
+          queue="dist/starcluster.exe"
+          while [ -n "$queue" ]; do
+            next=""
+            for bin in $queue; do
+              for dep in $(objdump -p "$bin" | sed -n 's/^[[:space:]]*DLL Name:[[:space:]]*//p'); do
+                if [ -f "/mingw64/bin/$dep" ] && [ ! -f "dist/$dep" ]; then
+                  cp "/mingw64/bin/$dep" dist/
+                  next="$next dist/$dep"
+                fi
+              done
+            done
+            queue="$next"
+          done
+          echo "DLL в поставке:"; ls dist/*.dll
           # Ассеты игры: без них нет ни музыки, ни портрета Тимертии в интро.
           cp timertia.png dist/
           mkdir -p dist/music
           cp -R music/processed dist/music/
           mkdir -p dist/comic
           cp comic/*.png dist/comic/ 2>/dev/null || true
+      - name: Verify DLL closure
+        run: |
+          # Механическая гарантия вместо честного слова: обходим ВСЕ импорты
+          # поставки и валим сборку, если хоть один зовёт DLL из /mingw64/bin,
+          # которой в папке нет. Игрок узнал бы об этом окном «не найден
+          # libmpg123-0.dll», а мы — здесь.
+          missing=""
+          for bin in dist/starcluster.exe dist/*.dll; do
+            for dep in $(objdump -p "$bin" | sed -n 's/^[[:space:]]*DLL Name:[[:space:]]*//p'); do
+              if [ ! -f "dist/$dep" ] && [ -f "/mingw64/bin/$dep" ]; then
+                missing="$missing $dep(<-$(basename $bin))"
+              fi
+            done
+          done
+          if [ -n "$missing" ]; then echo "НЕ ХВАТАЕТ DLL:$missing"; exit 1; fi
+          echo "замыкание полное: $(ls dist/*.dll | wc -l) DLL"
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:

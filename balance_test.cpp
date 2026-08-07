@@ -19,6 +19,7 @@
 #include "drive.h"
 #include "local.h"
 #include "i18n.h"
+#include "ui.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -2022,6 +2023,156 @@ void testJournalCountsPayoutOnce() {
           "выплата за заказ попадает в журнал ровно один раз", buf);
 }
 
+// --- Совет Тимертии (§27) ---------------------------------------------------
+// Реплики новеллы ранжировали рынки МАССОЙ запаса и МАССОЙ спроса. У водорода
+// её на порядки больше всех, поэтому «покупай» всегда указывало на водород, а
+// «продавай» — на самую населённую систему в 15 ly, у которой и потребление
+// максимально: обе половины сводки сходились в ОДНУ систему, и на скриншоте
+// игрока Тимертия предлагала купить и продать водород в одном и том же порту.
+// Хуже того, цена в «лучшей» цели бывала НИЖЕ домашней (замер 2.38 -> 1.74) —
+// совет отправлял торговать в убыток.
+void testAdviceIsARealRun() {
+    const unsigned seeds[3] = {42u, 1337u, 7u};
+    int good = 0;
+    char buf[260] = "";
+    for (int s = 0; s < 3; ++s) {
+        Game g; buildWorld(g, seeds[s], 0);
+        const int home = g.agents[g.playerAgent].currentStar;
+        const TradeRun run = g.playerBestRun(home, 128, false);
+        const bool ok = run.valid && run.targetStar != home && run.profit > 0.0 &&
+                        run.sellPrice > run.buyPrice && run.years > 0.0;
+        if (ok) ++good;
+        if (s == 0) {
+            std::snprintf(buf, sizeof(buf), "seed 42: %s %.2f -> %.2f в %s, %.1f ly, %.0f лет, %.0f Cr = %.1f Cr/год",
+                run.valid ? elementDefinitions()[size_t(run.element)].symbol : "-",
+                run.buyPrice, run.sellPrice,
+                run.valid ? g.cluster.stars[size_t(run.targetStar)].name.c_str() : "-",
+                run.distanceLy, run.years, run.profit, run.perYear);
+        }
+    }
+    check(good == 3, "совет ведёт в ДРУГУЮ систему и в плюс", buf);
+}
+
+// Мерка совета — Cr за ГОД полёта, а не абсолютная прибыль: 3929 Cr за 313 лет
+// хуже, чем 3819 Cr за 33. Проверка живая: сравниваем выбранный рейс с самым
+// прибыльным по абсолюту среди тех же кандидатов.
+void testAdviceMeasuresPerYear() {
+    Game g; buildWorld(g, 1337, 0);
+    const int pa = g.playerAgent;
+    const int home = g.agents[pa].currentStar;
+    const TradeRun run = g.playerBestRun(home, 128, false);
+    if (!run.valid) { check(false, "совет мерит Cr/год", "рейса не нашлось"); return; }
+
+    // Самая жирная по абсолюту сделка среди разведанного — та же, что показала бы
+    // биржа. Она НЕ обязана быть советом, но её Cr/год не должно быть выше.
+    for (int i = 0; i < int(g.cluster.stars.size()); ++i) g.observeMarketForFaction(g.playerFaction, i);
+    const std::vector<ArbitrageDeal> board = g.playerArbitrageBoard(home, 1, -1);
+    if (board.empty()) { check(false, "совет мерит Cr/год", "биржа пуста"); return; }
+    const double fatYears = g.agentRouteTravelTime(pa, board[0].targetStar);
+    const double fatPerYear = fatYears > 0.0 ? board[0].profit / fatYears : 0.0;
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "совет %.0f Cr за %.0f лет = %.1f Cr/год; жирнейшая сделка %.0f Cr за %.0f лет = %.1f Cr/год",
+        run.profit, run.years, run.perYear, board[0].profit, fatYears, fatPerYear);
+    check(run.perYear >= fatPerYear * 0.999, "совет мерит Cr/ГОД, а не общую сумму", buf);
+}
+
+// Сводка (шаг 100) обязана уважать разведку: советовать можно только про то, что
+// игрок видел сам. Прежний код читал `game.markets` напрямую и называл системы,
+// где игрок не был, — в радиусе 15 ly их сотни, а разведана ровно одна.
+void testAdviceRespectsSurvey() {
+    Game fresh; buildWorld(fresh, 42, 0);
+    const int homeFresh = fresh.agents[fresh.playerAgent].currentStar;
+    const TradeRun blind = fresh.playerBestRun(homeFresh, 128, true);
+
+    Game seen; buildWorld(seen, 42, 400);
+    const int homeSeen = seen.agents[seen.playerAgent].currentStar;
+    const TradeRun known = seen.playerBestRun(homeSeen, 128, true);
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "разведано %d -> совета нет (%s); разведано %d -> совет есть (%s)",
+        fresh.playerSurveyedMarketCount(), blind.valid ? "ЕСТЬ" : "нет",
+        seen.playerSurveyedMarketCount(), known.valid ? "есть" : "НЕТ");
+    check(!blind.valid && known.valid, "сводка молчит про неразведанное", buf);
+}
+
+// Один seed — один мир, СКОЛЬКО БЫ миров ни построил процесс. Уровень цен
+// скопления кэшируется в market.cpp, а проталкивается туда уже после засева
+// рынков: второй мир релаксировал цены под остаток первого. Замер до правки —
+// уровень до init 1.0000 / 0.2652 / 0.4641 на трёх подряд мирах seed 42.
+void testSameSeedSameWorld() {
+    Game a; buildWorld(a, 42, 0);
+    Game b; buildWorld(b, 42, 0);
+    const int ha = a.agents[a.playerAgent].currentStar;
+    const int hb = b.agents[b.playerAgent].currentStar;
+
+    double worst = 0.0;
+    int worstElement = -1;
+    const int elems = int(std::min(elementCount(), a.markets[size_t(ha)].prices.size()));
+    for (int e = 0; e < elems; ++e) {
+        const double pa = a.markets[size_t(ha)].prices[size_t(e)];
+        const double pb = b.markets[size_t(hb)].prices[size_t(e)];
+        const double diff = std::abs(pa - pb) / std::max(1e-6, std::abs(pa));
+        if (diff > worst) { worst = diff; worstElement = e; }
+    }
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "дом %s против %s, худшее расхождение цены %.4f%% (%s)",
+        a.cluster.stars[size_t(ha)].name.c_str(), b.cluster.stars[size_t(hb)].name.c_str(),
+        worst * 100.0, worstElement >= 0 ? elementDefinitions()[size_t(worstElement)].symbol : "-");
+    check(ha == hb && worst < 1e-9, "один seed даёт один мир и во второй раз", buf);
+}
+
+// Клавиша V пересчитывает сводку и ПЛАТИТ за это реактором (§28). Просчёт — это
+// работа, а не подсказка интерфейса: на сухом бункере Тимертия считать
+// отказывается, ровно как выключается буровая (§20.7).
+void testInsightBurnsReactorFuel() {
+    Game g; buildWorld(g, 42, 0);
+    Ship& ps = g.agents[g.playerAgent].ship;
+
+    UI::WindowState ui;
+    ui.vnState.tutorialCompleted = true;
+    ui.vnState.active = false;
+
+    const double bunker = shipFuelMass(ps);
+    UI::toggleVisualNovel(ui, g);
+    const double burned = bunker - shipFuelMass(ps);
+    const int paidStep = ui.vnState.tutorialStep;
+    const bool spoke = !ui.vnState.targetText.empty();
+
+    // Второе нажатие ГАСИТ коробку и не берёт платы: деньги (топливо) идут за
+    // просчёт, а не за нажатие клавиши.
+    const double afterFirst = shipFuelMass(ps);
+    UI::toggleVisualNovel(ui, g);
+    const bool hidden = !ui.vnState.active;
+    const double freeToggle = afterFirst - shipFuelMass(ps);
+
+    // Сухой бункер: считать не на чем.
+    ps.fuel.clear();
+    UI::toggleVisualNovel(ui, g);
+    const int dryStep = ui.vnState.tutorialStep;
+
+    // Плата — ровно процент ПОЛНОГО бака (§28.2). Меряем на полном бункере,
+    // поэтому доля от остатка и доля от ёмкости здесь совпадают; окно узкое
+    // нарочно: подмена «процента бака» на «процент остатка» сделала бы совет тем
+    // дешевле, чем хуже дела у игрока, и такую подмену обязано ловить число.
+    const double share = bunker > 0.0 ? burned / bunker : 0.0;
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "сожжено %.4f из %.1f бункера (%.2f%%, надо 1.00%%), шаг %d; выключение бесплатно (%.4f); на сухом шаг %d",
+        burned, bunker, share * 100.0, paidStep, freeToggle, dryStep);
+    check(share > 0.009 && share < 0.011 && paidStep == 101 && spoke &&
+          hidden && freeToggle == 0.0 && dryStep == 102,
+          "просчёт по V стоит процент бака, на сухом молчит", buf);
+}
+
+// Перевод обязан сохранять порядок %s и чисел: snprintf берёт аргументы по
+// счёту. Перестановка роняет игру внутри реплики — и только на русском.
+void testTranslationsKeepFormatOrder() {
+    std::string bad;
+    const bool ok = I18N::formatSpecsConsistent(&bad);
+    check(ok, "перевод не переставляет %s и числа",
+          ok ? "все точные строки сходятся" : ("разошлось: " + bad.substr(0, 60)));
+}
+
 } // namespace
 
 int main() {
@@ -2075,6 +2226,12 @@ int main() {
     testPlayerRenamesOwnSystem();
     testStarNamesAreNamesNotIndices();
     testStarNamesSpeakRussianAfterLoad();
+    testAdviceIsARealRun();
+    testAdviceMeasuresPerYear();
+    testAdviceRespectsSurvey();
+    testSameSeedSameWorld();
+    testInsightBurnsReactorFuel();
+    testTranslationsKeepFormatOrder();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;
 }

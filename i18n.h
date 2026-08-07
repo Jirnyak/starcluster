@@ -52,6 +52,11 @@ void clearProperNouns();
 // ЗАРАНЕЕ и перекатывает имя при совпадении — см. starNameFor в cluster.cpp.
 bool isInterfaceWord(const std::string& s);
 
+// Совпадают ли спецификаторы формата у английского ключа и русского перевода.
+// Перестановка «%s» и «%.2f» местами роняет игру внутри snprintf — см. i18n.cpp.
+// Проверяется в `make balance`; `firstBad` получает первый разошедшийся ключ.
+bool formatSpecsConsistent(std::string* firstBad);
+
 // Читает/пишет выбранный язык рядом с сейвом. Пустой/битый файл — не ошибка:
 // остаётся английский, и меню предложит выбор.
 void loadPreference(const std::string& path);

@@ -992,7 +992,7 @@ int main(int argc, char** argv) {
                 if (UI::handleKeyDown(ui, game, e.key.keysym.sym)) continue;
                 
                 if (e.key.keysym.sym == SDLK_v) {
-                    ui.vnState.active = !ui.vnState.active;
+                    UI::toggleVisualNovel(ui, game);
                     continue;
                 }
                 

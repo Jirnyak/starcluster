@@ -178,6 +178,62 @@ int main(int argc, char** argv) {
                 UI::advanceVisualNovel(ui, game, SCREEN_W, SCREEN_H);  // следующий шаг
             }
         }
+        // Шаг 100 — сводка по прибытии — в этот прогон НЕ попадает: он живёт вне
+        // ленты обучения и включается по приходу в новую систему. А реплика у
+        // него самая длинная в игре (цена здесь, цена там, имя системы, дальность,
+        // годы и прибыль в одной строке), поэтому меряется отдельно и в ОБОИХ
+        // исходах: с разведкой (есть что советовать) и без неё (сравнивать не с чем).
+        {
+            const bool surveyed[2] = {false, true};
+            for (int s = 0; s < 2; ++s) {
+                UI::WindowState ui;
+                ui.vnState.active = true;
+                ui.vnState.tutorialCompleted = true;
+                Game probe;
+                probe.seed = game.seed;
+                probe.init(300);   // тот же размер, что и у сцены выше
+                for (int y = 0; y < 20; ++y) probe.update(1.0);
+                if (surveyed[s]) {
+                    for (int i = 0; i < int(probe.cluster.stars.size()) && i < 400; ++i)
+                        probe.observeMarketForFaction(probe.playerFaction, i);
+                }
+                UI::updateVisualNovel(ui, probe, 0.0, SCREEN_W, SCREEN_H);
+                const std::string wrapped = UI::wrapText(ui.vnState.targetText, maxChars);
+                int lines = 1;
+                for (size_t i = 0; i < wrapped.size(); ++i) if (wrapped[i] == '\n') ++lines;
+                if (lines > worstLines) { worstLines = lines; worstStep = 100; }
+                std::printf("vn: step 100 %-8s %d/%d lines\n",
+                            surveyed[s] ? "surveyed" : "blind", lines, maxLines);
+                if (lines > maxLines)
+                    std::printf("VN OVERFLOW: step 100 (%s) takes %d lines\n",
+                                surveyed[s] ? "surveyed" : "blind", lines);
+            }
+        }
+        // Шаги 101–102 — глубокий просчёт по V (§28) и отказ на сухом бункере.
+        // Меряются тем же способом: реплика 101 длиннее сводки по прибытии, а
+        // рождается она только по нажатию клавиши, то есть мимо ленты обучения.
+        {
+            const bool dry[2] = {false, true};
+            for (int d = 0; d < 2; ++d) {
+                Game probe;
+                probe.seed = game.seed;
+                probe.init(300);
+                for (int y = 0; y < 20; ++y) probe.update(1.0);
+                if (dry[d]) probe.agents[probe.playerAgent].ship.fuel.clear();
+                UI::WindowState ui;
+                ui.vnState.tutorialCompleted = true;
+                ui.vnState.active = false;
+                UI::toggleVisualNovel(ui, probe);
+                const std::string wrapped = UI::wrapText(ui.vnState.targetText, maxChars);
+                int lines = 1;
+                for (size_t i = 0; i < wrapped.size(); ++i) if (wrapped[i] == '\n') ++lines;
+                if (lines > worstLines) { worstLines = lines; worstStep = ui.vnState.tutorialStep; }
+                std::printf("vn: step %d %-8s %d/%d lines\n",
+                            ui.vnState.tutorialStep, dry[d] ? "dry" : "fuelled", lines, maxLines);
+                if (lines > maxLines)
+                    std::printf("VN OVERFLOW: step %d takes %d lines\n", ui.vnState.tutorialStep, lines);
+            }
+        }
         std::printf("vn: worst step %d, %d/%d lines\n", worstStep, worstLines, maxLines);
 
         // Два снимка: самая длинная реплика (проверка коробки) и топливный шаг —

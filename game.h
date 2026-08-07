@@ -37,6 +37,29 @@ struct ArbitrageDeal {
     double confidence = 0.0;   // 0..1 — насколько им можно верить
 };
 
+// ОДИН рейс: что взять здесь и где это продать. Отличается от `ArbitrageDeal`
+// не данными, а МЕРКОЙ: строка биржи ранжируется абсолютной прибылью, а рейс —
+// кредитами за ГОД ПОЛЁТА. Это та же мерка, которой §23 велит мерить заказы, и
+// она здесь не украшение: замер на 8192 системах даёт 3929 Cr за 313 лет против
+// 3819 Cr за 33 — по абсолюту почти ничья, по времени разница в девять раз.
+//
+// Отсюда советует Тимертия, и отсюда же берётся первая цель партии. `pressure`
+// (добыча против потребления дома) в сделку не входит — это ПРИЧИНА дешевизны,
+// которую она называет игроку вслух: «добывают вчетверо против того, что едят».
+struct TradeRun {
+    int element = -1;
+    int targetStar = -1;
+    double units = 0.0;
+    double buyPrice = 0.0;      // средняя цена исполнения закупки здесь
+    double sellPrice = 0.0;     // котировка в цели (для разведанного — модельная)
+    double profit = 0.0;        // за вычетом проскальзывания и лицензионного тарифа
+    double years = 0.0;         // время полёта по маршруту ЭТОГО корабля
+    double perYear = 0.0;       // profit / years — по чему и выбран рейс
+    double distanceLy = 0.0;
+    double pressure = 0.0;      // добыча/потребление дома; <=0 — величина бессмысленна
+    bool valid = false;
+};
+
 struct RouteEdge {
     int star = 0;
     double distance = 0.0;
@@ -698,6 +721,14 @@ public:
     std::vector<ArbitrageDeal> playerArbitrageBoard(int originStar, int maxDeals, int elementFilter = -1) const;
     // МОДЕЛЬ цены на СЕЙЧАС по устаревшему наблюдению (см. ArbitrageDeal).
     double playerProjectedPrice(int starIndex, int elementIndex) const;
+    // Лучший ОДИН рейс отсюда, мерено в Cr за год полёта (см. TradeRun).
+    // Смотрит только `nearestSystems` ближайших систем: мерка сама топит дальние
+    // цели, поэтому дальний перебор — это трата времени, а не полнота.
+    // `knownOnly` — уважать ли разведку. true (обычный случай: советовать можно
+    // только про то, что игрок видел сам) даёт на свежей партии невалидный рейс:
+    // знаем один рынок, сравнивать не с чем. false оставлено ОБУЧЕНИЮ: первую
+    // цель Тимертия называет по-настоящему, дальше игрок летает своими глазами.
+    TradeRun playerBestRun(int originStar, int nearestSystems, bool knownOnly) const;
     int playerSurveyedMarketCount() const;   // сколько рынков игрок обследовал
     int playerColonyCount() const;
     bool playerCanOpenContractsAt(int starIndex) const;

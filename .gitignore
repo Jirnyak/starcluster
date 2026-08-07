@@ -49,6 +49,8 @@ SDL2-*.dmg
 /Starcluster-Windows/
 /Starcluster-macOS/
 /Starcluster-Multiplatform/
+# Собранная папка релиза для игроков (её же кладём в zip).
+/Starcluster/
 /starcluster_crossplatform/
 /final_release/
 /final_release_build/

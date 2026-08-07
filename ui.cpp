@@ -3394,7 +3394,59 @@ struct TutorialCue {
 // говорит только по делу (шаг 100 — сводка по новой системе).
 const int TUTORIAL_LAST_STEP = 27;
 
-std::string getTutorialText(const Game& game, int step, TutorialCue& cue) {
+// Сколько ближайших систем смотрит совет. 128 — не потолок железа, а потолок
+// смысла: мерка Cr/год топит дальние цели сама, и на замере 8192 систем
+// победитель всегда лежал в двух-трёх световых годах. Счёт — 1 мс.
+const int TUTORIAL_SCAN_SYSTEMS = 128;
+
+// Глубокий просчёт по клавише V (§28). Тимертия здесь смотрит ЧЕТВЕРО дальше и
+// мимо разведки: это фан-сервис, и ограничивает его не карта игрока, а реактор.
+const int INSIGHT_SCAN_SYSTEMS = 512;
+
+// ЭНЕРГОПЛАТА ЗА МОДЕЛИРОВАНИЕ. Просчёт — это работа реактора, а не бесплатная
+// подсказка интерфейса, поэтому нажатие стоит топлива.
+//
+// Плата ПЛОСКАЯ и мерится долей БУНКЕРА, а не числом разобранных рынков: игрок
+// видит выскочившее сообщение, а не смету, и цена должна читаться одним числом —
+// «один процент бака за просчёт».
+//
+// ⚠️ Доля берётся от ПОЛНОГО бака, а не от остатка. От остатка получилась бы
+// апория: каждый раз минус процент того, что есть, — бак не пустеет никогда, и
+// чем хуже дела, тем дешевле совет. От полного бака цена постоянна: сотня
+// нажатий честно осушает корпус (стартовый бункер 219.8 массы, нажатие 2.198).
+// На сухом бункере просчёта нет вовсе — тот же закон, что у буровой (§20.7),
+// которая на пустом бункере просто выключается.
+const double INSIGHT_BUNKER_SHARE = 0.01;
+
+// Элемент, которого здесь ЯВНЫЙ избыток: добывают больше, чем съедают. Нужен
+// на тот случай, когда сравнивать не с чем (рынок пока один) — тогда честнее
+// сказать «вот местный избыток, ищите, кому его не хватает», чем выдумывать цель.
+// Синтетические сверхтяжёлые сюда не попадают: их не потребляют вовсе, и
+// отношение у них не 1e12, а бессмыслица.
+int localSurplusElement(const Game& game, int starIndex) {
+    if (starIndex < 0 || starIndex >= int(game.markets.size())) return -1;
+    const Market& m = game.markets[starIndex];
+    const int elems = int(std::min(elementCount(), m.prices.size()));
+    int best = -1;
+    double bestPressure = 1.0;   // ниже единицы — это уже не избыток
+    for (int e = 0; e < elems; ++e) {
+        if (m.prices[e] <= 0.001 || m.supply[e].amount < 1.0) continue;
+        const double cons = e < int(m.demandRate.size()) ? m.demandRate[e] : 0.0;
+        const double prod = e < int(m.productionRate.size()) ? m.productionRate[e] : 0.0;
+        if (cons <= 1e-6) continue;
+        const double pressure = prod / cons;
+        if (pressure > bestPressure) { bestPressure = pressure; best = e; }
+    }
+    return best;
+}
+
+std::string elementNameAt(int elementIndex) {
+    const auto& defs = elementDefinitions();
+    if (elementIndex < 0 || elementIndex >= int(defs.size())) return I18N::tr("isotopes");
+    return I18N::tr(defs[elementIndex].name);
+}
+
+std::string getTutorialText(const Game& game, int step, TutorialCue& cue, VisualNovelState& vn) {
     cue = TutorialCue();
     switch (step) {
         case 0: return I18N::tr("Master, I am Timertia - your AI core Agent.");
@@ -3422,70 +3474,44 @@ std::string getTutorialText(const Game& game, int step, TutorialCue& cue) {
         case 7: cue.openWindow = true; cue.window = WindowKind::Trade; return I18N::tr("With your trading licence you can perform HIGH-FREQUENCY BROKERAGE on local market.");
         case 8: return I18N::tr("A periodic table based on standard supersymmetrical model is common CONVENTION of interstellar market.");
         case 9: return I18N::tr("NASH EQUILIBRIUM proves it is best to buy on supply and sell on demand.");
+        // Шаги 10–11 — ЕДИНСТВЕННОЕ место, где Тимертия смотрит дальше разведки
+        // игрока (решение пользователя): первую цель партии она называет
+        // по-настоящему, дальше сводка работает только по увиденному. Обе реплики
+        // говорят про ОДИН рейс — он посчитан здесь и запомнен в `vn`.
+        //
+        // ⚠️ Мерка — Cr за ГОД ПОЛЁТА, а не масса запаса. Прежний код ранжировал
+        // рынки МАССОЙ: у водорода её на порядки больше всех, поэтому «покупай»
+        // всегда указывало на водород, «продавай» — на самую населённую систему
+        // в 15 ly (у неё же и потребление максимальное), и обе половины сводки
+        // сходились в ОДНУ систему. Хуже: цена в «лучшей» цели бывала НИЖЕ
+        // домашней — совет отправлял торговать в убыток (замер: 2.38 -> 1.74).
         case 10: {
-            std::string element = I18N::tr("isotopes");
-            if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
-                int starId = game.agents[game.playerAgent].currentStar;
-                if (starId >= 0 && starId < (int)game.markets.size()) {
-                    const Market& m = game.markets[starId];
-                    int bestEl = -1;
-                    double maxSupply = -1.0;
-                    for (int i=0; i<(int)elementCount(); ++i) {
-                        if (i < (int)m.supply.size() && m.supply[i].amount > maxSupply) {
-                            maxSupply = m.supply[i].amount;
-                            bestEl = i;
-                        }
-                    }
-                    if (bestEl >= 0) {
-                        const auto& defs = elementDefinitions();
-                        if (bestEl < (int)defs.size()) element = I18N::tr(defs[bestEl].name);
-                    }
-                }
+            if (!vn.hintComputed && game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
+                vn.hintRun = game.playerBestRun(game.agents[game.playerAgent].currentStar,
+                                                TUTORIAL_SCAN_SYSTEMS, false);
+                vn.hintComputed = true;
             }
-            char buf[256];
-            std::snprintf(buf, sizeof(buf), I18N::tr("The local model suggests you buy %s.").c_str(), element.c_str());
+            const TradeRun& run = vn.hintRun;
+            if (!run.valid) return I18N::tr("The local model finds nothing here worth a hold, Master. That happens: a port can be poor. Read the prices yourself - what is cheap here is what you load.");
+            char buf[512];
+            if (run.pressure > 1.05) {
+                std::snprintf(buf, sizeof(buf), I18N::tr("The local model says: take %s. This port digs up %.1f times more of it than it burns, so it goes for a mere %.2f Cr.").c_str(),
+                              elementNameAt(run.element).c_str(), run.pressure, run.buyPrice);
+            } else {
+                std::snprintf(buf, sizeof(buf), I18N::tr("The local model says: take %s - here it goes for a mere %.2f Cr.").c_str(),
+                              elementNameAt(run.element).c_str(), run.buyPrice);
+            }
             return buf;
         }
         case 11: {
-            std::string starName = I18N::tr("an adjacent node");
-            if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
-                int starId = game.agents[game.playerAgent].currentStar;
-                if (starId >= 0 && starId < (int)game.cluster.stars.size() && starId < (int)game.markets.size()) {
-                    const ClusterStar& s = game.cluster.stars[starId];
-                    const Market& m = game.markets[starId];
-                    int bestEl = -1;
-                    double maxSupply = -1.0;
-                    for (int i=0; i<(int)elementCount(); ++i) {
-                        if (i < (int)m.supply.size() && m.supply[i].amount > maxSupply) {
-                            maxSupply = m.supply[i].amount;
-                            bestEl = i;
-                        }
-                    }
-                    if (bestEl >= 0) {
-                        int bestStar = -1;
-                        double maxDemand = -1.0;
-                        for (int i=0; i<(int)game.cluster.stars.size(); ++i) {
-                            if (i == starId) continue;
-                            if (i >= (int)game.markets.size()) continue;
-                            double dx = game.cluster.stars[i].x - s.x;
-                            double dy = game.cluster.stars[i].y - s.y;
-                            double dz = game.cluster.stars[i].z - s.z;
-                            double dist = std::sqrt(dx*dx + dy*dy + dz*dz);
-                            if (dist < 15.0) {
-                                if (bestEl < (int)game.markets[i].demand.size() && game.markets[i].demand[bestEl].amount > maxDemand) {
-                                    maxDemand = game.markets[i].demand[bestEl].amount;
-                                    bestStar = i;
-                                }
-                            }
-                        }
-                        if (bestStar >= 0) {
-                            starName = game.cluster.stars[bestStar].name;
-                        }
-                    }
-                }
-            }
-            char buf[256];
-            std::snprintf(buf, sizeof(buf), I18N::tr("We also have insight that the best place to sell it right now is %s. Remember that name, Master: %s!").c_str(), starName.c_str(), starName.c_str());
+            const TradeRun& run = vn.hintRun;
+            if (!run.valid || run.targetStar < 0 || run.targetStar >= (int)game.cluster.stars.size())
+                return I18N::tr("Where to sell is a question the ledger answers, Master: press E for the exchange. It weighs every market we have seen - and so far we have seen only this one.");
+            char buf[512];
+            std::snprintf(buf, sizeof(buf), I18N::tr("In %s they pay %.2f for it - %.1f ly, %.0f years under way, about %.0f Cr of profit. Remember that name, Master: %s!").c_str(),
+                          game.cluster.stars[run.targetStar].name.c_str(),
+                          run.sellPrice, run.distanceLy, run.years, run.profit,
+                          game.cluster.stars[run.targetStar].name.c_str());
             return buf;
         }
         // --- Топливный блок (§12) ---------------------------------------------
@@ -3514,66 +3540,59 @@ std::string getTutorialText(const Game& game, int step, TutorialCue& cue) {
         case 25: return I18N::tr("Finally, the new technology of applied color superconductivity has produced novel AI cores.");
         case 26: return I18N::tr("They are still prototypes and very rare. Be sure to privatise every one you find.");
         case 27: return I18N::tr("F1 lists every control. I am at your service with more insights at any time, Master. [V]");
+        // Сводка по прибытии в новую систему. В отличие от шагов 10–11 здесь
+        // всезнания НЕТ: считается только по разведанным рынкам, потому что
+        // сводка — это ЖУРНАЛ увиденного, а не радар. Отсюда и честный ответ на
+        // первой системе партии: сравнивать не с чем, и Тимертия так и говорит.
         case 100: {
-            std::string supplyStr = I18N::tr("none");
-            std::string demandStr = I18N::tr("none");
-            std::string supplyStarName = I18N::tr("nowhere");
-            std::string demandStarName = I18N::tr("nowhere");
-            
-            if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
-                int starId = game.agents[game.playerAgent].currentStar;
-                if (starId >= 0 && starId < (int)game.cluster.stars.size()) {
-                    const ClusterStar& s = game.cluster.stars[starId];
-                    double globalMaxSupply = -1.0;
-                    int globalBestSupplyEl = -1;
-                    int globalBestSupplyStar = -1;
-
-                    double globalMaxDemand = -1.0;
-                    int globalBestDemandEl = -1;
-                    int globalBestDemandStar = -1;
-                    
-                    for (int i = 0; i < (int)game.cluster.stars.size(); ++i) {
-                        if (i >= (int)game.markets.size()) continue;
-                        double dx = game.cluster.stars[i].x - s.x;
-                        double dy = game.cluster.stars[i].y - s.y;
-                        double dz = game.cluster.stars[i].z - s.z;
-                        double dist = std::sqrt(dx*dx + dy*dy + dz*dz);
-                        if (dist < 15.0) {
-                            const Market& m = game.markets[i];
-                            for (int e = 0; e < (int)m.supply.size(); ++e) {
-                                if (m.supply[e].amount > globalMaxSupply) {
-                                    globalMaxSupply = m.supply[e].amount;
-                                    globalBestSupplyEl = e;
-                                    globalBestSupplyStar = i;
-                                }
-                            }
-                            for (int e = 0; e < (int)m.demand.size(); ++e) {
-                                if (m.demand[e].amount > globalMaxDemand) {
-                                    globalMaxDemand = m.demand[e].amount;
-                                    globalBestDemandEl = e;
-                                    globalBestDemandStar = i;
-                                }
-                            }
-                        }
-                    }
-                    
-                    const auto& defs = elementDefinitions();
-                    if (globalBestSupplyEl >= 0 && globalBestSupplyEl < (int)defs.size()) {
-                        supplyStr = I18N::tr(defs[globalBestSupplyEl].name);
-                        supplyStarName = game.cluster.stars[globalBestSupplyStar].name;
-                    }
-                    if (globalBestDemandEl >= 0 && globalBestDemandEl < (int)defs.size()) {
-                        demandStr = I18N::tr(defs[globalBestDemandEl].name);
-                        demandStarName = game.cluster.stars[globalBestDemandStar].name;
-                    }
-                }
-            }
-            
+            if (game.playerAgent < 0 || game.playerAgent >= (int)game.agents.size()) return "";
+            const int here = game.agents[game.playerAgent].currentStar;
+            const TradeRun run = game.playerBestRun(here, TUTORIAL_SCAN_SYSTEMS, true);
             char buf[512];
-            std::snprintf(buf, sizeof(buf), I18N::tr("Care for a market report, Master? Local scans show peak supply of %s at %s, and highest demand for %s at %s.").c_str(), 
-                          supplyStr.c_str(), supplyStarName.c_str(), demandStr.c_str(), demandStarName.c_str());
+            if (run.valid) {
+                std::snprintf(buf, sizeof(buf), I18N::tr("A market report, Master: %s goes for %.2f here and fetches %.2f in %s - %.1f ly, %.0f years, some %.0f Cr. Best of everything we have seen.").c_str(),
+                              elementNameAt(run.element).c_str(), run.buyPrice, run.sellPrice,
+                              game.cluster.stars[run.targetStar].name.c_str(),
+                              run.distanceLy, run.years, run.profit);
+                return buf;
+            }
+            const int surplus = localSurplusElement(game, here);
+            const int surveyed = game.playerSurveyedMarketCount();
+            if (surveyed <= 1) {
+                if (surplus < 0) return I18N::tr("No report yet, Master: this is the only market we have seen, and there is nothing to weigh it against. Fly, and I will keep the ledger.");
+                std::snprintf(buf, sizeof(buf), I18N::tr("No report yet, Master: this is the only market we have seen. They have a surplus of %s here at %.2f - fly and find who lacks it, and I will keep the ledger.").c_str(),
+                              elementNameAt(surplus).c_str(),
+                              here < (int)game.markets.size() ? game.markets[here].prices[surplus] : 0.0);
+                return buf;
+            }
+            if (surplus < 0) {
+                std::snprintf(buf, sizeof(buf), I18N::tr("Nothing worth the fuel, Master: of the %d markets we have seen, none pays for a run from here.").c_str(), surveyed);
+                return buf;
+            }
+            std::snprintf(buf, sizeof(buf), I18N::tr("Nothing worth the fuel, Master: of the %d markets we have seen, none pays for a run from here. They do have a surplus of %s at %.2f - somewhere it will be wanted.").c_str(),
+                          surveyed, elementNameAt(surplus).c_str(),
+                          here < (int)game.markets.size() ? game.markets[here].prices[surplus] : 0.0);
             return buf;
         }
+        // Глубокий просчёт по V (§28). В отличие от сводки по прибытии, эта
+        // смотрит ЧЕТВЕРО дальше и мимо разведки — и платит за это реактором.
+        // Топливо списывает `toggleVisualNovel`; сюда шаг доходит уже оплаченным.
+        case 101: {
+            if (game.playerAgent < 0 || game.playerAgent >= (int)game.agents.size()) return "";
+            const int here = game.agents[game.playerAgent].currentStar;
+            const TradeRun run = game.playerBestRun(here, INSIGHT_SCAN_SYSTEMS, false);
+            if (!run.valid) return I18N::tr("I ran the model, Master, and it comes back empty: with this hold and this purse there is no run out of here worth its fuel.");
+            char buf[512];
+            std::snprintf(buf, sizeof(buf), I18N::tr("Deep model, Master - and the reactor pays for it: %s goes for %.2f here and fetches %.2f in %s, %.1f ly, %.0f years, some %.0f Cr. Nothing within reach beats it.").c_str(),
+                          elementNameAt(run.element).c_str(), run.buyPrice, run.sellPrice,
+                          game.cluster.stars[run.targetStar].name.c_str(),
+                          run.distanceLy, run.years, run.profit);
+            return buf;
+        }
+        // Бункер сух — считать не на чем. Тот же закон, что у буровой (§20.7):
+        // нет топлива, нет и работы реактора.
+        case 102:
+            return I18N::tr("The bunker is dry, Master: there is nothing to think with. A model costs energy like everything else aboard.");
     }
     return "";
 }
@@ -3593,7 +3612,7 @@ bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH) {
                 vn.active = false;
             } else {
                 TutorialCue cue;
-                vn.targetText = getTutorialText(game, vn.tutorialStep, cue);
+                vn.targetText = getTutorialText(game, vn.tutorialStep, cue, vn);
                 vn.arrowTarget = cue.arrow;
                 vn.textProgress = 0.0f;
                 if (cue.openWindow && game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
@@ -3615,6 +3634,72 @@ bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH) {
     return true;
 }
 
+// Клавиша V. Раньше она просто зажигала и гасила коробку с уже сочинённой
+// репликой: игрок, нажавший V через сто лет после прилёта, читал столетний
+// совет. Теперь нажатие ПЕРЕСЧИТЫВАЕТ сводку по нынешней обстановке — и платит
+// за это топливом реактора, потому что просчёт есть работа, а не подсказка.
+//
+// Во время вступительной новеллы клавиша остаётся выключателем: перебивать
+// ленту обучения сводкой нельзя, и брать за это топливо тем более.
+void toggleVisualNovel(WindowState& state, Game& game) {
+    auto& vn = state.vnState;
+    if (!vn.tutorialCompleted || vn.active) {
+        vn.active = !vn.active;
+        return;
+    }
+    if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) {
+        vn.active = true;
+        return;
+    }
+
+    Ship& ship = game.agents[game.playerAgent].ship;
+    // Массу платы переводим в энергию тем же законом, которым реактор её потом
+    // сожжёт (`shipDrawReactorEnergy`): доля c² = МэВ/нуклон / энергия покоя
+    // нуклона. Балласт в бункере энергии не даёт, и специально ловить это не
+    // надо — `specificEnergy` смеси уже умножен на долю поджига.
+    const MixSummary mix = shipFuelMix(ship);
+    const double fullMass = mix.volume > 1e-9
+        ? mix.mass / mix.volume * shipFuelTankVolume(ship)
+        : mix.mass;
+    const double wantMass = fullMass * INSIGHT_BUNKER_SHARE;
+    const double want = wantMass * mix.specificEnergy / NUCLEON_REST_MEV;
+    const double fuelBefore = shipFuelMass(ship);
+    std::vector<Resource> ash;
+    const double got = shipDrawReactorEnergy(ship, want, &ash);
+    // Зола ложится в трюм ЦЕЛИКОМ, как и в полёте (consumeAndStoreAsh): она
+    // заменяет собой сгоревшее топливо, поэтому масса корабля не растёт.
+    for (size_t i = 0; i < ash.size(); ++i) {
+        if (ash[i].amount <= 1e-9) continue;
+        bool merged = false;
+        for (size_t c = 0; c < ship.cargo.size(); ++c) {
+            if (ship.cargo[c].element != ash[i].element) continue;
+            ship.cargo[c].amount += ash[i].amount;
+            merged = true;
+            break;
+        }
+        if (!merged) ship.cargo.push_back(ash[i]);
+    }
+
+    TutorialCue cue;
+    vn.tutorialStep = got > 0.0 ? 101 : 102;
+    vn.targetText = getTutorialText(game, vn.tutorialStep, cue, vn);
+    vn.arrowTarget = cue.arrow;
+    vn.textProgress = 0.0f;
+    vn.currentText = "";
+    vn.active = true;
+
+    // Плата видна игроку: иначе бункер тает молча, и «энергоплата» остаётся
+    // шуткой в комментарии, а не механикой на экране.
+    if (got > 0.0) {
+        char line[128];
+        std::snprintf(line, sizeof(line), "model run: %.3F fuel burned",
+                      fuelBefore - shipFuelMass(ship));
+        game.lastEvent = line;
+    } else {
+        game.lastEvent = "model run refused: bunker dry";
+    }
+}
+
 void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, int screenH) {
     auto& vn = state.vnState;
     if (!vn.active) return;
@@ -3626,7 +3711,7 @@ void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, i
                 vn.visitedSystems.insert(currentStar);
                 vn.tutorialStep = 100;
                 TutorialCue cue;
-                vn.targetText = getTutorialText(game, 100, cue);
+                vn.targetText = getTutorialText(game, 100, cue, vn);
                 vn.arrowTarget = cue.arrow;
                 vn.textProgress = 0.0f;
                 vn.currentText = "";
@@ -3636,7 +3721,7 @@ void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, i
     } else {
         if (vn.targetText.empty() && vn.tutorialStep == 0) {
             TutorialCue cue;
-            vn.targetText = getTutorialText(game, vn.tutorialStep, cue);
+            vn.targetText = getTutorialText(game, vn.tutorialStep, cue, vn);
             vn.arrowTarget = cue.arrow;
         }
     }
