@@ -1312,7 +1312,25 @@ void renderLocalScene(SDL_Renderer* renderer, const Game& game, const LocalScene
     //     дешёвый диск. В перспективе диск получает ФАЗОВУЮ подсветку (тёмный силуэтом к
     //     звезде, яркий — звезда за спиной), чтобы не выглядеть плоской монеткой у светила.
     //     Орто-карта (§2.7) — по-прежнему ровный диск (br=1.0), побитово не тронута.
+    // Пояс рисуется ПО ГЛУБИНЕ, дальнее раньше ближнего — тем же законом, что и
+    // тела выше. Раньше камни шли в порядке вектора, а `renderRockLit` пишет
+    // непрозрачные пиксели: дальняя глыба закрашивала ближнюю, и весь пояс
+    // просвечивал сквозь планеты. Индекс камня сохраняем: он входит в семя
+    // раскола (`(unsigned)i`), поэтому перестановка порядка отрисовки не должна
+    // менять вид ни одной глыбы.
+    std::vector<int> rockOrder;
+    std::vector<double> rockDepth(scene.rocks.size(), 0.0);
+    rockOrder.reserve(scene.rocks.size());
     for (size_t i = 0; i < scene.rocks.size(); ++i) {
+        rockDepth[i] = projectPointWithBasis(scene.rocks[i].x, scene.rocks[i].y, scene.rocks[i].z,
+                                             winW, winH, view, basis).depth;
+        rockOrder.push_back((int)i);
+    }
+    std::sort(rockOrder.begin(), rockOrder.end(), [&](int a, int b) {
+        return view.perspective ? (rockDepth[a] > rockDepth[b]) : (rockDepth[a] < rockDepth[b]);
+    });
+    for (size_t oi = 0; oi < rockOrder.size(); ++oi) {
+        const size_t i = size_t(rockOrder[oi]);
         const LocalRock& rk = scene.rocks[i];
         if (rk.gone) continue;                 // (§22) выработанная глыба осыпалась — её нет
         ProjectedPoint p = projectPointWithBasis(rk.x, rk.y, rk.z, winW, winH, view, basis);

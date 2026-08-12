@@ -1119,10 +1119,18 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                         spawnSparks(p.x, p.y, p.z, 130, 220, 255, 4); // (E) циан-искры игрока
                         if (before > 0.0 && c.hullHP <= 0.0 && playerValid) {
                             // (E) Убийство: награда + исследование + тост + разбор + тряска + реакция фракции.
-                            double bounty = 150.0 + c.maxHullHP * 6.0;
-                            game.agents[game.playerAgent].money += bounty;
+                            //
+                            // (§32.1) Награду платит СИСТЕМА из своего бюджета охраны путей, а не
+                            // мир из ниоткуда. Сцена собирается заново по (seed, звезда) — те же
+                            // пираты с теми же наградами возрождаются при каждом входе, а вход не
+                            // стоит ни времени, ни топлива. Без конечного бюджета `L`,`L` были
+                            // печатным станком; теперь выбитая система платит ноль, и лететь надо
+                            // в другую.
+                            double bounty = game.payLocalBounty(scene.starIndex, 150.0 + c.maxHullHP * 6.0);
                             game.addResearch(3.0);
-                            scene.toast = "SHIP DOWN +" + std::to_string((int)bounty) + " CR";
+                            scene.toast = bounty > 0.0
+                                ? ("SHIP DOWN +" + std::to_string((int)bounty) + " CR")
+                                : std::string("SHIP DOWN - NO BOUNTY LEFT HERE");
                             scene.toastTimer = 2.5;
                             spawnWreck(c.x, c.y, c.z, c.vx, c.vy, c.vz, c.r, c.g, c.b);
                             scene.shake = std::min(40.0, std::max(scene.shake, 14.0));
@@ -1131,8 +1139,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                             //   награды: доп. кредиты + исследование + перебитый toast «CONVOY SAVED» +
                             //   положительный rep-бамп фракции жертвы. Строго ADDITIVE — пиратов НЕ трогали.
                             if (c.kind == CK_PIRATE && c.threatConvoy) {
-                                double convoyBonus = 200.0;
-                                game.agents[game.playerAgent].money += convoyBonus;
+                                double convoyBonus = game.payLocalBounty(scene.starIndex, 200.0);
                                 game.addResearch(2.0);
                                 scene.toast = "CONVOY SAVED +" + std::to_string((int)(bounty + convoyBonus)) + " CR";
                                 scene.toastTimer = 3.0;
@@ -1149,11 +1156,13 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                             //   (их урон/ИИ не тронуты). Деньги ограничены ⇒ soak «money finite» держится;
                             //   число убийств не меняется ⇒ craftDestroyed неизменно.
                             if (c.kind == CK_PIRATE && c.wanted) {
-                                game.agents[game.playerAgent].money += c.wantedBounty;
+                                const double head = game.payLocalBounty(scene.starIndex, c.wantedBounty);
                                 game.addResearch(1.5);
-                                scene.toast = "BOUNTY CLAIMED +" + std::to_string((int)c.wantedBounty) + " CR";
-                                scene.toastTimer = 3.0;
-                                scene.shake = std::min(40.0, std::max(scene.shake, 16.0));
+                                if (head > 0.0) {
+                                    scene.toast = "BOUNTY CLAIMED +" + std::to_string((int)head) + " CR";
+                                    scene.toastTimer = 3.0;
+                                    scene.shake = std::min(40.0, std::max(scene.shake, 16.0));
+                                }
                             }
                             // (§5.13.36) БЛАГОДАРНОСТЬ ЗАКОНА: co-op добивание розыскного. Если игрок нанёс
                             //   СМЕРТЕЛЬНЫЙ удар по `wanted`-пирату, которого ПРЯМО СЕЙЧАС гнал патруль (P0-охота
@@ -1344,22 +1353,42 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         if (playerValid && !scene.playerDestroyed) {
             bool nearStar = false;
             double distToSurf = getMinDistToBodySurfaces(scene.px, scene.py, scene.pz, nearStar);
-            
-            // Если летим на варпе, нужно гораздо большее расстояние для реакции
-            double speedMult = scene.warping ? LocalCfg::WARP_MULT : 1.0;
-            double reactionTime = 1.5; // 1.5 секунды на реакцию
-            
-            // Звезда визуально больше своего радиуса из-за короны (до 1.9x), 
-            // поэтому предупреждение должно начинаться далеко за ее пределами.
-            double dangerZone = std::max(60.0, scene.playerMaxSpeed * speedMult * reactionTime);
-            if (nearStar) {
-                // Добавляем к зоне опасности корону звезды (~0.9 * starRadius)
-                dangerZone += scene.starRadius * 0.9; 
-            }
-            
-            if (distToSurf < dangerZone && distToSurf > 0.0) {
-                // Эффекты опасного сближения
-                double intensity = 1.0 - (distToSurf / dangerZone); // 0.0 -> 1.0
+
+            // Предупреждение о столкновении меряется ВРЕМЕНЕМ ДО УДАРА, а не
+            // расстоянием до поверхности.
+            //
+            // ⚠️ Раньше здесь стоял шар радиусом `playerMaxSpeed * WARP_MULT *
+            // 1.5` — при WARP_MULT=60 это ~8550 LU, то есть БОЛЬШЕ всей
+            // играбельной системы (край обычно 600..1400 LU). Условие было
+            // истинным ВСЕГДА, пока зажат варп: экран непрерывно трясся,
+            // заливался красным и мигал «DANGER», хотя урона не было и в
+            // помине. В компактных системах (пульсар radius 4 LU) игрок
+            // получал это состояние сразу на старте, ещё не тронув варп.
+            //
+            // Честная величина — производная расстояния вдоль СКОРОСТИ: летим
+            // мимо тела или от него — предупреждать не о чем, сколько бы близко
+            // мы ни шли. Замеряем её тем же помощником, что и само расстояние,
+            // сдвинув пробную точку на шаг вперёд по вектору скорости.
+            const double reactionTime = 1.5;   // секунд РЕАЛЬНОГО времени на реакцию
+            const double warpScale = LocalCfg::HOURS_PER_SEC * (scene.warping ? LocalCfg::WARP_MULT : 1.0);
+            const double probeHours = 0.05;
+            bool probeStar = false;
+            const double ahead = getMinDistToBodySurfaces(
+                scene.px + scene.pvx * probeHours,
+                scene.py + scene.pvy * probeHours,
+                scene.pz + scene.pvz * probeHours, probeStar);
+            // LU в час, со знаком: >0 — сближаемся с ближайшей поверхностью.
+            const double closingPerHour = (distToSurf - ahead) / probeHours;
+            const double closingPerSecond = closingPerHour * warpScale;
+            const double secondsToImpact = closingPerSecond > 1e-6
+                ? distToSurf / closingPerSecond
+                : 1.0e18;
+
+            if (distToSurf > 0.0 && secondsToImpact < reactionTime) {
+                // Эффекты опасного сближения — тем сильнее, чем меньше времени.
+                double intensity = 1.0 - (secondsToImpact / reactionTime);
+                if (intensity < 0.0) intensity = 0.0;
+                if (intensity > 1.0) intensity = 1.0;
                 scene.playerHitFlash = std::max(scene.playerHitFlash, intensity * 0.8);
                 scene.shake = std::max(scene.shake, intensity * 15.0);
                 scene.toast = nearStar ? "!!! DANGER: STAR PROXIMITY !!!" : "!!! DANGER: COLLISION IMMINENT !!!";
@@ -1751,7 +1780,8 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
     //  Детерминизм: reward/research/element запечены при генерации; единственная
     //  мутация game вне money/cargo — game.addResearch (допустимое исключение). scene.radio
     //  НЕ режем (draw пропускает resolved). FX уважают потолок FX_MAX, как и всюду в файле.
-    for (LocalRadioSource& rs : scene.radio) {
+    for (size_t rsIdx = 0; rsIdx < scene.radio.size(); ++rsIdx) {
+        LocalRadioSource& rs = scene.radio[rsIdx];
         if (rs.resolved) continue;
         double dx = rs.x - scene.px, dy = rs.y - scene.py, dz = rs.z - scene.pz;
         double dist = std::sqrt(dx*dx + dy*dy + dz*dz);
@@ -1786,6 +1816,11 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                 }
             }
             rs.resolved = true;
+            // (§32.1) Заявка живёт в ПАРТИИ, а не в сцене. Сцена собирается
+            // заново по (seed, звезда), поэтому без этой записи один и тот же
+            // дереликт платил снова при каждом входе — а вход не стоит ни
+            // времени, ни топлива. Источник — вещь: забрали, и его нет.
+            game.markLocalRadioClaimed(scene.starIndex, int(rsIdx));
             scene.toast = rs.label + " CLAIMED +" + std::to_string((int)rs.reward) + " CR" + lootStr;
             if (cargoFull) scene.toast += " CARGO FULL";
             scene.toastTimer = 3.0;
@@ -1829,6 +1864,25 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         f.life -= dtHours;
         if (f.life <= 0.0) { scene.fx[i] = scene.fx.back(); scene.fx.pop_back(); }
         else ++i;
+    }
+
+    // ---- (§32.1) Состояние, которое обязано пережить выход из полёта ----
+    // Щит — доля от максимума: сам максимум зависит от брони и меняется вместе
+    // с корпусом, а вот «сколько от него осталось» принадлежит партии.
+    if (scene.pMaxShield > 1e-9) {
+        game.playerShieldFrac = std::max(0.0, std::min(1.0, scene.pShield / scene.pMaxShield));
+    }
+    // Урон, нанесённый ЗЕРКАЛУ реального борта, тоже принадлежит партии.
+    // Раньше наружу писалась только смерть (§5.13.14) и продажа груза
+    // (§5.13.18), а недобитый торговец при следующем входе оказывался целым:
+    // измотать макро-агента за несколько заходов было невозможно.
+    for (size_t i = 0; i < scene.craft.size(); ++i) {
+        const LocalCraft& c = scene.craft[i];
+        if (c.agentIndex < 0 || c.agentIndex >= (int)game.agents.size()) continue;
+        if (c.agentIndex == game.playerAgent) continue;
+        if (c.hullHP <= 0.0) continue;   // смерть обрабатывается своим путём
+        Ship& mirror = game.agents[c.agentIndex].ship;
+        if (c.hullHP < mirror.hullHP) mirror.hullHP = c.hullHP;
     }
 
     // ---- Таймер тоста ----

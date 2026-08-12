@@ -36,25 +36,29 @@ void Game::grantChromocore(int stat) {
     double& s = statRef(tech, stat);
     s *= (1.0 + step);
 
-    // Запекаем в поля корабля игрока статы, которые читает легаси-код.
+    // Запекаем в поля корабля игрока статы, которые читает легаси-код. Закон
+    // запекания — общий с пересадкой на новый корпус (shipApplyChromocoreFactors),
+    // сюда он приходит с приростом ровно одного ядра.
     if (playerAgent >= 0 && playerAgent < int(agents.size())) {
         Ship& ship = agents[playerAgent].ship;
-        if (stat == TECH_MATERIALS) {
-            ship.cargoCapacity *= (1.0 + step);
-            ship.maxHullHP *= (1.0 + step);
-            ship.hullHP = ship.maxHullHP;
-        } else if (stat == TECH_KINEMATICS) {
-            ship.speed = std::min(0.5, ship.speed * (1.0 + step));
-            ship.acceleration *= (1.0 + step * 0.5);
-        } else if (stat == TECH_TACTICS) {
-            ship.heavyWeapons *= (1.0 + step);
-            ship.lightWeapons *= (1.0 + step);
-        }
+        const double f = 1.0 + step;
+        shipApplyChromocoreFactors(ship,
+                                   stat == TECH_MATERIALS ? f : 1.0,
+                                   stat == TECH_TACTICS ? f : 1.0,
+                                   stat == TECH_KINEMATICS ? f : 1.0);
+        if (stat == TECH_MATERIALS) ship.hullHP = ship.maxHullHP;
     }
 
     const std::string label = chromocoreStatLabel(stat);
     lastEvent = "CHROMOCORE +" + label;
     pushNews("Chromocore attuned: " + label + " model refined", 4);
+}
+
+void Game::rebakePlayerChromocores() {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return;
+    Ship& ship = agents[playerAgent].ship;
+    shipApplyChromocoreFactors(ship, tech.materials, tech.tactics, tech.kinematics);
+    ship.hullHP = std::min(ship.hullHP, ship.maxHullHP);
 }
 
 void Game::addResearch(double amount) {

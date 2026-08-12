@@ -129,7 +129,12 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
         rs.research *= researchMul;
         if (rs.element > eN - 1) rs.element = eN - 1; // клэмп индекса элемента
         rs.revealed = false;
-        rs.resolved = false;
+        // (§32.1) Уже забранный источник рождается ПОГАШЕННЫМ. Сцена
+        // детерминирована по (seed, звезда), поэтому без этой строки один и тот
+        // же дереликт платил бы при каждом входе — а вход не стоит ни времени,
+        // ни топлива. Индекс здесь — будущая позиция в `scene.radio`, ровно её
+        // и запоминает `markLocalRadioClaimed` при заборе.
+        rs.resolved = game.localRadioClaimed(starIndex, int(scene.radio.size()));
         scene.radio.push_back(rs);
     };
 
@@ -149,7 +154,16 @@ void buildLocalScene(const Game& game, int starIndex, LocalScene& scene) {
     } else {
         scene.pMaxShield = LocalCfg::PLAYER_SHIELD_BASE;
     }
-    scene.pShield = scene.pMaxShield;
+    // (§32.1) Щит переживает выход из полёта. Раньше он был чистым полем сцены,
+    // а сцена собирается заново при каждом входе, — то есть `L`, `L` посреди
+    // проигранной перестрелки бесплатно возвращали полный щит. Теперь доля
+    // живёт в партии и регенерирует только там, где ей положено: в полёте.
+    {
+        double frac = game.playerShieldFrac;
+        if (!(frac >= 0.0)) frac = 0.0;
+        if (frac > 1.0) frac = 1.0;
+        scene.pShield = scene.pMaxShield * frac;
+    }
     scene.pShieldTimer = 0.0;
 
     // --- Уровень детектора радиосигналов из сенсоров игрока (хромокор) ---

@@ -762,11 +762,11 @@ void drawControlsCard(SDL_Renderer* renderer, int screenW, int screenH) {
         { "FLIGHT", { "L    ENTER SYSTEM", "G    GO TO SELECTED", "X    STOP SHIP",
                       "F    FOLLOW SHIP", "TAB  NEXT AGENT", "ENTER OPEN SYSTEM",
                       "SPACE PAUSE", "1-4  SIM SPEED", NULL, NULL } },
-        { "TRADE",  { "T    AUTO TRADE", "B    BUY", "V    SELL", "E    BROKERAGE",
-                      "O    CARGO", "I    TRANSACTION LOG", "F2   BUY BACK LICENCE",
-                      "[ ]  CYCLE ELEMENT", NULL, NULL } },
+        { "TRADE",  { "T    AUTO TRADE", "B    BUY", "Q    SELL", "E    BROKERAGE",
+                      "O    CARGO", "I    TRANSACTION LOG", "V    ADVISOR",
+                      "F2   BUY BACK LICENCE", "[ ]  CYCLE ELEMENT", NULL } },
         { "SHIP",   { "U    SHIPYARD / FIT", "M    MINE ORE", "J    REPAIR HULL",
-                      "K    SCAN ANOMALY", "C    COLONY / BUY SYSTEM", "W    SWITCH SHIP",
+                      "K    SCAN ANOMALY", "C    COLONY / BUY SYSTEM", "N    SWITCH SHIP",
                       "R    ROB", NULL, NULL, NULL } },
         { "VIEW",   { "LMB  SELECT", "RMB  SET ROUTE", "WHEEL ZOOM", "MMB  DRAG PAN",
                       "ARROWS PAN", "WASD ROTATE", "P    PLAYER SHIP", "0    RESET VIEW",
@@ -1990,7 +1990,9 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
     const double settleCost = game.licenceSettleCost();
     const bool canBuy = game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()) &&
                         game.agents[game.playerAgent].money >= licPrice;
-    const bool canSettle = remaining > 0.0 && game.playerAgent >= 0 &&
+    // При отозванной лицензии кнопка гаснет: погашение квоты торговлю не
+    // размораживает, а деньги забирает (см. playerSettleQuota).
+    const bool canSettle = remaining > 0.0 && !game.licenceRevoked && game.playerAgent >= 0 &&
                            game.playerAgent < int(game.agents.size()) &&
                            game.agents[game.playerAgent].money >= settleCost;
     char btn[96];
@@ -3238,7 +3240,7 @@ static void drawObjectivesPanel(SDL_Renderer* renderer, const Game& game, int x,
     if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
         const Agent& p = game.agents[game.playerAgent];
         const Ship& sh = p.ship;
-        objs.push_back({"TRADE: BUY (B) / SELL (V)", p.trades > 0});
+        objs.push_back({"TRADE: BUY (B) / SELL (Q)", p.trades > 0});
         // Локальный полёт — самая зрелищная часть игры и при этом дальше всего
         // от глаз новичка: без явной цели о клавише L никто не узнаёт.
         objs.push_back({"FLY THE SYSTEM: PRESS L", game.everEnteredLocal});

@@ -791,6 +791,24 @@ void shipApplyClass(Ship& ship, const ShipClass& sc) {
     shipTuneDrive(ship, 1.0, 1.0);
 }
 
+void shipApplyChromocoreFactors(Ship& ship, double materials, double tactics, double kinematics) {
+    if (materials > 1.0 && std::isfinite(materials)) {
+        ship.cargoCapacity *= materials;
+        ship.maxHullHP *= materials;
+        ship.hullHP = std::min(ship.hullHP * materials, ship.maxHullHP);
+    }
+    if (tactics > 1.0 && std::isfinite(tactics)) {
+        ship.heavyWeapons *= tactics;
+        ship.lightWeapons *= tactics;
+    }
+    if (kinematics > 1.0 && std::isfinite(kinematics)) {
+        // Тот же потолок 0.5c, что и был при выдаче ядра: кинематика ускоряет
+        // корабль, но не отменяет световой предел лестницы корпусов.
+        ship.speed = std::min(0.5, ship.speed * kinematics);
+        ship.acceleration *= std::sqrt(kinematics);
+    }
+}
+
 void shipTrimTanks(Ship& ship) {
     const double fuelCapacity = shipFuelTankVolume(ship);
     const double fuelUsed = listVolume(ship.fuel);

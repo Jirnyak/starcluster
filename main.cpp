@@ -737,7 +737,7 @@ int main(int argc, char** argv) {
                                  braking ? UI::P.red : UI::P.amber, enRoute && !braking, false});
             specs.push_back(Spec{ACT_TRADE, "T TRADE", UI::P.cyan, anchorStar() >= 0, false});
             specs.push_back(Spec{ACT_SHIPFIT, "U FIT", UI::P.cyan, game.playerAgent >= 0, false});
-            specs.push_back(Spec{ACT_SWITCH, "W SWITCH", UI::P.amber, game.playerAgent >= 0, false});
+            specs.push_back(Spec{ACT_SWITCH, "N SWITCH", UI::P.amber, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_REPAIR, "J REPAIR", UI::P.green, docked && hullHurt, false});
             // Витрина цены системы открывается всегда; сама сделка внутри уже
             // требует стоянки. Зелёный горит, когда система уже твоя.
@@ -803,6 +803,10 @@ int main(int argc, char** argv) {
             case ACT_ENTER: {
                 buildLocalScene(game, localAnchorStar(), localScene);
                 localScene.active = true;
+                // Флаг питает цель «FLY THE SYSTEM» в панели задач. Его ставила
+                // ТОЛЬКО клавиша `L`, а на телефоне клавиш нет вовсе — цель
+                // обучения не закрывалась, сколько бы игрок ни летал.
+                game.everEnteredLocal = true;
                 game.lastEvent = "entered local flight";
                 titleTick = 11;
             } break;
@@ -1043,6 +1047,13 @@ int main(int argc, char** argv) {
                     if (!loaded) loaded = game.loadFromFile(SAVE_FILE_NAME);
                     game.lastEvent = loaded ? "loaded starcluster.save" : "load failed";
                     if (loaded) {
+                        // Загрузка подменяет ВЕСЬ мир — другой кластер, другие
+                        // агенты, другой `playerAgent`. Сцена микромира при этом
+                        // оставалась от прежней партии: игрок продолжал летать
+                        // среди чужих астероидов, а убийства и добыча зачислялись
+                        // в свежезагруженный сейв. Гасим её тем же путём, что и
+                        // `ESC`, — она соберётся заново по `L`.
+                        localScene = LocalScene();
                         resetSelectionAfterLoad(game, view, ui, winW, winH, selectedStar, selectedAgent, followAgent);
                     }
                     titleTick = 11;
@@ -1123,8 +1134,26 @@ int main(int argc, char** argv) {
                 if (e.key.keysym.sym == SDLK_b && game.agentBuyElement(game.playerAgent, selectedElement)) {
                     selectedAgent = game.playerAgent;
                 }
-                if (e.key.keysym.sym == SDLK_v && game.agentSellCargo(game.playerAgent)) {
+                // ⚠️ Продажа висит на `Q`, а не на `V`.
+                //
+                // Пара «B купить / V продать» была исходной, но `V` забрал
+                // просчёт Тимертии (§28) — и забрал его РАНЬШЕ по коду, вместе
+                // с `continue`. То есть ветка продажи была НЕДОСТИЖИМА, а
+                // карточка F1 и панель целей продолжали обещать «V SELL»
+                // полгода. `S` для продажи не годится: WASD — это поворот
+                // камеры, и разворот вниз продавал бы трюм. `Q` в макро-режиме
+                // свободна.
+                if (e.key.keysym.sym == SDLK_q && game.agentSellCargo(game.playerAgent)) {
                     selectedAgent = game.playerAgent;
+                }
+                // Окно трюма и переключение борта: обе кнопки нижней панели
+                // подписаны буквами, но обработчиков у этих букв не было вовсе.
+                // `W` занята камерой, поэтому пересадка — на `N` (next hull).
+                if (e.key.keysym.sym == SDLK_o) {
+                    UI::openCargoWindow(ui, anchorStar(), winW, winH);
+                }
+                if (e.key.keysym.sym == SDLK_n) {
+                    dispatch(ACT_SWITCH);
                 }
                 if (e.key.keysym.sym == SDLK_t && game.agentAutoTrade(game.playerAgent)) {
                     selectedAgent = game.playerAgent;
@@ -1254,6 +1283,9 @@ int main(int argc, char** argv) {
                     Agent& pa = game.agents[game.playerAgent];
                     extern void downgradeAgentToEscapePod(Agent&);
                     downgradeAgentToEscapePod(pa);
+                    // Капсула собрана из таблицы классов, значит запечённые
+                    // хромокоры с неё стёрты — накладываем их заново.
+                    game.rebakePlayerChromocores();
                     pa.ship.hullHP = pa.ship.maxHullHP; // escape pod is intact
                 }
                 game.lastEvent = "ship destroyed - using escape pod";

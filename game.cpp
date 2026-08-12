@@ -2102,7 +2102,19 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
             if (agent.ship.cargo[i].element == elementSymbol) { cargoIndex = int(i); break; }
         }
     } else {
-        cargoIndex = 0;
+        // Первая партия, которая ВООБЩЕ продаётся. В трюме лежат не только
+        // элементы: купленный модуль едет туда же псевдо-товаром «Module: …»
+        // (modules.cpp). Раньше здесь стоял безусловный `cargoIndex = 0`, и
+        // модуль, оказавшийся первым, возвращал `false` — а `agentSellAllCargo`
+        // на первом же `false` прерывает цикл. Итог: кнопка «продать всё»
+        // молча не продавала НИЧЕГО и писала «hold empty» при полном трюме.
+        // Тем же путём вставал и NPC-возчик в `updateTrader`.
+        for (size_t i = 0; i < agent.ship.cargo.size(); ++i) {
+            if (agent.ship.cargo[i].amount <= 0.0) continue;
+            if (elementIndex(agent.ship.cargo[i].element) < 0) continue;
+            cargoIndex = int(i);
+            break;
+        }
     }
     if (cargoIndex < 0 || agent.ship.cargo[cargoIndex].amount <= 0.0) return false;
 
@@ -2176,10 +2188,21 @@ void buyCargo(Game& game, Agent& agent, int starIndex, const TradePlan& plan) {
         const double freeMass = std::max(0.0, agent.ship.cargoCapacity - shipCargoMass(agent.ship));
         amount = std::min(capAmount, freeMass / std::max(1e-9, resourceUnitMassByIndex(plan.elementIndex)));
     } else {
-        amount = std::min(capAmount, agent.money / std::max(1e-9, market.prices[plan.elementIndex]));
+        // Пошлина ОБЯЗАНА входить в бюджет закупки. Раньше объём считался как
+        // `деньги / цена`, а списывалось `цена + пошлина`, — и «купить
+        // максимум» на любом элементе оставляло кошелёк ровно в минусе на
+        // размер пошлины (замер: 10 000 Cr -> −140 Cr при ставке 1.4%).
+        // Отрицательных денег не ждёт никто: заправка перестаёт заправлять
+        // (`money/unitCost` уходит в минус), взнос на счёт возвращает ноль, а
+        // ограбление такого борта ДОБАВЛЯЕТ ему денег (пират считает долю от
+        // отрицательного кошелька). Тот же путь у NPC через `updateTrader`.
+        double budgetTariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.014);
+        if (agent.playerControlled) budgetTariff /= std::max(1.0, game.tech.charisma);
+        const double budget = std::max(0.0, agent.money) / (1.0 + std::max(0.0, budgetTariff));
+        amount = std::min(capAmount, budget / std::max(1e-9, market.prices[plan.elementIndex]));
         for (int pass = 0; pass < 2 && amount > 0.0; ++pass) {
             const double avg = market.executionPrice(plan.elementIndex, amount, false);
-            amount = std::min(capAmount, agent.money / std::max(1e-9, avg));
+            amount = std::min(capAmount, budget / std::max(1e-9, avg));
         }
     }
     if (amount <= 0.01) return;
@@ -3064,7 +3087,7 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 15 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 16 " << cluster.stars.size() << '\n';
     out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
@@ -3333,6 +3356,16 @@ bool Game::saveToFile(const std::string& path) {
         out << "CF " << c.faction << ' ' << c.amount << ' ' << c.clearsAt << '\n';
     }
 
+    // --- Довески версии 16 (§32) ---
+    // Заявки микромира. Без них сейв возвращал бы забранные радиоисточники и
+    // выбранные бюджеты наград — то есть чинил бы ровно ту дыру, ради которой
+    // они и заведены.
+    out << "LOCAL_CLAIMS " << localClaims.size() << ' ' << playerShieldFrac << '\n';
+    for (const LocalClaims& c : localClaims) {
+        out << "LC " << c.starIndex << ' ' << c.radioMask << ' ' << c.bountyPaid << ' '
+            << c.bountyAt << '\n';
+    }
+
     if (!out) {
         lastEvent = "save failed";
         return false;
@@ -3351,11 +3384,11 @@ bool Game::loadFromFile(const std::string& path) {
     std::string tag;
     int version = 0;
     size_t starCount = 0;
-    // Читаем 14 И 15. Ломать сохранения ради новых полей не нужно: всё, что
+    // Читаем 14, 15 И 16. Ломать сохранения ради новых полей не нужно: всё, что
     // добавила §24, лежит в отдельных блоках и при version==14 просто
-    // отсутствует (см. «довески версии 15» ниже).
+    // отсутствует (см. «довески версии 15» ниже); то же и с §32 в версии 16.
     if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" ||
-        version < 14 || version > 15) {
+        version < 14 || version > 16) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -3438,7 +3471,25 @@ bool Game::loadFromFile(const std::string& path) {
             lastEvent = "load failed: market";
             return false;
         }
+        // ⚠️ Рынок ОБЯЗАН быть засеян до наложения сохранённого состояния.
+        //
+        // В файле лежат только «движущиеся части» — запас, цены, темпы. Модель
+        // НУЖДЫ (`needs`, `rationing`, `pref`, `tradeAccess`, `serviceCostAvg`)
+        // — чистая функция звезды, и в сейв она не пишется. Раньше её никто и
+        // не восстанавливал: `Market::update` на первом же такте видел пустой
+        // `needs`, заполнял его НУЛЯМИ, и спрос исчезал навсегда. Замер до
+        // правки (один и тот же мир, 60 лет после загрузки): needs 1744 -> 0,
+        // demandRate 9852 -> 0, цена 4.30 -> 0.34, оборот системы 1.26e5 ->
+        // 7.7e3, `strain` вечный ноль (колонии «здоровы» при пустом рынке),
+        // `measureClusterServiceCost()` -> 0, то есть тысячелетняя сверка и
+        // ставка тарифа замирали. Партия после первой загрузки была ДРУГОЙ
+        // игрой — и об этом не было ни строчки в интерфейсе.
+        //
+        // Звёзды читаются выше, поэтому здесь уже доступны их сохранённые
+        // население и индустрия: сеем ровно теми же данными, что и `init`.
+        const ClusterStar& star = loaded.cluster.stars[i];
         Market market;
+        market.seed(star.resources, star.demandBias, loadToken(role), star.population, star.industry);
         market.role = loadToken(role);
         if (!readResourceList(in, market.supply) || !readResourceList(in, market.demand) ||
             !readDoubleVector(in, "PRICES", market.prices) ||
@@ -4008,6 +4059,25 @@ bool Game::loadFromFile(const std::string& path) {
         loaded.creditFloat.push_back(c);
     }
 
+    // --- Довески версии 16 (§32). В сейве 14/15 их просто нет. ---
+    if (version >= 16) {
+        if (!expectTag(in, "LOCAL_CLAIMS") || !(in >> count >> loaded.playerShieldFrac)) {
+            lastEvent = "load failed: local claims";
+            return false;
+        }
+        loaded.localClaims.clear();
+        loaded.localClaims.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            LocalClaims c;
+            if (!expectTag(in, "LC") ||
+                !(in >> c.starIndex >> c.radioMask >> c.bountyPaid >> c.bountyAt)) {
+                lastEvent = "load failed: local claim entry";
+                return false;
+            }
+            loaded.localClaims.push_back(c);
+        }
+    }
+
     if (!in) {
         lastEvent = "load failed";
         return false;
@@ -4250,6 +4320,31 @@ void Game::init(size_t num_stars) {
     miningTimer = 0.0;
     miningStar = -1;
     miningYieldAccum = 0.0;
+    // ⚠️ Всё, что копится в ПАРТИИ, обязано сбрасываться здесь. Это та же
+    // грабля, что уже ловили с денежным уровнем скопления (см. комментарий у
+    // `marketSetClusterLevel` выше): `init` зовётся не только на пустом
+    // объекте — оболочка вызывает его на том же `Game` после неудачной
+    // загрузки, а балансовый стенд строит миры десятками подряд. Без сброса
+    // новая партия наследовала бы чужую репутацию, замороженную лицензию,
+    // чужие деньги «в пути» и чужой журнал.
+    licenceQuotaPaid = 0.0;
+    licenceQuotaBase = LICENCE_QUOTA_BASE;
+    licencePeriodEnd = LICENCE_PERIOD_YEARS;
+    licenceTariffRate = LICENCE_TARIFF_BASE;
+    licenceBuyback = 0.0;
+    licenceCount = 1;
+    licenceRevoked = false;
+    licencePeriodsMet = 0;
+    clusterPriceLevel = 1.0;
+    clusterPriceBase = 1.0;
+    creditFloat.clear();
+    factionReputation.clear();
+    transactions.clear();
+    lastPlayerMoney = -1.0;
+    journalExplained = 0.0;
+    everEnteredLocal = false;
+    localClaims.clear();
+    playerShieldFrac = 1.0;
     lastEvent = "cluster seeded";
     if (num_stars == 0) return;
 
@@ -5224,6 +5319,7 @@ bool Game::robAgent(int attackerIndex, int victimIndex) {
             
             // Credits are immaterial and cannot be stolen
             downgradeAgentToEscapePod(victim);
+            if (victimIndex == playerAgent) rebakePlayerChromocores();
         } else {
             // Victim surrenders cargo
             attacker.lastAction = "robbed " + victim.type;
@@ -5241,6 +5337,7 @@ bool Game::robAgent(int attackerIndex, int victimIndex) {
             
             // Credits are immaterial and cannot be stolen
             downgradeAgentToEscapePod(attacker);
+            if (attackerIndex == playerAgent) rebakePlayerChromocores();
         } else {
             // Attacker repelled
             attacker.lastAction = "repelled by " + victim.type;
@@ -5290,6 +5387,13 @@ bool Game::buyShip(int agentIndex, int starIndex, int classId) {
         if (defIndex < 0 || defIndex >= int(moduleTable.size())) continue;
         applyModuleToShip(agent.ship, moduleTable[defIndex]);
     }
+    // Хромокоры — такой же ЗАПЕЧЁННЫЙ бонус, как модули, и теряются они по той
+    // же причине: `shipApplyClass` переписал поля табличными значениями. Три
+    // ветки прокачки из семи не хранятся больше нигде, поэтому без этой строки
+    // покупка корпуса молча стирала всё, что игрок в них вложил.
+    if (agentIndex == playerAgent) {
+        shipApplyChromocoreFactors(agent.ship, tech.materials, tech.tactics, tech.kinematics);
+    }
     agent.ship.hullHP = agent.ship.maxHullHP;
     // Состав и ёмкости изменились — рабочая точка двигателя подбирается заново.
     shipTuneDrive(agent.ship, 1.0, 1.0);
@@ -5327,6 +5431,12 @@ bool Game::buyAdditionalShip(int agentIndex, int starIndex, int classId) {
     const ClusterStar& berth = cluster.stars[starIndex];
     Ship newShip(sc.name, berth.x, berth.y, berth.z, 0, agents[agentIndex].ship.ownerFaction);
     shipApplyClass(newShip, sc);
+    // Второй борт — тоже борт КАПИТАНА, и его экипаж пользуется теми же
+    // моделями. Иначе флот из двух кораблей вёл бы себя как два разных игрока.
+    if (agentIndex == playerAgent) {
+        shipApplyChromocoreFactors(newShip, tech.materials, tech.tactics, tech.kinematics);
+        newShip.hullHP = newShip.maxHullHP;
+    }
 
     Agent newAgent(agents[agentIndex].type, newShip);
     newAgent.playerControlled = agents[agentIndex].playerControlled;
@@ -7000,6 +7110,14 @@ bool Game::playerBuyLicence() {
 
 bool Game::playerSettleQuota() {
     if (playerAgent < 0 || playerAgent >= int(agents.size())) return false;
+    // Погашать квоту ОТОЗВАННОЙ лицензии бессмысленно: торговлю разморозит
+    // только выкуп (`playerBuybackLicence`), а квота отозванной лицензии ни на
+    // что не влияет. Раньше кнопка работала и в этом состоянии — игрок платил
+    // полторы цены остатка и не получал ровно ничего.
+    if (licenceRevoked) {
+        lastEvent = "licence revoked: buy it back first (F2)";
+        return false;
+    }
     const double remaining = std::max(0.0, licenceQuotaTarget() - licenceQuotaPaid);
     if (remaining <= 0.0) {
         lastEvent = "quota already met";
@@ -7017,6 +7135,80 @@ bool Game::playerSettleQuota() {
     pushNews("Quota settled in cash for " + std::to_string(int(std::ceil(cost))) + " Cr.", 4);
     lastEvent = "quota settled";
     return true;
+}
+
+// --- Что уже взято в микромире (§32.1) --------------------------------------
+
+namespace {
+// Запись о звезде в списке заявок. Список короткий (только те системы, где
+// игрок реально что-то брал), поэтому линейный поиск честнее хеша.
+int localClaimsIndex(const std::vector<LocalClaims>& claims, int starIndex) {
+    for (size_t i = 0; i < claims.size(); ++i) {
+        if (claims[i].starIndex == starIndex) return int(i);
+    }
+    return -1;
+}
+}  // namespace
+
+bool Game::localRadioClaimed(int starIndex, int radioIndex) const {
+    if (radioIndex < 0 || radioIndex >= 32) return false;
+    const int at = localClaimsIndex(localClaims, starIndex);
+    if (at < 0) return false;
+    return (localClaims[size_t(at)].radioMask & (1u << unsigned(radioIndex))) != 0u;
+}
+
+void Game::markLocalRadioClaimed(int starIndex, int radioIndex) {
+    if (radioIndex < 0 || radioIndex >= 32) return;
+    int at = localClaimsIndex(localClaims, starIndex);
+    if (at < 0) {
+        LocalClaims rec;
+        rec.starIndex = starIndex;
+        rec.bountyAt = time;
+        localClaims.push_back(rec);
+        at = int(localClaims.size()) - 1;
+    }
+    localClaims[size_t(at)].radioMask |= (1u << unsigned(radioIndex));
+}
+
+double Game::payLocalBounty(int starIndex, double amount) {
+    if (!(amount > 0.0)) return 0.0;
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return 0.0;
+
+    int at = localClaimsIndex(localClaims, starIndex);
+    if (at < 0) {
+        LocalClaims rec;
+        rec.starIndex = starIndex;
+        rec.bountyAt = time;
+        localClaims.push_back(rec);
+        at = int(localClaims.size()) - 1;
+    }
+    LocalClaims& rec = localClaims[size_t(at)];
+
+    // Ленивое восстановление бюджета: считаем в момент обращения, а не тиком по
+    // всем звёздам. Тот же приём, что у рынка экзотики.
+    const double years = std::max(0.0, time - rec.bountyAt);
+    rec.bountyPaid *= std::exp(-years / BOUNTY_RECOVERY_YEARS);
+    rec.bountyAt = time;
+
+    // Бюджет охраны путей. У глубокого космоса (starIndex < 0) хозяина нет —
+    // платить некому, и это правильно: за головы платят В СИСТЕМЕ.
+    const double turnover = validStar(*this, starIndex) ? systemTurnover(starIndex) : 0.0;
+    const double budget = starIndex < 0 ? 0.0
+                        : std::max(BOUNTY_SYSTEM_FLOOR, turnover * BOUNTY_SYSTEM_SHARE);
+    const double available = std::max(0.0, budget - rec.bountyPaid);
+    const double paid = std::min(amount, available);
+    if (paid <= 0.0) return 0.0;
+
+    rec.bountyPaid += paid;
+    agents[playerAgent].money += paid;
+    // Деньги приходят из казны хозяина системы, а если хозяина нет — из
+    // клиринговой палаты: она и так ведает лицензиями и безопасностью путей.
+    const int owner = validStar(*this, starIndex) ? cluster.stars[size_t(starIndex)].ownerFaction : -1;
+    const int payer = validFaction(*this, owner) ? owner : clearingFaction;
+    if (validFaction(*this, payer)) {
+        factions[size_t(payer)].treasury = std::max(0.0, factions[size_t(payer)].treasury - paid);
+    }
+    return paid;
 }
 
 bool Game::playerTradingBlocked() {

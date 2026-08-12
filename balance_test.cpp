@@ -2164,6 +2164,114 @@ void testInsightBurnsReactorFuel() {
           "просчёт по V стоит процент бака, на сухом молчит", buf);
 }
 
+// Загрузка сейва обязана вернуть ЖИВОЙ рынок, а не только его цифры.
+//
+// В файле лежат «движущиеся части» — запас, цены, темпы. Модель НУЖДЫ (`needs`,
+// `rationing`, `pref`, `tradeAccess`) в сейв не пишется, потому что она чистая
+// функция звезды, — но раньше её никто и не восстанавливал. `Market::update` на
+// первом же такте видел пустой `needs` и заполнял его НУЛЯМИ: спрос исчезал
+// навсегда, цены обваливались к полу импортной полосы, склады пухли, `strain`
+// становился вечным нулём, а `measureClusterServiceCost()` возвращал 0 — то есть
+// замирали и тысячелетняя сверка, и ставка тарифа. Партия после первой загрузки
+// была ДРУГОЙ игрой, и об этом не было ни строчки в интерфейсе.
+//
+// Меряем не «поля на месте», а СЛЕДСТВИЕ: прокручиваем оба мира одинаково и
+// сравниваем спрос, цену и оборот.
+void testSaveKeepsTheMarketAlive() {
+    Game a;
+    buildWorld(a, 909, 30);
+    const int star = a.agents[a.playerAgent].currentStar;
+
+    const std::string path = "balance_market_save.txt";
+    if (!a.saveToFile(path)) {
+        check(false, "загрузка сохраняет модель спроса", "сохранить не удалось");
+        return;
+    }
+    Game b;
+    b.init(1200);
+    if (!b.loadFromFile(path)) {
+        check(false, "загрузка сохраняет модель спроса", "загрузить не удалось");
+        std::remove(path.c_str());
+        return;
+    }
+    std::remove(path.c_str());
+
+    // Обоим мирам даём одинаковый ход: разница может прийти только от загрузки.
+    for (int y = 0; y < 60; ++y) { a.update(1.0); b.update(1.0); }
+
+    double needsA = 0.0, needsB = 0.0, rateA = 0.0, rateB = 0.0;
+    for (size_t f = 0; f < a.markets[star].needs.size(); ++f) needsA += a.markets[star].needs[f];
+    for (size_t f = 0; f < b.markets[star].needs.size(); ++f) needsB += b.markets[star].needs[f];
+    for (size_t i = 0; i < a.markets[star].demandRate.size(); ++i) rateA += a.markets[star].demandRate[i];
+    for (size_t i = 0; i < b.markets[star].demandRate.size(); ++i) rateB += b.markets[star].demandRate[i];
+    const double turnA = a.systemTurnover(star), turnB = b.systemTurnover(star);
+    const double svcA = a.measureClusterServiceCost(), svcB = b.measureClusterServiceCost();
+
+    // Пороги широкие: цель — поймать ИСЧЕЗНОВЕНИЕ модели, а не заморозить числа.
+    const bool ok = needsA > 1.0 && needsB > needsA * 0.5 &&
+                    rateA > 1.0 && rateB > rateA * 0.5 &&
+                    turnB > turnA * 0.4 && svcB > svcA * 0.4;
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "нужда %.0f -> %.0f, спрос %.0f -> %.0f, оборот %.3g -> %.3g, услуга %.3g -> %.3g",
+        needsA, needsB, rateA, rateB, turnA, turnB, svcA, svcB);
+    check(ok, "загрузка сохраняет модель спроса", buf);
+}
+
+// Хромокоры обязаны пережить покупку корпуса.
+//
+// Три ветки прокачки из семи (материалы, тактика, кинематика) не хранятся
+// нигде, кроме ПОЛЕЙ корабля, — а `shipApplyClass` при покупке переписывает эти
+// поля табличными значениями нового корпуса. Модули после покупки перезапекались
+// (§15.1B), хромокоры — нет: с первой же пересадки 43% прокачки умирало молча,
+// продолжая показывать «>1.00» в интерфейсе. Меряем ОТНОШЕНИЕ к чистому
+// корпусу того же класса, а не абсолютные числа: лестница классов может
+// двигаться, закон запекания — нет.
+void testChromocoresSurviveHullChange() {
+    Game g;
+    buildWorld(g, 4242, 40);
+    const int pa = g.playerAgent;
+
+    // Десять ядер в материалы, пять в тактику, пять в кинематику.
+    for (int i = 0; i < 10; ++i) g.grantChromocore(TECH_MATERIALS);
+    for (int i = 0; i < 5; ++i) g.grantChromocore(TECH_TACTICS);
+    for (int i = 0; i < 5; ++i) g.grantChromocore(TECH_KINEMATICS);
+
+    // Ищем корпус выше стартового и покупаем его, не считаясь с ценой.
+    int classId = -1;
+    for (size_t c = 0; c < shipClasses().size(); ++c) {
+        if (shipClasses()[c].cargoCapacity > g.agents[pa].ship.cargoCapacity * 1.5) { classId = int(c); break; }
+    }
+    const ShipClass sc = shipClasses()[size_t(classId < 0 ? 0 : classId)];
+    g.agents[pa].money = sc.price * 4.0 + 1.0e9;
+    const bool bought = classId >= 0 && g.buyShip(pa, g.agents[pa].currentStar, classId);
+
+    // Чистый корпус того же класса — точка отсчёта.
+    Ship bare("bare", 0, 0, 0, 0, -1);
+    shipApplyClass(bare, sc);
+
+    const Ship& ps = g.agents[pa].ship;
+    const double cargoRatio = bare.cargoCapacity > 0.0 ? ps.cargoCapacity / bare.cargoCapacity : 0.0;
+    const double hullRatio = bare.maxHullHP > 0.0 ? ps.maxHullHP / bare.maxHullHP : 0.0;
+    // Тактика умножает ПУШКИ, а у грузового корпуса их может не быть вовсе:
+    // ноль, умноженный на что угодно, — ноль, и это не потеря прокачки
+    // (множитель цел в `tech` и оживёт на боевом корпусе). Поэтому пушки
+    // проверяем только там, где им есть чем стрелять.
+    const bool armed = bare.heavyWeapons > 0.0;
+    const double gunRatio = armed ? ps.heavyWeapons / bare.heavyWeapons : g.tech.tactics;
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf),
+        "куплен %s: трюм x%.3f (стат %.3f), пушки x%.3f (стат %.3f%s), корпус x%.3f",
+        sc.name.c_str(), cargoRatio, g.tech.materials, gunRatio, g.tech.tactics,
+        armed ? "" : ", корпус безоружен", hullRatio);
+    check(bought &&
+          std::fabs(cargoRatio - g.tech.materials) < 0.02 &&
+          std::fabs(gunRatio - g.tech.tactics) < 0.02 &&
+          std::fabs(hullRatio - g.tech.materials) < 0.02,
+          "хромокоры переживают покупку корпуса", buf);
+}
+
 // Перевод обязан сохранять порядок %s и чисел: snprintf берёт аргументы по
 // счёту. Перестановка роняет игру внутри реплики — и только на русском.
 void testTranslationsKeepFormatOrder() {
@@ -2231,6 +2339,8 @@ int main() {
     testAdviceRespectsSurvey();
     testSameSeedSameWorld();
     testInsightBurnsReactorFuel();
+    testSaveKeepsTheMarketAlive();
+    testChromocoresSurviveHullChange();
     testTranslationsKeepFormatOrder();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;
