@@ -3081,7 +3081,13 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     // отличие в интерфейсе — этот флажок и подписи на кнопках.
     const bool freeMarket = game.playerOwnsStar(window.star);
     if (liveMarket && star && freeMarket) {
+        // «Цены 0» звучит как подарок, а на деле это ОБА направления: взять
+        // даром — да, но и продать здесь нельзя ни за кредит, ни в квоту
+        // (§13, `freeMarketFor`). Игрок, привёзший полный трюм домой, узнавал
+        // об этом по нулю в кассе и ниоткуда больше.
         drawText(renderer, topX, topY, star->name + " - YOUR COLONY, ALL PRICES 0", P.green, 1);
+        drawText(renderer, topX, topY + 12,
+                 "TAKE FREELY - BUT SELLING HERE PAYS NOTHING AND COUNTS FOR NO QUOTA", P.amber, 1);
     } else if (liveMarket && star) {
         drawText(renderer, topX, topY, star->name + " LOCAL MARKET", P.green, 1);
     } else {

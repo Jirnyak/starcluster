@@ -653,6 +653,8 @@ const Entry WORDS[] = {
     {"ASKING PRICE", "ЦЕНА"},
     {"PAID IN FULL TO THE SELLING FACTION", "ПОЛНОСТЬЮ ВЫПЛАЧИВАЕТСЯ ФРАКЦИИ-ПРОДАВЦУ"},
     {"YOUR COLONY, ALL PRICES 0", "ВАША КОЛОНИЯ, ВСЕ ЦЕНЫ 0"},
+    {"TAKE FREELY - BUT SELLING HERE PAYS NOTHING AND COUNTS FOR NO QUOTA",
+     "БЕРИТЕ ДАРОМ - НО ПРОДАЖА ЗДЕСЬ НЕ ДАЁТ НИ КРЕДИТА И НЕ ИДЁТ В КВОТУ"},
     {"YOURS", "ВАША"},
     {"VS YOURS", "ПРОТИВ ВАШЕГО"},
     {"VS CLUSTER", "ПРОТИВ СКОПЛЕНИЯ"},
