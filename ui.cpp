@@ -2651,7 +2651,7 @@ void drawColonyWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
         drawText(renderer, x, y, "IDLE - IT WILL START A BUILD WHEN FUNDED", P.dim, 1);
     }
 
-    drawText(renderer, layout.amount.x, layout.amount.y - 12, "AMOUNT", P.dim, 1);
+    drawText(renderer, layout.amount.x, layout.amount.y - 12, "AMOUNT IN UNITS", P.dim, 1);
     fillRect(renderer, layout.amount.x, layout.amount.y, layout.amount.w, layout.amount.h, {9, 14, 26, 245});
     strokeRect(renderer, layout.amount.x, layout.amount.y, layout.amount.w, layout.amount.h,
         state.tradeAmountEditing && active ? P.cyan : P.border);
@@ -3131,8 +3131,11 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
         const Agent& player = game.agents[game.playerAgent];
         char buf1[32], buf2[32], buf3[32];
-        std::snprintf(buf1, sizeof(buf1), "%.0F", player.money);
-        std::snprintf(buf2, sizeof(buf2), "%.0F/%.0F", shipCargoMass(player.ship), player.ship.cargoCapacity);
+        // Единицы подписаны: «CREDITS 100» и «CARGO 11/110» стояли голыми, и
+        // это ровно то место, где новичок путает МАССУ трюма с ЕДИНИЦАМИ в
+        // поле объёма и потому перегружается.
+        std::snprintf(buf1, sizeof(buf1), "%.0F CR", player.money);
+        std::snprintf(buf2, sizeof(buf2), "%.0F/%.0F T", shipCargoMass(player.ship), player.ship.cargoCapacity);
         std::snprintf(buf3, sizeof(buf3), "%.0F%%/%.0F%%",
             shipFuelFill(player.ship) * 100.0, shipPropellantFill(player.ship) * 100.0);
         int cx = topX;
@@ -3206,7 +3209,7 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
         drawText(renderer, rect.x + rect.w - 3 - len * 6, rect.y + rect.h - 9, z, P.dim, 1);
     }
 
-    drawText(renderer, layout.amount.x, layout.amount.y - 12, "AMOUNT", P.dim, 1);
+    drawText(renderer, layout.amount.x, layout.amount.y - 12, "AMOUNT IN UNITS", P.dim, 1);
     fillRect(renderer, layout.amount.x, layout.amount.y, layout.amount.w, layout.amount.h, {9, 14, 26, 245});
     strokeRect(renderer, layout.amount.x, layout.amount.y, layout.amount.w, layout.amount.h,
         state.tradeAmountEditing && active ? P.cyan : P.border);
@@ -3646,7 +3649,7 @@ static void drawShipTechPanel(SDL_Renderer* renderer, const Game& game, int x, i
     // расшифровки этих семи пар не было НИГДЕ — ни в карточке F1, ни в новелле,
     // ни в подсказке. Слово влезает в ту же колонку (12 знаков на 78 пикселях)
     // и переводится словарём §14 само.
-    const char* codes[7] = {"MIND", "CHARM", "MATTER", "TACTICS", "SPEED", "SENSOR", "LUCK"};
+    const char* codes[7] = {"MIND", "CHARM", "FRAME", "TACTICS", "SPEED", "SENSOR", "LUCK"};
     const double vals[7] = {game.tech.intellect, game.tech.charisma, game.tech.materials,
         game.tech.tactics, game.tech.kinematics, game.tech.sensors, game.tech.luck};
     for (int i = 0; i < 7; ++i) {
@@ -4404,6 +4407,14 @@ void drawVisualNovel(SDL_Renderer* renderer, const WindowState& state, int scree
     
     // Text
     drawText(renderer, boxX + 20, boxY + 20, "TIMERTIA", {70, 240, 255, 255}, 2);
+    // ⚠️ Как листать — не было написано НИГДЕ. Коробка рисовала имя и текст,
+    // мышью она не листается вовсе, а карточка F1 говорит про ENTER другое
+    // («ENTER OPEN SYSTEM»). Новичок сидел перед первой репликой и ждал.
+    {
+        const char* prompt = "ENTER >";
+        drawText(renderer, boxX + boxW - 20 - textWidth(prompt, 2), boxY + 22, prompt,
+                 (SDL_GetTicks() / 500) % 2 == 0 ? SDL_Color{70, 240, 255, 255} : P.dim, 2);
+    }
     int maxChars = (boxW - 40) / 12;
     std::string wrapped = wrapText(state.vnState.currentText, maxChars);
     drawText(renderer, boxX + 20, boxY + 60, wrapped, {214, 228, 238, 255}, 2);
