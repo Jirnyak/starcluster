@@ -233,6 +233,19 @@ int main(int argc, char** argv) {
                 UI::advanceVisualNovel(ui, game, SCREEN_W, SCREEN_H);  // следующий шаг
             }
         }
+        // Шаги 110..112 — хайтек-лента (§37.2). Живут вне ленты обучения и в
+        // прогон выше не попадают, а реплики у них длинные: меряем отдельно и
+        // по тому же узкому окну.
+        {
+            for (int step = 110; step <= 112; ++step) {
+                const std::string wrapped = UI::wrapText(UI::tutorialLine(game, step), maxChars);
+                int lines = 1;
+                for (size_t i = 0; i < wrapped.size(); ++i) if (wrapped[i] == '\n') ++lines;
+                if (lines > worstLines) { worstLines = lines; worstStep = step; }
+                if (lines > maxLines) std::printf("VN OVERFLOW: step %d takes %d lines\n", step, lines);
+            }
+        }
+
         // Шаг 100 — сводка по прибытии — в этот прогон НЕ попадает: он живёт вне
         // ленты обучения и включается по приходу в новую систему. А реплика у
         // него самая длинная в игре (цена здесь, цена там, имя системы, дальность,

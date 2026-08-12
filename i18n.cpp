@@ -569,6 +569,7 @@ const Entry WORDS[] = {
     // работают только там, где переводят САМ формат (реплики Тимертии).
     {"PORTFOLIO", "ПОРТФЕЛЬ"},
     {"REPORT", "ОТЧЁТ"},
+    {"YOUR STANDING KEEPS IT FRESH", "ВАША РЕПУТАЦИЯ ДЕРЖИТ ЕГО СВЕЖИМ"},
     {"DIVIDENDS ARRIVE ON THE ACCOUNT AT THE SPEED OF LIGHT",
      "ДИВИДЕНДЫ ПРИХОДЯТ НА СЧЁТ СО СКОРОСТЬЮ СВЕТА"},
     {"A POWER IS PRICED BY WHAT IT EARNS - HELP IT AND YOUR STAKE GROWS",
@@ -578,6 +579,15 @@ const Entry WORDS[] = {
     {"STAKE CAPPED AT A QUARTER OF THE POWER", "БОЛЬШЕ ЧЕТВЕРТИ ДЕРЖАВЫ НЕ ПРОДАЮТ"},
     {"NOT ENOUGH CREDITS FOR SHARES", "НА АКЦИИ НЕ ХВАТАЕТ КРЕДИТОВ"},
     {"NO SHARES TO SELL", "АКЦИЙ НА РУКАХ НЕТ"},
+
+    // Реплики Тимертии про хайтек-этаж (§37.2). Коробка держит ПЯТЬ строк —
+    // длину меряет `make uishots` на узком окне и на обоих языках.
+    {"Master, this port trades matter that is not on the periodic table at all. Antimatter, neutronium, coherent condensate - press Y.",
+     "Хозяин, в этом порту торгуют веществом, которого нет в таблице элементов вовсе. Антивещество, нейтрониум, когерентный конденсат — клавиша Y."},
+    {"The table of elements ends where chemistry ends. Everything beyond it is made at dead stars and industrial furnaces, and it costs accordingly.",
+     "Таблица элементов кончается там же, где кончается химия. Всё, что за ней, родится у мёртвых звёзд и в заводских печах, и стоит соответственно."},
+    {"You will need a containment bay before you can carry any of it. Fit one at a shipyard, and the second floor of this economy opens up.",
+     "Везти это не в чем без ячейки удержания. Поставьте её на верфи — и откроется второй этаж здешней экономики."},
 
     // ---------------- хайтек-этаж: экзотическая материя (§31) ----------------
     // Слова, которых в игре не было вовсе: три вещества, отсек удержания,

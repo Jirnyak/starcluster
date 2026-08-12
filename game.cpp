@@ -5174,6 +5174,18 @@ void Game::updateFactions(double dt) {
         factionBookCursor %= int(factions.size());
         publishFactionBook(factionBookCursor);
         factionBookCursor = (factionBookCursor + 1) % int(factions.size());
+        // (§37.1) РЕПУТАЦИЯ ОТКРЫВАЕТ КНИГИ. У доверенного возчика отчёт всегда
+        // свежий: он и есть тот, кто возит их грузы и видит их склады изнутри.
+        //
+        // Это единственный выход у репутации, кроме размера заказов: до сих пор
+        // она копилась до потолка 1000 и упиралась в звание. А отставание
+        // котировки от жизни (§33) — главное, чем биржа вообще интересна:
+        // знать раньше рынка и есть заработок.
+        for (size_t f = 0; f < factions.size(); ++f) {
+            if (int(f) == factionBookCursor) continue;   // эту уже обновили выше
+            if (factionJobTier(int(f)) < SHARE_INSIDER_TIER) continue;
+            publishFactionBook(int(f));
+        }
     }
     payShareDividends(1.0);
 

@@ -2040,8 +2040,13 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
             // Возраст отчёта — это и есть вся игра в акции: котировка отстаёт от
             // жизни, и тот, кто там ЛЕТАЛ, знает больше биржи.
             if (age >= 0.0) {
-                std::snprintf(row, sizeof(row), "REPORT %.0FY", age);
-                drawText(renderer, x + 12, by + 10, row, age > 4.0 ? P.amber : P.dim, 1);
+                // Свежая книга у доверенного возчика — не украшение, а сам
+                // смысл репутации на бирже (§37.1).
+                const bool insider = game.factionJobTier(int(f)) >= SHARE_INSIDER_TIER;
+                std::snprintf(row, sizeof(row), insider ? "REPORT %.0FY - YOUR STANDING KEEPS IT FRESH"
+                                                        : "REPORT %.0FY", age);
+                drawText(renderer, x + 12, by + 10, row,
+                         insider ? P.green : (age > 4.0 ? P.amber : P.dim), 1);
             }
             const bool canBuy = price > 0.0 && cash > price && int(f) != game.playerFaction;
             drawButton(renderer, layout.shareBuy[f], "BUY", P.green, canBuy);
@@ -3947,6 +3952,15 @@ std::string getTutorialText(const Game& game, int step, TutorialCue& cue, Visual
         case 25: return I18N::tr("Finally, the new technology of applied color superconductivity has produced novel AI cores.");
         case 26: return I18N::tr("They are still prototypes and very rare. Be sure to privatise every one you find.");
         case 27: return I18N::tr("F1 lists every control. I am at your service with more insights at any time, Master. [V]");
+        // (§37.2) Хайтек-этаж. Говорится ОДИН раз и только на месте: там, где
+        // рынок экзотики действительно есть. Три реплики, потому что это три
+        // разных вещества с тремя разными смыслами, и в одну коробку они не
+        // ложатся (коробка держит пять строк, §26).
+        // ⚠️ Номера 100..102 заняты сводкой по прибытии и просчётом по V (§28),
+        // поэтому хайтек-лента начинается со 110.
+        case 110: return I18N::tr("Master, this port trades matter that is not on the periodic table at all. Antimatter, neutronium, coherent condensate - press Y.");
+        case 111: return I18N::tr("The table of elements ends where chemistry ends. Everything beyond it is made at dead stars and industrial furnaces, and it costs accordingly.");
+        case 112: return I18N::tr("You will need a containment bay before you can carry any of it. Fit one at a shipyard, and the second floor of this economy opens up.");
         // Сводка по прибытии в новую систему. В отличие от шагов 10–11 здесь
         // всезнания НЕТ: считается только по разведанным рынкам, потому что
         // сводка — это ЖУРНАЛ увиденного, а не радар. Отсюда и честный ответ на
@@ -4004,6 +4018,12 @@ std::string getTutorialText(const Game& game, int step, TutorialCue& cue, Visual
     return "";
 }
 
+std::string tutorialLine(const Game& game, int step) {
+    TutorialCue cue;
+    VisualNovelState scratch;
+    return getTutorialText(game, step, cue, scratch);
+}
+
 bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH) {
     auto& vn = state.vnState;
     if (!vn.active) return false;
@@ -4034,7 +4054,22 @@ bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH) {
                     }
                 }
             }
+        } else if (vn.tutorialStep >= 110 && vn.tutorialStep < 112) {
+            // (§37.2) Рассказ про хайтек-этаж идёт тремя репликами подряд — так
+            // же, как лента обучения, только вне её. Последняя гасит коробку и
+            // открывает само окно: показать всегда убедительнее, чем описать.
+            vn.tutorialStep++;
+            TutorialCue cue;
+            vn.targetText = getTutorialText(game, vn.tutorialStep, cue, vn);
+            vn.arrowTarget = cue.arrow;
+            vn.textProgress = 0.0f;
+            vn.currentText = "";
         } else {
+            if (vn.tutorialStep == 112 && game.playerAgent >= 0 &&
+                game.playerAgent < (int)game.agents.size()) {
+                const int star = game.agents[size_t(game.playerAgent)].currentStar;
+                if (game.exoticMarketAt(star)) openExoticsWindow(state, star, winW, winH);
+            }
             vn.active = false;
         }
     }
@@ -4114,6 +4149,21 @@ void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, i
     if (vn.tutorialCompleted) {
         if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
             int currentStar = game.agents[game.playerAgent].currentStar;
+            // Хайтек-этаж перебивает обычную сводку: он важнее и говорится
+            // ровно один раз за партию, в первом же порту, где он есть.
+            if (!vn.exoticIntroDone && currentStar >= 0 && game.exoticMarketAt(currentStar) &&
+                game.playerAtStar(currentStar)) {
+                vn.exoticIntroDone = true;
+                vn.visitedSystems.insert(currentStar);
+                vn.tutorialStep = 110;
+                TutorialCue cue;
+                vn.targetText = getTutorialText(game, 110, cue, vn);
+                vn.arrowTarget = cue.arrow;
+                vn.textProgress = 0.0f;
+                vn.currentText = "";
+                vn.active = true;
+                return;
+            }
             if (currentStar >= 0 && vn.visitedSystems.find(currentStar) == vn.visitedSystems.end()) {
                 vn.visitedSystems.insert(currentStar);
                 vn.tutorialStep = 100;
