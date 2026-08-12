@@ -3228,7 +3228,23 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     drawButton(renderer, layout.sell, freeMarket ? "GIVE" : "SELL", P.amber, liveMarket);
     drawButton(renderer, layout.sellAll, freeMarket ? "GIVE ALL" : "SELL ALL", P.amber,
                liveMarket && hasCargo);
-    drawButton(renderer, layout.refuel, freeMarket ? "FILL FUEL+PROP" : "BUY FUEL+PROP", P.amber, liveMarket);
+    // ⚠️ ЦЕНА НА КНОПКЕ. Станция берёт вдвое против сырья (§12), и полный долив
+    // после удачного рейса стоит примерно столько же, сколько этот рейс принёс:
+    // замер на seed 1234 — рейс дал 2994 Cr, следующий долив спросил 3094 и
+    // обнулил кошелёк. Кнопка при этом рекомендована Тимертией как «короткий
+    // ответ» и не говорила о цене ни слова.
+    {
+        char refuelLabel[64];
+        const double quote = game.agentRefuelQuote(game.playerAgent);
+        if (freeMarket) {
+            std::snprintf(refuelLabel, sizeof(refuelLabel), "FILL FUEL+PROP");
+        } else if (quote > 0.0) {
+            std::snprintf(refuelLabel, sizeof(refuelLabel), "FILL %s CR", creditsLabel(quote).c_str());
+        } else {
+            std::snprintf(refuelLabel, sizeof(refuelLabel), "TANKS FULL");
+        }
+        drawButton(renderer, layout.refuel, refuelLabel, P.amber, liveMarket && (freeMarket || quote > 0.0));
+    }
     drawButton(renderer, layout.hold, "HOLD / TANKS", P.cyan, true);
 
 
@@ -4087,6 +4103,16 @@ std::string getTutorialText(const Game& game, int step, TutorialCue& cue, Visual
                 std::snprintf(buf, sizeof(buf), I18N::tr("Nothing worth the fuel, Master: of the %d markets we have seen, none pays for a run from here.").c_str(), surveyed);
                 return buf;
             }
+            // ⚠️ СНАЧАЛА — про баки. Совет ищет маршруты, которые корабль
+            // физически потянет; с пустым баком не тянет ни один, и советчик
+            // замолкал, не объяснив причины. Игрок видел «ничего не стоит
+            // топлива» и не знал, что топлива-то и нет.
+            if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
+                const Ship& ps = game.agents[game.playerAgent].ship;
+                if (shipPropellantFill(ps) < 0.03 || shipFuelFill(ps) < 0.03) {
+                    return I18N::tr("The tanks are dry, Master. Nothing can be planned from here until we fill them - the HOLD window buys matter cheaper than the station does.");
+                }
+            }
             std::snprintf(buf, sizeof(buf), I18N::tr("Nothing worth the fuel, Master: of the %d markets we have seen, none pays for a run from here. They do have a surplus of %s at %.2f - somewhere it will be wanted.").c_str(),
                           surveyed, elementNameAt(surplus).c_str(),
                           here < (int)game.markets.size() ? game.markets[here].prices[surplus] : 0.0);
@@ -4099,7 +4125,15 @@ std::string getTutorialText(const Game& game, int step, TutorialCue& cue, Visual
             if (game.playerAgent < 0 || game.playerAgent >= (int)game.agents.size()) return "";
             const int here = game.agents[game.playerAgent].currentStar;
             const TradeRun run = game.playerBestRun(here, INSIGHT_SCAN_SYSTEMS, false);
-            if (!run.valid) return I18N::tr("I ran the model, Master, and it comes back empty: with this hold and this purse there is no run out of here worth its fuel.");
+            if (!run.valid) {
+                if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
+                    const Ship& ps = game.agents[game.playerAgent].ship;
+                    if (shipPropellantFill(ps) < 0.03 || shipFuelFill(ps) < 0.03) {
+                        return I18N::tr("The tanks are dry, Master. Nothing can be planned from here until we fill them - the HOLD window buys matter cheaper than the station does.");
+                    }
+                }
+                return I18N::tr("I ran the model, Master, and it comes back empty: with this hold and this purse there is no run out of here worth its fuel.");
+            }
             char buf[512];
             std::snprintf(buf, sizeof(buf), I18N::tr("Deep model, Master - and the reactor pays for it: %s goes for %.2f here and fetches %.2f in %s, %.1f ly, %.0f years, some %.0f Cr. Nothing within reach beats it.").c_str(),
                           elementNameAt(run.element).c_str(), run.buyPrice, run.sellPrice,

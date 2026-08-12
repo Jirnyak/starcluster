@@ -2245,6 +2245,14 @@ void buyCargo(Game& game, Agent& agent, int starIndex, const TradePlan& plan) {
         const double freeMass = std::max(0.0, agent.ship.cargoCapacity - shipCargoMass(agent.ship));
         amount = std::min(capAmount, freeMass / std::max(1e-9, resourceUnitMassByIndex(plan.elementIndex)));
     } else {
+        // ⚠️ И ТРЮМ ТОЖЕ ПОТОЛОК. Платная ветка ограничивала объём ТОЛЬКО
+        // деньгами: игрок платил за груз, который физически не увезёт, и
+        // упирался в «route blocked: overweight» уже после списания. Выход был
+        // (кнопка «за борт»), но это чистая потеря — за перегруз платили
+        // дважды. Перегруз как СОСТОЯНИЕ остаётся достижимым через переливы и
+        // золу (§12), но покупать себя в него больше нельзя.
+        const double freeMass = std::max(0.0, agent.ship.cargoCapacity - shipCargoMass(agent.ship));
+        const double holdUnits = freeMass / std::max(1e-9, resourceUnitMassByIndex(plan.elementIndex));
         // Пошлина ОБЯЗАНА входить в бюджет закупки. Раньше объём считался как
         // `деньги / цена`, а списывалось `цена + пошлина`, — и «купить
         // максимум» на любом элементе оставляло кошелёк ровно в минусе на
@@ -2256,10 +2264,10 @@ void buyCargo(Game& game, Agent& agent, int starIndex, const TradePlan& plan) {
         double budgetTariff = tariffFor(game, starIndex, agent.ship.ownerFaction, 0.014);
         if (agent.playerControlled) budgetTariff /= std::max(1.0, game.tech.charisma);
         const double budget = std::max(0.0, agent.money) / (1.0 + std::max(0.0, budgetTariff));
-        amount = std::min(capAmount, budget / std::max(1e-9, market.prices[plan.elementIndex]));
+        amount = std::min(std::min(capAmount, holdUnits), budget / std::max(1e-9, market.prices[plan.elementIndex]));
         for (int pass = 0; pass < 2 && amount > 0.0; ++pass) {
             const double avg = market.executionPrice(plan.elementIndex, amount, false);
-            amount = std::min(capAmount, budget / std::max(1e-9, avg));
+            amount = std::min(std::min(capAmount, holdUnits), budget / std::max(1e-9, avg));
         }
     }
     if (amount <= 0.01) return;
@@ -5000,7 +5008,11 @@ void Game::update(double dt) {
     tradeInsightTimer += dt;
     if (tradeInsightTimer >= 1.0) {
         if (tradeInsightPending > 0.0) {
-            addResearch(2.0 * std::log10(1.0 + tradeInsightPending / 1000.0));
+            // Множитель 4, а не 2: замер прогона показал, что при двойке чистый
+            // торговец получал первое ядро примерно за тридцать рейсов, то есть
+            // за тысячу лет. Прокачка от торговли должна быть медленной, но не
+            // невидимой — теперь первое ядро выходит рейсов за двенадцать.
+            addResearch(4.0 * std::log10(1.0 + tradeInsightPending / 1000.0));
             tradeInsightPending = 0.0;
         }
         tradeInsightTimer = 0.0;
@@ -6191,10 +6203,37 @@ bool Game::agentBuyElementAmount(int agentIndex, int elementIndex, double amount
     const double buyPrice = market.prices[elementIndex];
     if (buyPrice <= 0.0 || market.supply[elementIndex].amount <= 0.01) return false;
 
+    // ⚠️ «КУПИТЬ МАКСИМУМ» ОСТАВЛЯЕТ НА ТОПЛИВО.
+    //
+    // Замер, ради которого это написано: игрок делает удачный рейс (+3000 Cr),
+    // на следующей станции жмёт «максимум», тратит всё до копейки на груз — и
+    // не может вылететь, потому что баки пусты, а денег на заправку нет.
+    // Дальше он заперт с полным трюмом в системе, где этот груз никому не
+    // нужен: продать обратно можно только в убыток, и об этом нигде не сказано.
+    // Прогон «разумной игры» на трёх сидах давал ровно это — 2..4 сделки и
+    // вечные 10 000 Cr состояния (то есть один корпус и пустой кошелёк).
+    //
+    // Планировщик NPC этой ямы не знает с самого начала: `findBestTrade`
+    // отсекает сделку по `cargoCost + fuelCost > money` (game.cpp). Здесь тот
+    // же закон, только выраженный через станционную котировку: на долив баков
+    // деньги придерживаются. Явно названный объём не трогается — игрок,
+    // который вписал число, знает, что делает.
+    double budgetCap = amount;
+    if (agent.playerControlled && amount > 1.0e11) {
+        const double reserve = std::min(agentRefuelQuote(agentIndex), std::max(0.0, agent.money) * 0.5);
+        if (reserve > 0.0 && buyPrice > 0.0) {
+            budgetCap = std::max(0.0, agent.money - reserve) / buyPrice;
+            if (budgetCap <= 0.01) {
+                lastEvent = "keeping " + std::to_string(int(std::ceil(reserve))) + " Cr for fuel";
+                return false;
+            }
+        }
+    }
+
     TradePlan plan;
     plan.destStar = agent.currentStar;
     plan.elementIndex = elementIndex;
-    plan.amount = amount;
+    plan.amount = budgetCap;
     plan.buyPrice = buyPrice;
     plan.sellPrice = buyPrice;
     double beforeAmount = 0.0;
@@ -6215,21 +6254,108 @@ bool Game::agentBuyElementAmount(int agentIndex, int elementIndex, double amount
     return afterAmount > beforeAmount + 0.001;
 }
 
+// Сколько МАССЫ каждого расходника надо долить, чтобы уверенно пройти
+// назначенный маршрут. Общая для котировки и для самой покупки — иначе кнопка
+// показывала бы одно, а списывала другое.
+//
+// ⚠️ Раньше и то, и другое считалось «под пробку», и это была ловушка, а не
+// удобство: бак рабочего тела держит объём на сотню рейсов, поэтому полный
+// долив стоил 26 000 … 112 000 Cr при рейсе в 3 000 … 10 000. Игрок, нажавший
+// рекомендованную Тимертией кнопку после первой удачной сделки, оставался с
+// полными баками и пустым кошельком. Настоящая дорога стоит 12…22% рейса —
+// вот столько и надо покупать.
+void Game::refuelTargets(int agentIndex, double& fuelMass, double& propMass) const {
+    fuelMass = 0.0;
+    propMass = 0.0;
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return;
+    const Agent& agent = agents[size_t(agentIndex)];
+    const MixSummary fuelMix = shipFuelMix(agent.ship);
+    const MixSummary propMix = shipPropellantMix(agent.ship);
+
+    // Есть назначенная цель — считаем ПО НЕЙ, с запасом в половину: маршрут
+    // может пойти другим плечом, а встать без топлива дороже, чем перекупить.
+    RouteCost need;
+    if (validStar(*this, agent.destStar) && agent.destStar != agent.currentStar) {
+        need = agentRouteCost(agentIndex, agent.destStar);
+    }
+    if (need.feasible) {
+        fuelMass = need.fuelMass * 1.5;
+        propMass = need.propellantMass * 1.5;
+    } else {
+        // Цели нет — доливаем до половины ёмкости. Это заведомо больше любого
+        // одного плеча и заведомо меньше «под пробку».
+        const int fe = shipDominantFuelElement(agent.ship);
+        const int pe = shipDominantPropellantElement(agent.ship);
+        if (fe >= 0 && fe < int(elementCount())) {
+            fuelMass = shipFuelTankVolume(agent.ship) * 0.5 /
+                       std::max(1e-9, elementUnitVolume(fe)) * elementUnitMass(fe);
+        }
+        if (pe >= 0 && pe < int(elementCount())) {
+            propMass = agent.ship.propellantVolume * 0.5 /
+                       std::max(1e-9, elementUnitVolume(pe)) * elementUnitMass(pe);
+        }
+    }
+    fuelMass = std::max(fuelMass, fuelMix.mass);
+    propMass = std::max(propMass, propMix.mass);
+}
+
+double Game::agentRefuelQuote(int agentIndex) const {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0.0;
+    const Agent& agent = agents[size_t(agentIndex)];
+    if (agent.ship.enRoute || !validStar(*this, agent.currentStar)) return 0.0;
+    const Market& market = markets[size_t(agent.currentStar)];
+    double tariff = tariffFor(*this, agent.currentStar, agent.ship.ownerFaction, 0.014);
+    if (agent.playerControlled) tariff /= std::max(1.0, tech.charisma);
+    if (freeMarketFor(*this, agent, agent.currentStar)) return 0.0;
+
+    double fuelTarget = 0.0, propTarget = 0.0;
+    refuelTargets(agentIndex, fuelTarget, propTarget);
+
+    double total = 0.0;
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool bunker = pass == 0;
+        if (!bunker && driveUsesFuelAsPropellant(agent.ship.driveIndex)) continue;
+        const int element = bunker ? shipDominantFuelElement(agent.ship)
+                                   : shipDominantPropellantElement(agent.ship);
+        if (element < 0 || element >= int(elementCount())) continue;
+        if (element >= int(market.prices.size())) continue;
+        const MixSummary mix = bunker ? shipFuelMix(agent.ship) : shipPropellantMix(agent.ship);
+        const double capacity = bunker ? shipFuelTankVolume(agent.ship) : agent.ship.propellantVolume;
+        const double target = bunker ? fuelTarget : propTarget;
+        const double unitMass = elementUnitMass(element);
+        const double roomUnits = std::max(0.0, (capacity - mix.volume) /
+                                          std::max(1e-9, elementUnitVolume(element)));
+        const double wantUnits = std::min(std::max(0.0, target - mix.mass) / std::max(1e-6, unitMass), roomUnits);
+        total += wantUnits * market.prices[size_t(element)] * (1.0 + REFINERY_MARKUP) * (1.0 + tariff);
+    }
+    return total;
+}
+
 bool Game::agentBuyFuel(int agentIndex) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
     Agent& agent = agents[agentIndex];
     if (agent.ship.enRoute || !validStar(*this, agent.currentStar)) return false;
     // Заливаем обе ёмкости под пробку по станционной цене (с наценкой за очистку).
     // Цель задаём в массе: сколько влезет по объёму на текущем составе.
-    const int fuelElem = shipDominantFuelElement(agent.ship);
-    const double fuelTarget = shipFuelTankVolume(agent.ship) /
-        std::max(1e-9, elementUnitVolume(fuelElem)) * elementUnitMass(fuelElem);
+    double fuelTarget = 0.0, propTarget = 0.0;
+    refuelTargets(agentIndex, fuelTarget, propTarget);
+
+    // Потолок расхода: заправка не имеет права оставить игрока без оборотного
+    // капитала. Дальше `buyConsumable` сам режет объём по остатку кошелька,
+    // поэтому достаточно временно спрятать неприкосновенную часть.
+    const double keep = agent.playerControlled
+        ? std::max(0.0, agent.money) * (1.0 - REFUEL_WALLET_SHARE) : 0.0;
+    const double purse = agent.money;
+    agent.money = std::max(0.0, purse - keep);
+
     bool any = buyConsumable(*this, agent, agent.currentStar, true, fuelTarget);
     if (!driveUsesFuelAsPropellant(agent.ship.driveIndex)) {
-        const int propElem = shipDominantPropellantElement(agent.ship);
-        const double propTarget = agent.ship.propellantVolume /
-            std::max(1e-9, elementUnitVolume(propElem)) * elementUnitMass(propElem);
         any = buyConsumable(*this, agent, agent.currentStar, false, propTarget) || any;
+    }
+    const double spent = std::max(0.0, purse - keep) - agent.money;
+    agent.money = purse - spent;
+    if (any && keep > 0.0 && spent >= (purse - keep) - 0.01) {
+        lastEvent = "partial fill: keeping " + std::to_string(int(std::ceil(keep))) + " Cr as working capital";
     }
     return any;
 }
@@ -7519,9 +7645,16 @@ TradeRun Game::playerBestRun(int originStar, int nearestSystems, bool knownOnly)
         const int target = near[k].second;
         // Цель, до которой маршрут не строится, — не совет, а ловушка (§12.5):
         // корабль с такими баками туда просто не полетит.
-        if (!agentRouteCost(playerAgent, target).feasible) continue;
+        const RouteCost legCost = agentRouteCost(playerAgent, target);
+        if (!legCost.feasible) continue;
         const double years = agentRouteTravelTime(playerAgent, target);
         if (years <= 0.0) continue;
+        // ⚠️ ДОРОГА ТОЖЕ СТОИТ. Совет считал `выручка - закупка` и молчал про
+        // топливо, хотя планировщик NPC (`findBestTrade`) вычитает его с самого
+        // начала. Замер: расходники съедают 12…22% обещанного, а на дальнем
+        // плече могут съесть и всё — то есть Тимертия звала в рейсы, которые
+        // сама же делала убыточными.
+        const double legFuelCost = refillCost(*this, agents[size_t(playerAgent)].ship, originStar, legCost);
 
         const Market& tm = markets[target];
         for (int e = 0; e < elems; ++e) {
@@ -7540,14 +7673,15 @@ TradeRun Game::playerBestRun(int originStar, int nearestSystems, bool knownOnly)
                 const double avgBuy = home.executionPrice(e, u, false);
                 const double cost = u * avgBuy;
                 const double rev = u * sellPrice * marketExecutionFactor(u, targetDepth, true) * (1.0 - sellTariff);
-                const double perYear = (rev - cost) / years;
-                if (rev - cost <= 0.0 || perYear <= best.perYear) continue;
+                const double net = rev - cost - legFuelCost;
+                const double perYear = net / years;
+                if (net <= 0.0 || perYear <= best.perYear) continue;
                 best.element = e;
                 best.targetStar = target;
                 best.units = u;
                 best.buyPrice = avgBuy;
                 best.sellPrice = sellPrice;
-                best.profit = rev - cost;
+                best.profit = net;
                 best.years = years;
                 best.perYear = perYear;
                 best.distanceLy = near[k].first;
@@ -7665,9 +7799,29 @@ void Game::publishFactionBook(int factionIndex) {
     // Капитализация: касса плюс поток, оценённый в годах. Активы (цена систем)
     // в цену акции НЕ входят — см. комментарий у SHARE_CAPITALISATION_YEARS.
     const double book = std::max(0.0, f.treasury) + income * SHARE_CAPITALISATION_YEARS;
+    // (§41) Отчёт — СОБЫТИЕ, а не тихое обновление числа. Держава теряет
+    // системы в войнах, беднеет от выплат за головы, растит колонии — до сих
+    // пор всё это происходило за кадром, и биржа была таблицей без сюжета.
+    // Заметное движение книги попадает в ленту новостей, а если игрок в доле —
+    // с прямым указанием, что это касается его денег.
+    const double before = factionBook[size_t(factionIndex)];
+    const bool hadReport = factionBookAt[size_t(factionIndex)] > -1.0e17;
     factionBook[size_t(factionIndex)] = book;
     factionIncome[size_t(factionIndex)] = income;
     factionBookAt[size_t(factionIndex)] = time;
+    if (hadReport && before > 0.0) {
+        const double move = (book - before) / before;
+        const bool held = size_t(factionIndex) < playerShares.size() &&
+                          playerShares[size_t(factionIndex)] > 0.0;
+        if (move <= -0.10 || move >= 0.10) {
+            char note[192];
+            std::snprintf(note, sizeof(note), "%s report: shares %s %d%%%s",
+                          f.name.c_str(), move > 0.0 ? "up" : "down",
+                          int(std::fabs(move) * 100.0 + 0.5),
+                          held ? " - you hold a stake" : "");
+            pushNews(note, held ? 4 : 1);
+        }
+    }
 }
 
 double Game::factionSharePrice(int factionIndex) const {

@@ -2165,6 +2165,61 @@ void testInsightBurnsReactorFuel() {
           "просчёт по V стоит процент бака, на сухом молчит", buf);
 }
 
+// Игрок, который слушает советчика, обязан РАСТИ, а не запираться (§42).
+//
+// ⚠️ Самая дорогая находка сессии, и лестница проверок её не ловила: каждая
+// отдельная механика была здорова, а вместе они запирали партию на третьем
+// рейсе. Кнопка «залить» доводила кошелёк до нуля (бак держит объём на сотню
+// рейсов, полный долив стоил 26 000 … 112 000 при рейсе в 3 000); «купить
+// максимум» тратило остаток до копейки, не оставив ни на топливо, ни на
+// перегруз; советчик молчал при сухом баке, не назвав причины; а сам он к тому
+// же не вычитал дорогу и звал в рейсы, которые сам делал убыточными.
+//
+// Проверка играет ПО-ЧЕЛОВЕЧЕСКИ: заправиться, спросить совет, назначить цель,
+// закупиться «максимумом», слетать, продать. Никаких знаний, которых у игрока
+// нет. Если хоть одна из четырёх ям вернётся, капитал перестанет расти.
+void testAdvisorRunsCompound() {
+    const unsigned seeds[3] = {1234u, 42u, 777u};
+    int grew = 0;
+    char detail[240] = "";
+    for (int si = 0; si < 3; ++si) {
+        Game g;
+        g.seed = seeds[si];
+        g.init(1200);
+        for (int y = 0; y < 20; ++y) g.update(1.0);
+        const int pa = g.playerAgent;
+        const double start = g.playerNetWorth().total;
+        int runs = 0;
+        for (int trip = 0; trip < 10; ++trip) {
+            const int here = g.agents[pa].currentStar;
+            if (here < 0) break;
+            g.observeStar(here);
+            if (shipPropellantFill(g.agents[pa].ship) < 0.5 || shipFuelFill(g.agents[pa].ship) < 0.4) {
+                g.agentBuyFuel(pa);
+            }
+            const TradeRun r = g.playerBestRun(here, 40, false);
+            if (!r.valid || r.element < 0 || r.targetStar < 0) break;
+            g.setAgentDestination(pa, r.targetStar);
+            g.agentBuyFuel(pa);
+            g.agentBuyElementAmount(pa, r.element, 1.0e12);
+            if (!g.commandAgentToStar(pa, r.targetStar)) break;
+            for (int t = 0; t < 800 && g.agents[pa].ship.enRoute; ++t) g.update(1.0);
+            g.agentSellAllCargo(pa);
+            ++runs;
+        }
+        const double endWorth = g.playerNetWorth().total;
+        if (runs >= 8 && endWorth > start * 3.0) ++grew;
+        if (si == 0) {
+            std::snprintf(detail, sizeof(detail),
+                "seed %u: %d рейсов, состояние %.4g -> %.4g (x%.1f)",
+                seeds[si], runs, start, endWorth, start > 0.0 ? endWorth / start : 0.0);
+        }
+    }
+    char buf[300];
+    std::snprintf(buf, sizeof(buf), "%s; выросли %d из 3 миров", detail, grew);
+    check(grew == 3, "советчик ведёт к росту, а не в тупик", buf);
+}
+
 // Отозванную лицензию можно ОТРАБОТАТЬ (§37.7).
 //
 // ⚠️ Раньше отзыв просто запирал продажу — включая продажу накопанного в поясе,
@@ -2966,6 +3021,7 @@ int main() {
     testAntimatterBurnsWithTheFuel();
     testForgePicksTheStat();
     testRefitSurvivesHullAndSave();
+    testAdvisorRunsCompound();
     testRevokedLicenceCanBeWorkedOff();
     testStrandedShipGetsTowed();
     testInsightIgnoresLotSplitting();
