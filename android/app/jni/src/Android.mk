@@ -19,15 +19,25 @@ LOCAL_C_INCLUDES := \
     $(STARCLUSTER_JNI)/../SDL2_mixer/include \
     $(STARCLUSTER_JNI)/$(GAME)/android/support
 
-# Тот же список, что и в Makefile (цель `game`), плюс android-слой.
+# ⚠️ Список исходников НЕ ДУБЛИРУЕТСЯ РУКАМИ — он читается из корневого
+# Makefile, единственного авторитетного места.
+#
+# Здесь стоял ручной список с комментарием «тот же, что и в Makefile», и он ровно
+# так же и разошёлся: `exotic.cpp` добавили в Makefile, все настольные сборки и
+# все харнесы собрались, а Android упал на CI связкой undefined symbol. Это тот
+# же урок, что и с DLL Windows (§30): список, который надо помнить, рано или
+# поздно забудут, поэтому гарантия обязана быть механической.
+#
+# ndk-build — это GNU make, так что `$(shell sed …)` здесь законен. Пустой
+# результат обрывает сборку сразу и громко, а не даёт собрать половину.
+STARCLUSTER_MAKEFILE := $(STARCLUSTER_JNI)/$(GAME)/Makefile
+STARCLUSTER_SOURCES := $(shell sed -n 's/^SOURCES = //p' $(STARCLUSTER_MAKEFILE))
+ifeq ($(strip $(STARCLUSTER_SOURCES)),)
+$(error Starcluster: cannot read SOURCES from $(STARCLUSTER_MAKEFILE))
+endif
+
 LOCAL_SRC_FILES := \
-    $(GAME)/drive.cpp $(GAME)/main.cpp $(GAME)/shell.cpp $(GAME)/game.cpp \
-    $(GAME)/cluster.cpp $(GAME)/resource.cpp $(GAME)/market.cpp $(GAME)/econ.cpp \
-    $(GAME)/ship.cpp $(GAME)/agent.cpp $(GAME)/colony.cpp $(GAME)/faction.cpp \
-    $(GAME)/ui.cpp $(GAME)/mining.cpp $(GAME)/combat.cpp $(GAME)/spaceevents.cpp \
-    $(GAME)/anomaly.cpp $(GAME)/modules.cpp $(GAME)/chromo.cpp $(GAME)/render2d.cpp \
-    $(GAME)/localgen.cpp $(GAME)/localsim.cpp $(GAME)/localdraw.cpp \
-    $(GAME)/stb_image.cpp $(GAME)/i18n.cpp \
+    $(addprefix $(GAME)/,$(STARCLUSTER_SOURCES)) \
     $(GAME)/android/support/android_support.cpp
 
 LOCAL_CPPFLAGS := -std=c++11 -O3 -Wall -Wextra -Wno-unused-parameter
