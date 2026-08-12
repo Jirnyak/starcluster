@@ -3249,11 +3249,16 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
             anyUse = true;
             char buf[64];
             const double share = market ? market->marketShare(selection.element, f) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%-4s Q%.2F", econFunctionCode(f), q);
-            int cx = drawStat(renderer, infoX, line, "", buf, P.dim, k == 0 ? P.cyan : P.dim);
+            // ⚠️ ПОЛНОЕ имя нужды, а не трёхбуквенный код: `econFunctionName`
+            // существовал с самого начала и в панели не использовался, поэтому
+            // «КОН 0.96» приходилось расшифровывать угадыванием. Q переименовано
+            // в «годность»: 1.00 — лучший из известных элементов для этой нужды.
+            std::snprintf(buf, sizeof(buf), "%.2F", q);
+            int cx = drawStat(renderer, infoX, line, econFunctionName(f), "", P.cyan, P.dim);
+            cx = drawStat(renderer, cx, line, " FIT ", buf, P.dim, k == 0 ? P.cyan : P.dim);
             if (market && share > 0.004) {
                 std::snprintf(buf, sizeof(buf), "%.0F%%", share * 100.0);
-                drawStat(renderer, cx, line, "SHARE ", buf, P.dim, P.text);
+                drawStat(renderer, cx, line, "  ", buf, P.dim, P.text);
             }
             line += 13;
         }
@@ -3266,7 +3271,7 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
             char buf1[32], buf2[32];
             const double price = market->prices[selection.element];
             const double reference = marketReferencePrice(selection.element);
-            std::snprintf(buf1, sizeof(buf1), "%.1F", price);
+            std::snprintf(buf1, sizeof(buf1), "%.1F CR/U", price);
             int cx = drawStat(renderer, infoX, line, "PRICE ", buf1, P.dim, P.amber);
             if (reference > 0.0) {
                 const double ratio = price / reference;
@@ -3279,15 +3284,18 @@ void drawTradeWindow(SDL_Renderer* renderer, const Game& game, const Window& win
             // числом они не помещались в колонку и переползали за край окна, а прочесть
             // «275574988» всё равно нельзя. Тот же формат, что и у денег: 275.57 M.
             cx = drawStat(renderer, infoX, line, "STOCK ",
-                          creditsLabel(market->supply[selection.element].amount), P.dim, P.green);
+                          creditsLabel(market->supply[selection.element].amount) + " U", P.dim, P.green);
             drawStat(renderer, cx, line, "USE ",
                      creditsLabel(market->demandRate[selection.element]) + "/Y", P.dim, P.red);
             line += 13;
             const double cover = market->coverageYears(selection.element);
             std::snprintf(buf1, sizeof(buf1), "%.1FY", std::min(999.0, cover));
             cx = drawStat(renderer, infoX, line, "COVER ", buf1, P.dim, cover < 2.0 ? P.red : P.text);
+            // ⚠️ Это АТОМНАЯ масса элемента, а не масса партии в трюме. Без
+            // подписи она читалась вторым, и «MASS 52» рядом со «STOCK 5.86 M»
+            // выглядело как вес склада.
             std::snprintf(buf1, sizeof(buf1), "%.0F", element.atomicMass);
-            drawStat(renderer, cx, line, "MASS ", buf1, P.dim, P.text);
+            drawStat(renderer, cx, line, "ATOMIC MASS ", buf1, P.dim, P.text);
         }
     }
 
@@ -3761,12 +3769,13 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
     char top[160];
     header(renderer, 22, y + 10, "STARCLUSTER");
     if (const Ship* ship = hudShip(game, selection)) {
-        std::snprintf(top, sizeof(top), "X %.1F  Y %.1F  Z %.1F", ship->x, ship->y, ship->z);
+        std::snprintf(top, sizeof(top), "X %.1F  Y %.1F  Z %.1F LY", ship->x, ship->y, ship->z);
     } else {
         std::snprintf(top, sizeof(top), "X -  Y -  Z -");
     }
     drawText(renderer, 22, y + 32, top, P.text, 1);
-    std::snprintf(top, sizeof(top), "%s  T %.1F  R %.2FY/S  ST %d  CT %d", selection.paused ? "PAUSED" : "LIVE",
+    // ST/CT — звёзд в скоплении и видимых бортов. Раньше стояли голыми кодами.
+    std::snprintf(top, sizeof(top), "%s  YEAR %.1F  %.2FY/S  STARS %d  SHIPS %d", selection.paused ? "PAUSED" : "LIVE",
         game.time, selection.simYearsPerSecond,
         int(game.cluster.stars.size()), game.playerVisibleAgentCount());
     drawText(renderer, 22, y + 46, top, selection.paused ? P.amber : P.dim, 1);
