@@ -290,8 +290,68 @@ double shipCargoMass(const Ship& ship) {
     return mass;
 }
 
+// Списание массы из БУНКЕРА с учётом антивещества (§31.3).
+//
+// Антивещество едет в бункере вместе с топливом и входит в смесь, поэтому и
+// гореть обязано в той же пропорции по массе: иначе оно давало бы прибавку к
+// энергии вечно, ни на грамм не убывая. Возвращает СПИСАННЫЕ ЭЛЕМЕНТЫ — их и
+// только их превращает в золу вызывающий: аннигилировавшая пара уходит в
+// излучение целиком, золы от неё не остаётся.
+static std::vector<Resource> consumeBunkerMass(Ship& ship, double mass) {
+    if (mass <= 0.0) return std::vector<Resource>();
+    const double amUnit = exoticDefs()[EX_ANTIMATTER].unitMass;
+    const double amMass = ship.exotic[EX_ANTIMATTER] * amUnit;
+    double elemMass = 0.0;
+    for (size_t i = 0; i < ship.fuel.size(); ++i) {
+        const int idx = elementIndex(ship.fuel[i].element);
+        if (idx >= 0) elemMass += ship.fuel[i].amount * elementUnitMass(idx);
+    }
+    const double total = elemMass + amMass;
+    if (total <= 1e-12) return std::vector<Resource>();
+    const double share = std::min(1.0, mass / total);
+    if (amMass > 0.0 && amUnit > 1e-12) {
+        ship.exotic[EX_ANTIMATTER] = std::max(0.0, ship.exotic[EX_ANTIMATTER] * (1.0 - share));
+    }
+    return listConsumeMass(ship.fuel, elemMass * share);
+}
+
+double shipExoticMass(const Ship& ship) {
+    double mass = 0.0;
+    for (int k = 0; k < EX_COUNT; ++k) mass += ship.exotic[k] * exoticDefs()[size_t(k)].unitMass;
+    return mass;
+}
+
+double shipExoticRoom(const Ship& ship) {
+    double held = 0.0;
+    for (int k = 0; k < EX_COUNT; ++k) held += ship.exotic[k];
+    return std::max(0.0, ship.containment - held);
+}
+
 MixSummary shipFuelMix(const Ship& ship) {
-    return summarize(ship.fuel, ship.driveIndex);
+    MixSummary mix = summarize(ship.fuel, ship.driveIndex);
+    // --- Аннигиляционный катализ (§31.3) ---------------------------------
+    //
+    // Антивещество не «улучшает» двигатель — оно ЕДЕТ В БУНКЕРЕ ВМЕСТЕ С
+    // ТОПЛИВОМ и добавляет к смеси свою энергию. Никакой новой физики: смесь
+    // и так считается средневзвешенной по массе, просто у этого компонента
+    // энергия не 1..8 МэВ на нуклон, а 1863 — две энергии покоя нуклона, потому
+    // что пара «нуклон + антинуклон» уходит в излучение ЦЕЛИКОМ.
+    //
+    // Отсюда и весь баланс, без единой подгонки: доля в тысячную по массе
+    // удваивает энергию смеси, потому что 0.001·1863 сравнимо с 1·8. Поджигать
+    // антивещество не надо ничем — оно горит само, поэтому доля поджига у него
+    // ровно 1.0 и слабый движок выигрывает от него ровно так же, как сильный.
+    //
+    // Расходуется оно ПРОПОРЦИОНАЛЬНО топливу (shipConsumeForDeltaV), то есть
+    // кончается вместе с рейсом, а не «работает вечно».
+    const double am = ship.exotic[EX_ANTIMATTER];
+    if (am > 0.0 && mix.mass > 0.0) {
+        const double amMass = am * exoticDefs()[EX_ANTIMATTER].unitMass;
+        const double total = mix.mass + amMass;
+        mix.specificEnergy = (mix.specificEnergy * mix.mass + EXOTIC_ANNIHILATION_MEV * amMass) / total;
+        mix.mass = total;
+    }
+    return mix;
 }
 
 MixSummary shipPropellantMix(const Ship& ship) {
@@ -313,7 +373,17 @@ double shipPropellantMass(const Ship& ship) {
 }
 
 double shipTotalMass(const Ship& ship) {
-    return std::max(1.0, ship.dryMass + shipCargoMass(ship) + shipFuelMass(ship) + shipPropellantMass(ship));
+    // Антивещество здесь НЕ прибавляется: оно едет в бункере и уже посчитано
+    // в `shipFuelMass` (см. shipFuelMix). А нейтрониум и конденсат — мёртвый
+    // груз в ячейке, и вес у них настоящий: полный отсек нейтрониума реально
+    // сажает разгон, потому что единица его тяжелее любого элемента таблицы.
+    double inert = 0.0;
+    for (int k = 0; k < EX_COUNT; ++k) {
+        if (k == EX_ANTIMATTER) continue;
+        inert += ship.exotic[k] * exoticDefs()[size_t(k)].unitMass;
+    }
+    return std::max(1.0, ship.dryMass + shipCargoMass(ship) + shipFuelMass(ship) +
+                    shipPropellantMass(ship) + inert);
 }
 
 double shipFuelTankVolume(const Ship& ship) {
@@ -616,11 +686,11 @@ double shipConsumeForDeltaV(Ship& ship, double desiredDeltaV, std::vector<Resour
     std::vector<Resource> burned;
     if (torch) {
         // У факела топливо и есть выхлоп: один поток, золы не остаётся.
-        listConsumeMass(ship.fuel, burn);
+        consumeBunkerMass(ship, burn);
     } else {
         listConsumeMass(ship.propellant, burn);
         const double fuelBurn = std::min(fuelAvail, burn * exhaustSpecificEnergy(ve) / energyPerMass);
-        burned = listConsumeMass(ship.fuel, fuelBurn);
+        burned = consumeBunkerMass(ship, fuelBurn);
     }
 
     spillAsh(burned, ashOut);
@@ -655,7 +725,7 @@ double shipDrawReactorEnergy(Ship& ship, double energy, std::vector<Resource>* a
     const double want = energy / energyPerMass;
     const double burn = std::min(want, fuelMix.mass);
     if (burn <= 1e-12) return 0.0;
-    spillAsh(listConsumeMass(ship.fuel, burn), ashOut);
+    spillAsh(consumeBunkerMass(ship, burn), ashOut);
     return burn * energyPerMass;
 }
 

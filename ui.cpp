@@ -40,6 +40,7 @@ struct SystemLayout {
     SDL_Rect cargo = {0, 0, 0, 0};
     SDL_Rect shipyard = {0, 0, 0, 0};
     SDL_Rect exchange = {0, 0, 0, 0};
+    SDL_Rect exotics = {0, 0, 0, 0};
 };
 
 struct KnownFactionSummary {
@@ -119,6 +120,14 @@ SDL_Rect defaultWindowRect(WindowKind kind, int screenW, int screenH, int cascad
         rect.h = std::min(560, std::max(420, screenH - 200));
         rect.x = std::max(280, (screenW - rect.w) / 2 + cascade * 18);
         rect.y = std::max(80, screenH - rect.h - 60 - cascade * 10);
+    } else if (kind == WindowKind::Exotics) {
+        // Высота считается от содержимого: три вещества по 58 px, шапка и два
+        // ряда переоснастки. Оставлять запас «на всякий случай» тут нечему —
+        // веществ ровно три, и окно на пол-экрана выглядело пустым.
+        rect.w = std::min(760, std::max(620, screenW - 420));
+        rect.h = 352;
+        rect.x = std::max(300, (screenW - rect.w) / 2 + cascade * 18);
+        rect.y = std::max(80, screenH - rect.h - 56 - cascade * 10);
     } else if (kind == WindowKind::Colony) {
         rect.w = 520;
         rect.h = 356;
@@ -166,6 +175,10 @@ SystemLayout systemLayout(const Window& window) {
     // Биржа — в тот же ряд. Вторым этажом кнопка легла поверх текста системы;
     // окно расширено (см. defaultWindowRect), чтобы ряд поместился целиком.
     layout.exchange = {window.rect.x + WINDOW_PAD + 430, y, 95, 24};
+    // Хайтек-этаж (§31). Кнопка стоит рядом с биржей и ГОРИТ только там, где
+    // такой рынок есть: он редок (около 12% систем), и это должно быть видно
+    // с одного взгляда — иначе игрок не поймёт, что системы бывают разные.
+    layout.exotics = {window.rect.x + WINDOW_PAD, y - 28, 95, 24};
     return layout;
 }
 
@@ -767,7 +780,7 @@ void drawControlsCard(SDL_Renderer* renderer, int screenW, int screenH) {
                       "F2   BUY BACK LICENCE", "[ ]  CYCLE ELEMENT", NULL } },
         { "SHIP",   { "U    SHIPYARD / FIT", "M    MINE ORE", "J    REPAIR HULL",
                       "K    SCAN ANOMALY", "C    COLONY / BUY SYSTEM", "N    SWITCH SHIP",
-                      "R    ROB", NULL, NULL, NULL } },
+                      "Y    EXOTICS / FORGE", "R    ROB", NULL, NULL } },
         { "VIEW",   { "LMB  SELECT", "RMB  SET ROUTE", "WHEEL ZOOM", "MMB  DRAG PAN",
                       "ARROWS PAN", "WASD ROTATE", "P    PLAYER SHIP", "0    RESET VIEW",
                       NULL, NULL } },
@@ -944,6 +957,8 @@ void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& 
 void drawColonyWindow(SDL_Renderer* renderer, const Game& game, const Window& window, const WindowState& state, bool active);
 bool handleExchangeWindowMouseDown(WindowState& state, Game& game, const Window& window, int mouseX, int mouseY);
 bool handleColonyWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int mouseX, int mouseY, int button);
+void drawExoticsWindow(SDL_Renderer* renderer, const Game& game, const Window& window, const WindowState& state, bool active);
+bool handleExoticsWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int mouseX, int mouseY, int button);
 
 bool handleSystemWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int screenW, int screenH, int mouseX, int mouseY);
 bool handleTradeWindowMouseDown(WindowState& state, Game& game, const Window& window, HudSelection& selection, int mouseX, int mouseY, int button, int screenW, int screenH);
@@ -987,6 +1002,10 @@ bool handleSystemWindowMouseDown(WindowState& state, Game& game, const Window& w
     }
     if (contains(layout.exchange, mouseX, mouseY)) {
         openExchangeWindow(state, window.star, screenW, screenH);
+        return true;
+    }
+    if (contains(layout.exotics, mouseX, mouseY)) {
+        if (game.exoticMarketAt(window.star)) openExoticsWindow(state, window.star, screenW, screenH);
         return true;
     }
     if (contains(layout.shipyard, mouseX, mouseY)) {
@@ -1485,6 +1504,9 @@ bool handleMouseDown(WindowState& state, Game& game, HudSelection& selection, in
             break;
         case WindowKind::Colony:
             handleColonyWindowMouseDown(state, game, w, selection, mouseX, mouseY, button);
+            break;
+        case WindowKind::Exotics:
+            handleExoticsWindowMouseDown(state, game, w, selection, mouseX, mouseY, button);
             break;
         case WindowKind::Transactions:
             break;
@@ -2116,6 +2138,223 @@ void drawPriceFactor(SDL_Renderer* renderer, int x, int y, int width,
     drawText(renderer, x + width - textWidth(mul, 1), y, mul, tint, 1);
 }
 
+// --- Окно хайтек-этажа (§31) -------------------------------------------------
+//
+// Три вещества в строках, три действия внизу. Устроено намеренно скучно и
+// одинаково с окном торговли: игрок уже умеет читать «цена / запас / сколько
+// беру», и хайтек не должен требовать учиться заново. Отличается только
+// масштаб чисел — и это единственное, что должно бросаться в глаза.
+struct ExoticsLayout {
+    SDL_Rect buy[EX_COUNT];
+    SDL_Rect sell[EX_COUNT];
+    SDL_Rect amount = {0, 0, 0, 0};
+    SDL_Rect containment = {0, 0, 0, 0};
+    SDL_Rect plating = {0, 0, 0, 0};
+    SDL_Rect forge[TECH_STAT_COUNT];
+    int rowY = 0;
+    int rowH = 58;
+};
+
+ExoticsLayout exoticsLayout(const Window& window) {
+    ExoticsLayout layout;
+    const int x = window.rect.x + WINDOW_PAD;
+    const int right = window.rect.x + window.rect.w - WINDOW_PAD;
+    layout.rowY = window.rect.y + TITLE_H + 52;
+    for (int k = 0; k < EX_COUNT; ++k) {
+        const int ry = layout.rowY + k * layout.rowH + 16;
+        layout.buy[k]  = {right - 178, ry, 84, 22};
+        layout.sell[k] = {right - 88, ry, 84, 22};
+    }
+    const int by = window.rect.y + window.rect.h - 34;
+    layout.amount = {x, by - 30, 110, 22};
+    layout.containment = {x + 120, by - 30, 190, 22};
+    layout.plating = {x + 318, by - 30, 190, 22};
+    const int fw = std::max(56, (window.rect.w - WINDOW_PAD * 2 - 6 * 4) / TECH_STAT_COUNT);
+    for (int i = 0; i < TECH_STAT_COUNT; ++i) {
+        layout.forge[i] = {x + i * (fw + 4), by, fw, 24};
+    }
+    return layout;
+}
+
+const char* exoticStatCode(int stat) {
+    switch (stat) {
+        case TECH_INTELLECT: return "INT";
+        case TECH_CHARISMA: return "CHA";
+        case TECH_MATERIALS: return "MAT";
+        case TECH_TACTICS: return "TAC";
+        case TECH_KINEMATICS: return "KIN";
+        case TECH_SENSORS: return "SEN";
+        default: return "LUK";
+    }
+}
+
+void drawExoticsWindow(SDL_Renderer* renderer, const Game& game, const Window& window,
+                       const WindowState& state, bool active) {
+    const ClusterStar* star = starAt(game, window.star);
+    drawWindowFrame(renderer, window,
+        star ? ("HIGH-TECH EXCHANGE / " + star->name) : "HIGH-TECH EXCHANGE", active);
+    if (!star) return;
+
+    const ExoticsLayout layout = exoticsLayout(window);
+    const int x = window.rect.x + WINDOW_PAD;
+    int y = window.rect.y + TITLE_H + 12;
+    const bool onSite = game.playerAtStar(window.star);
+    const Ship* ship = (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()))
+                           ? &game.agents[size_t(game.playerAgent)].ship : NULL;
+    const double cash = ship ? game.agents[size_t(game.playerAgent)].money : 0.0;
+
+    char line[220];
+    const double bay = ship ? ship->containment : 0.0;
+    const double room = ship ? shipExoticRoom(*ship) : 0.0;
+    std::snprintf(line, sizeof(line), "CREDITS %s   BAY %.0F/%.0F UNITS",
+                  creditsLabel(cash).c_str(), bay - room, bay);
+    drawText(renderer, x, y, line, bay > 0.0 ? P.green : P.red, 1);
+    y += 14;
+    if (bay <= 0.0) {
+        drawText(renderer, x, y, "NO CONTAINMENT BAY - EXOTIC MATTER CANNOT BE HELD", P.red, 1);
+    } else if (!onSite) {
+        drawText(renderer, x, y, "NOT ON SITE - DOCK HERE TO TRADE", P.red, 1);
+    } else {
+        drawText(renderer, x, y, "PRICE FOLLOWS THE LOCAL RESERVE - BUYING IT UP RAISES IT", P.dim, 1);
+    }
+    y += 16;
+    drawText(renderer, x, y, "MATTER      HELD    RESERVE      UNIT PRICE", P.cyan, 1);
+
+    for (int k = 0; k < EX_COUNT; ++k) {
+        const int ry = layout.rowY + k * layout.rowH;
+        const double stock = game.exoticStockAt(window.star, k);
+        const double price = game.exoticPriceAt(window.star, k);
+        const bool here = price > 0.0;
+        const ExoticDef& def = exoticDefs()[size_t(k)];
+        const double held = ship ? ship->exotic[k] : 0.0;
+        const std::string priceCell = here ? (creditsLabel(price) + " CR") : std::string("NOT TRADED HERE");
+        std::snprintf(line, sizeof(line), "%-11s %6.0F  %9.0F   %s",
+                      def.name, held, stock, priceCell.c_str());
+        drawText(renderer, x, ry, line, here ? P.text : P.dim, 1);
+        drawText(renderer, x, ry + 12, def.blurb, P.dim, 1);
+        // Тонкая полоса выработанности: она и есть «сколько тут ещё осталось».
+        const double target = exoticTargetStock(*star, k);
+        if (target > 0.0) {
+            bar(renderer, x, ry + 26, 220, 5, clamp01(stock / (target * 1.2)),
+                stock < target * 0.35 ? P.red : (stock < target * 0.8 ? P.amber : P.green));
+        }
+        const bool canBuy = here && onSite && room > 0.0 && cash > price;
+        const bool canSell = here && onSite && held > 0.0;
+        drawButton(renderer, layout.buy[k], "BUY", P.green, canBuy);
+        drawButton(renderer, layout.sell[k], "SELL", P.amber, canSell);
+    }
+
+    // --- Переоснастка и кузница ---
+    const int shipyard = game.shipyardLevelAtStar(window.star);
+    // Подсказка про верфь стоит ВЫШЕ подписи поля объёма: на 16 пикселях они
+    // накладывались друг на друга, и по-русски это читалось как каша.
+    int fy = layout.amount.y - 28;
+    if (shipyard < 2) {
+        drawText(renderer, x, fy, "REFIT AND FORGE NEED A SHIPYARD - THIS SYSTEM HAS NONE", P.dim, 1);
+    } else {
+        std::snprintf(line, sizeof(line), "FORGE A CHROMOCORE OF YOUR CHOICE: %.0F %s AND %s CR",
+                      game.forgeCondensateCost(), exoticDefs()[EX_CONDENSATE].symbol,
+                      creditsLabel(game.forgeCreditCost()).c_str());
+        drawText(renderer, x, fy, line, P.amber, 1);
+    }
+
+    drawText(renderer, layout.amount.x, layout.amount.y - 11, "AMOUNT", P.dim, 1);
+    fillRect(renderer, layout.amount.x, layout.amount.y, layout.amount.w, layout.amount.h, {9, 14, 26, 245});
+    strokeRect(renderer, layout.amount.x, layout.amount.y, layout.amount.w, layout.amount.h,
+        state.tradeAmountEditing && active ? P.cyan : P.border);
+    drawText(renderer, layout.amount.x + 8, layout.amount.y + 8, tradeAmountLabel(state),
+        state.tradeAmount.empty() ? P.dim : P.text, 1);
+
+    const double bayPrice = game.containmentNextPrice();
+    if (bayPrice > 0.0) {
+        std::snprintf(line, sizeof(line), "BAY %d %s", game.containmentLevel + 1,
+                      creditsLabel(bayPrice).c_str());
+    } else {
+        std::snprintf(line, sizeof(line), "BAY MAXED");
+    }
+    drawButton(renderer, layout.containment, line, P.cyan,
+               onSite && shipyard >= 2 && bayPrice > 0.0 && cash >= bayPrice);
+
+    const double platePrice = game.platingNextPrice();
+    const bool canPlate = ship && onSite && shipyard >= 2 && platePrice > 0.0 &&
+                          cash >= platePrice && ship->exotic[EX_NEUTRONIUM] >= PLATING_NEUTRONIUM_UNITS;
+    if (platePrice > 0.0) {
+        std::snprintf(line, sizeof(line), "PLATE %d: %.0F NM", game.hullPlating + 1,
+                      PLATING_NEUTRONIUM_UNITS);
+    } else {
+        std::snprintf(line, sizeof(line), "PLATING MAXED");
+    }
+    drawButton(renderer, layout.plating, line, P.cyan, canPlate);
+
+    const bool canForge = ship && onSite && shipyard >= 2 &&
+                          ship->exotic[EX_CONDENSATE] >= game.forgeCondensateCost() &&
+                          cash >= game.forgeCreditCost();
+    for (int i = 0; i < TECH_STAT_COUNT; ++i) {
+        drawButton(renderer, layout.forge[i], exoticStatCode(i), P.amber, canForge);
+    }
+}
+
+bool handleExoticsWindowMouseDown(WindowState& state, Game& game, const Window& window,
+                                  HudSelection& selection, int mouseX, int mouseY, int button) {
+    const ExoticsLayout layout = exoticsLayout(window);
+    const double amount = tradeRequestedAmount(state);
+
+    if (button == SDL_BUTTON_LEFT && contains(layout.amount, mouseX, mouseY)) {
+        state.tradeAmountEditing = true;
+        SDL_StartTextInput();
+        return true;
+    }
+    if (state.tradeAmountEditing) {
+        state.tradeAmountEditing = false;
+        SDL_StopTextInput();
+    }
+
+    for (int k = 0; k < EX_COUNT; ++k) {
+        if (contains(layout.buy[k], mouseX, mouseY)) {
+            if (game.playerBuyExotic(k, amount) > 0.0) selection.agent = game.playerAgent;
+            return true;
+        }
+        if (contains(layout.sell[k], mouseX, mouseY)) {
+            if (game.playerSellExotic(k, amount) > 0.0) selection.agent = game.playerAgent;
+            return true;
+        }
+    }
+    if (contains(layout.containment, mouseX, mouseY)) {
+        game.playerUpgradeContainment();
+        return true;
+    }
+    if (contains(layout.plating, mouseX, mouseY)) {
+        game.playerAddHullPlating();
+        return true;
+    }
+    for (int i = 0; i < TECH_STAT_COUNT; ++i) {
+        if (contains(layout.forge[i], mouseX, mouseY)) {
+            game.playerForgeChromocore(i);
+            return true;
+        }
+    }
+    return true;
+}
+
+void openExoticsWindow(WindowState& state, int starIndex, int screenW, int screenH) {
+    int cascade = 0;
+    for (auto& w : state.windows) {
+        if (w.kind == WindowKind::Exotics) {
+            w.star = starIndex;
+            bringWindowToFront(state, w.id);
+            return;
+        }
+        cascade++;
+    }
+    Window w;
+    w.id = state.nextId++;
+    w.kind = WindowKind::Exotics;
+    w.star = starIndex;
+    w.rect = defaultWindowRect(WindowKind::Exotics, screenW, screenH, cascade);
+    state.windows.push_back(w);
+    state.activeId = w.id;
+}
+
 void drawColonyWindow(SDL_Renderer* renderer, const Game& game, const Window& window, const WindowState& state, bool active) {
     const ClusterStar* star = starAt(game, window.star);
     const bool owned = game.playerOwnsStar(window.star);
@@ -2552,6 +2791,7 @@ void drawSystemWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
     // когда она есть: игрок видит «можно расширяться» не открывая биржу.
     drawButton(renderer, layout.exchange, "BROKER", P.amber,
                game.playerFreeLicences() > 0 || playerMarketStar(game) == window.star);
+    drawButton(renderer, layout.exotics, "EXOTICS", P.violet, game.exoticMarketAt(window.star));
 }
 
 void drawContractRow(SDL_Renderer* renderer, const Game& game, const Window& window, const Contract& contract, int row, bool activeContractRow) {
@@ -3180,6 +3420,8 @@ void drawWindows(SDL_Renderer* renderer, const Game& game, int, int, const HudSe
             drawTransactionsWindow(renderer, game, window, active);
         } else if (window.kind == WindowKind::Colony) {
             drawColonyWindow(renderer, game, window, state, active);
+        } else if (window.kind == WindowKind::Exotics) {
+            drawExoticsWindow(renderer, game, window, state, active);
         } else if (window.kind == WindowKind::Exchange) {
             drawExchangeWindow(renderer, game, window, state, active);
         } else {

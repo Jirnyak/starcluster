@@ -54,11 +54,29 @@ void Game::grantChromocore(int stat) {
     pushNews("Chromocore attuned: " + label + " model refined", 4);
 }
 
-void Game::rebakePlayerChromocores() {
+void Game::rebakePlayerBakedBonuses() {
     if (playerAgent < 0 || playerAgent >= int(agents.size())) return;
     Ship& ship = agents[playerAgent].ship;
     shipApplyChromocoreFactors(ship, tech.materials, tech.tactics, tech.kinematics);
+    // Хайтек-переоснастка (§31.4) запекается тем же порядком и по той же
+    // причине: ни ячейка, ни броня не хранятся в полях корабля — они хранятся
+    // в партии, а поля лишь ОТРАЖАЮТ их, и новый корпус это отражение стирает.
+    ship.containment = double(containmentLevel) * CONTAINMENT_STEP_UNITS;
+    if (hullPlating > 0) {
+        ship.armor += PLATING_ARMOR_PER_LAYER * hullPlating;
+        ship.maxHullHP += PLATING_HULL_PER_LAYER * hullPlating;
+        ship.dryMass += PLATING_MASS_PER_LAYER * hullPlating;
+    }
     ship.hullHP = std::min(ship.hullHP, ship.maxHullHP);
+    // Ячейка могла ужаться (капсула после гибели) — лишнее вещество выпадает
+    // из удержания. Аннигилировать его на борту было бы честнее физически, но
+    // игрока это убивало бы без предупреждения; считаем, что его сбрасывают.
+    double held = 0.0;
+    for (int k = 0; k < EX_COUNT; ++k) held += ship.exotic[k];
+    if (held > ship.containment && held > 0.0) {
+        const double keep = ship.containment / held;
+        for (int k = 0; k < EX_COUNT; ++k) ship.exotic[k] *= keep;
+    }
 }
 
 void Game::addResearch(double amount) {

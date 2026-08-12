@@ -2,7 +2,7 @@ CXX ?= g++
 SDL_CFLAGS := $(shell sdl2-config --cflags)
 SDL_LIBS := $(shell sdl2-config --libs) -lSDL2_mixer
 
-SOURCES = drive.cpp main.cpp shell.cpp game.cpp cluster.cpp resource.cpp market.cpp econ.cpp ship.cpp agent.cpp colony.cpp faction.cpp ui.cpp mining.cpp combat.cpp spaceevents.cpp anomaly.cpp modules.cpp chromo.cpp render2d.cpp localgen.cpp localsim.cpp localdraw.cpp stb_image.cpp i18n.cpp
+SOURCES = drive.cpp exotic.cpp main.cpp shell.cpp game.cpp cluster.cpp resource.cpp market.cpp econ.cpp ship.cpp agent.cpp colony.cpp faction.cpp ui.cpp mining.cpp combat.cpp spaceevents.cpp anomaly.cpp modules.cpp chromo.cpp render2d.cpp localgen.cpp localsim.cpp localdraw.cpp stb_image.cpp i18n.cpp
 
 # Всё, кроме точки входа (для линковки альтернативных main — soak/uiclick/balance).
 # shell.cpp тоже исключён: оболочка опирается на assetPath() из main.cpp и в

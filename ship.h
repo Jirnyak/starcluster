@@ -3,6 +3,7 @@
 #include <vector>
 #include "resource.h"
 #include "drive.h"
+#include "exotic.h"
 
 // Корабль
 class Ship {
@@ -53,6 +54,16 @@ public:
 
     std::vector<Resource> cargo;
     double cargoCapacity = 100.0; // Максимальный груз (масса)
+
+    // --- Экзотическая материя (§31) ---
+    // Антивещество, нейтрониум и конденсат нельзя просто сложить в трюм: одно
+    // аннигилирует с первой же стенкой, второе весит как гора в напёрстке,
+    // третье теряет когерентность от одного тёплого взгляда. Всем троим нужна
+    // УДЕРЖИВАЮЩАЯ ЯЧЕЙКА — отдельный отсек, которого на корпусе нет по
+    // умолчанию: его ставят модулем. Пока ячейки нет, ёмкость нулевая, и весь
+    // хайтек-этаж экономики закрыт — это и есть его входной билет.
+    double exotic[EX_COUNT] = {0.0, 0.0, 0.0};   // единиц на борту
+    double containment = 0.0;                    // ёмкость ячейки, единиц (сумма по всем трём)
     double heavyWeapons = 10.0;
     double lightWeapons = 5.0;
     double armor = 5.0;
@@ -84,6 +95,12 @@ double resourceUnitMass(const std::string& element);
 // Фактическая крейсерская скорость с учётом cruiseFraction.
 double shipCruiseSpeed(const Ship& ship);
 double shipCargoMass(const Ship& ship);
+// Масса экзотики на борту. Нейтрониум весит как гора: единица тяжелее любого
+// груза, и полный отсек реально сдвигает разгон корабля. Антивещество, наоборот,
+// почти невесомо — его цена не в массе, а в энергии.
+double shipExoticMass(const Ship& ship);
+// Сколько единиц ещё влезет в удерживающую ячейку (общая на все три вещества).
+double shipExoticRoom(const Ship& ship);
 double shipFuelMass(const Ship& ship);
 double shipPropellantMass(const Ship& ship);
 double shipTotalMass(const Ship& ship);

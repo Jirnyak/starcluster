@@ -1152,6 +1152,16 @@ int main(int argc, char** argv) {
                 if (e.key.keysym.sym == SDLK_o) {
                     UI::openCargoWindow(ui, anchorStar(), winW, winH);
                 }
+                // Хайтек-этаж (§31). Окно открывается только там, где такой
+                // рынок вообще есть, — иначе игрок решил бы, что клавиша сломана.
+                if (e.key.keysym.sym == SDLK_y && anchorStar() >= 0) {
+                    if (game.exoticMarketAt(anchorStar())) {
+                        UI::openExoticsWindow(ui, anchorStar(), winW, winH);
+                    } else {
+                        game.lastEvent = "no exotics market in this system";
+                    }
+                    titleTick = 11;
+                }
                 if (e.key.keysym.sym == SDLK_n) {
                     dispatch(ACT_SWITCH);
                 }
@@ -1285,7 +1295,7 @@ int main(int argc, char** argv) {
                     downgradeAgentToEscapePod(pa);
                     // Капсула собрана из таблицы классов, значит запечённые
                     // хромокоры с неё стёрты — накладываем их заново.
-                    game.rebakePlayerChromocores();
+                    game.rebakePlayerBakedBonuses();
                     pa.ship.hullHP = pa.ship.maxHullHP; // escape pod is intact
                 }
                 game.lastEvent = "ship destroyed - using escape pod";

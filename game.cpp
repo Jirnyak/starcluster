@@ -3242,6 +3242,12 @@ bool Game::saveToFile(const std::string& path) {
         out << "MODULES ";
         writeIntList(out, ship.modules);
         out << '\n';
+        // (§31) Экзотика в удерживающей ячейке. Ёмкость (`containment`) не
+        // пишется: она ЗАПЕКАЕТСЯ из `containmentLevel` при загрузке — одно
+        // авторитетное число вместо двух расходящихся.
+        out << "EXOHOLD";
+        for (int k = 0; k < EX_COUNT; ++k) out << ' ' << ship.exotic[k];
+        out << '\n';
     }
 
     size_t knowledgeCount = 0;
@@ -3364,6 +3370,16 @@ bool Game::saveToFile(const std::string& path) {
     for (const LocalClaims& c : localClaims) {
         out << "LC " << c.starIndex << ' ' << c.radioMask << ' ' << c.bountyPaid << ' '
             << c.bountyAt << '\n';
+    }
+
+    // Хайтек-этаж (§31). Ступень ячейки и слои брони обязаны быть здесь: они
+    // ЗАПЕКАЮТСЯ в поля корабля, а поля пересобираются из таблицы классов, —
+    // не сохранив их, загрузка тихо разденет корпус (та же грабля §32.2).
+    out << "EXOTIC " << exoticStocks.size() << ' ' << containmentLevel << ' ' << hullPlating << '\n';
+    for (const ExoticStock& e : exoticStocks) {
+        out << "EX " << e.starIndex << ' ' << e.updatedAt;
+        for (int k = 0; k < EX_COUNT; ++k) out << ' ' << e.stock[k];
+        out << '\n';
     }
 
     if (!out) {
@@ -3788,6 +3804,20 @@ bool Game::loadFromFile(const std::string& path) {
             lastEvent = "load failed: modules";
             return false;
         }
+        // (§31) Ячейка с экзотикой. В сейвах 14/15 блока нет — там и экзотики
+        // не было, поэтому нули конструктора и есть правильное значение.
+        if (version >= 16) {
+            if (!expectTag(in, "EXOHOLD")) {
+                lastEvent = "load failed: exotic hold";
+                return false;
+            }
+            for (int k = 0; k < EX_COUNT; ++k) {
+                if (!(in >> agent.ship.exotic[k])) {
+                    lastEvent = "load failed: exotic hold";
+                    return false;
+                }
+            }
+        }
         loaded.agents.push_back(agent);
     }
 
@@ -4076,6 +4106,28 @@ bool Game::loadFromFile(const std::string& path) {
             }
             loaded.localClaims.push_back(c);
         }
+
+        if (!expectTag(in, "EXOTIC") ||
+            !(in >> count >> loaded.containmentLevel >> loaded.hullPlating)) {
+            lastEvent = "load failed: exotics";
+            return false;
+        }
+        loaded.exoticStocks.clear();
+        loaded.exoticStocks.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            ExoticStock e;
+            if (!expectTag(in, "EX") || !(in >> e.starIndex >> e.updatedAt)) {
+                lastEvent = "load failed: exotic entry";
+                return false;
+            }
+            for (int k = 0; k < EX_COUNT; ++k) {
+                if (!(in >> e.stock[k])) {
+                    lastEvent = "load failed: exotic stock";
+                    return false;
+                }
+            }
+            loaded.exoticStocks.push_back(e);
+        }
     }
 
     if (!in) {
@@ -4094,6 +4146,16 @@ bool Game::loadFromFile(const std::string& path) {
     // Денежный уровень — часть партии, а не процесса: восстанавливаем его в
     // ценовом слое сразу, не дожидаясь первого такта рынков.
     marketSetClusterLevel(clusterPriceLevel);
+    // Ёмкость ячейки — ОТРАЖЕНИЕ `containmentLevel` в поле корабля, а не второе
+    // независимое число (§31.4), поэтому в сейв она не пишется и ставится здесь.
+    // ⚠️ Полный `rebakePlayerBakedBonuses()` тут звать НЕЛЬЗЯ: броня, корпус и
+    // масса от слоёв нейтрониума уже лежат в сохранённых полях корабля, и
+    // повторное наложение удвоило бы их при каждой загрузке. Перезапекание
+    // нужно только там, где `shipApplyClass` эти поля ОБНУЛИЛ.
+    if (playerAgent >= 0 && playerAgent < int(agents.size())) {
+        agents[size_t(playerAgent)].ship.containment =
+            double(containmentLevel) * CONTAINMENT_STEP_UNITS;
+    }
     rebuildRouteCache();
     lastEvent = "loaded " + path;
     return true;
@@ -4345,6 +4407,9 @@ void Game::init(size_t num_stars) {
     everEnteredLocal = false;
     localClaims.clear();
     playerShieldFrac = 1.0;
+    exoticStocks.clear();
+    containmentLevel = 0;
+    hullPlating = 0;
     lastEvent = "cluster seeded";
     if (num_stars == 0) return;
 
@@ -5319,7 +5384,7 @@ bool Game::robAgent(int attackerIndex, int victimIndex) {
             
             // Credits are immaterial and cannot be stolen
             downgradeAgentToEscapePod(victim);
-            if (victimIndex == playerAgent) rebakePlayerChromocores();
+            if (victimIndex == playerAgent) rebakePlayerBakedBonuses();
         } else {
             // Victim surrenders cargo
             attacker.lastAction = "robbed " + victim.type;
@@ -5337,7 +5402,7 @@ bool Game::robAgent(int attackerIndex, int victimIndex) {
             
             // Credits are immaterial and cannot be stolen
             downgradeAgentToEscapePod(attacker);
-            if (attackerIndex == playerAgent) rebakePlayerChromocores();
+            if (attackerIndex == playerAgent) rebakePlayerBakedBonuses();
         } else {
             // Attacker repelled
             attacker.lastAction = "repelled by " + victim.type;
@@ -5391,9 +5456,7 @@ bool Game::buyShip(int agentIndex, int starIndex, int classId) {
     // же причине: `shipApplyClass` переписал поля табличными значениями. Три
     // ветки прокачки из семи не хранятся больше нигде, поэтому без этой строки
     // покупка корпуса молча стирала всё, что игрок в них вложил.
-    if (agentIndex == playerAgent) {
-        shipApplyChromocoreFactors(agent.ship, tech.materials, tech.tactics, tech.kinematics);
-    }
+    if (agentIndex == playerAgent) rebakePlayerBakedBonuses();
     agent.ship.hullHP = agent.ship.maxHullHP;
     // Состав и ёмкости изменились — рабочая точка двигателя подбирается заново.
     shipTuneDrive(agent.ship, 1.0, 1.0);
@@ -7134,6 +7197,264 @@ bool Game::playerSettleQuota() {
     licenceQuotaPaid += remaining;
     pushNews("Quota settled in cash for " + std::to_string(int(std::ceil(cost))) + " Cr.", 4);
     lastEvent = "quota settled";
+    return true;
+}
+
+// --- Экзотическая материя (§31) ---------------------------------------------
+
+namespace {
+int exoticStockIndex(const std::vector<ExoticStock>& list, int starIndex) {
+    for (size_t i = 0; i < list.size(); ++i) {
+        if (list[i].starIndex == starIndex) return int(i);
+    }
+    return -1;
+}
+}  // namespace
+
+double Game::exoticStockAt(int starIndex, int kind) const {
+    if (!validStar(*this, starIndex) || kind < 0 || kind >= EX_COUNT) return 0.0;
+    const ClusterStar& star = cluster.stars[size_t(starIndex)];
+    const double target = exoticTargetStock(star, kind);
+    if (target <= 0.0) return 0.0;
+    const int at = exoticStockIndex(exoticStocks, starIndex);
+    if (at < 0) return target;   // игрок сюда не заходил — запас на своей отметке
+    // Ленивое восстановление: считаем в момент обращения, а не тиком по всем
+    // 8192 системам. Рынок экзотики трогает ровно один корабль, и держать ради
+    // него ещё один проход по скоплению было бы просто расточительством.
+    const ExoticStock& rec = exoticStocks[size_t(at)];
+    return exoticRelaxStock(star, kind, rec.stock[kind], std::max(0.0, time - rec.updatedAt));
+}
+
+double Game::exoticPriceAt(int starIndex, int kind) const {
+    if (!validStar(*this, starIndex) || kind < 0 || kind >= EX_COUNT) return 0.0;
+    return ::exoticPriceAt(cluster.stars[size_t(starIndex)], kind,
+                           exoticStockAt(starIndex, kind), clusterPriceLevel);
+}
+
+bool Game::exoticMarketAt(int starIndex) const {
+    if (!validStar(*this, starIndex)) return false;
+    return exoticStarHasMarket(cluster.stars[size_t(starIndex)]);
+}
+
+namespace {
+// Общая часть покупки и продажи: найти запись о звезде, привести запас к
+// «сейчас» и вернуть ссылку, готовую к изменению.
+ExoticStock& exoticRecordFor(Game& game, int starIndex) {
+    int at = exoticStockIndex(game.exoticStocks, starIndex);
+    if (at < 0) {
+        ExoticStock rec;
+        rec.starIndex = starIndex;
+        rec.updatedAt = game.time;
+        const ClusterStar& star = game.cluster.stars[size_t(starIndex)];
+        for (int k = 0; k < EX_COUNT; ++k) rec.stock[k] = exoticTargetStock(star, k);
+        game.exoticStocks.push_back(rec);
+        at = int(game.exoticStocks.size()) - 1;
+    }
+    ExoticStock& rec = game.exoticStocks[size_t(at)];
+    const ClusterStar& star = game.cluster.stars[size_t(starIndex)];
+    const double years = std::max(0.0, game.time - rec.updatedAt);
+    for (int k = 0; k < EX_COUNT; ++k) rec.stock[k] = exoticRelaxStock(star, k, rec.stock[k], years);
+    rec.updatedAt = game.time;
+    return rec;
+}
+}  // namespace
+
+double Game::playerBuyExotic(int kind, double units) {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return 0.0;
+    if (kind < 0 || kind >= EX_COUNT || !(units > 0.0)) return 0.0;
+    if (playerTradingBlocked()) return 0.0;
+    Agent& player = agents[size_t(playerAgent)];
+    if (player.ship.enRoute) { lastEvent = "cannot trade in transit"; return 0.0; }
+    const int starIndex = player.currentStar;
+    if (!validStar(*this, starIndex)) return 0.0;
+    const ClusterStar& star = cluster.stars[size_t(starIndex)];
+    if (exoticTargetStock(star, kind) <= 0.0) {
+        lastEvent = "no exotics market here";
+        return 0.0;
+    }
+    if (player.ship.containment <= 0.0) {
+        lastEvent = "no containment bay - refit first";
+        return 0.0;
+    }
+
+    ExoticStock& rec = exoticRecordFor(*this, starIndex);
+    // Три ограничителя, и все три настоящие: ячейка, склад системы и деньги.
+    // Склад до дна не выбирается (`exoticStockAfterTrade` держит 2% пола), но
+    // последние крохи стоят вчетверо — покупать их просто незачем.
+    double amount = std::min(units, shipExoticRoom(player.ship));
+    amount = std::min(amount, std::max(0.0, rec.stock[kind] - exoticTargetStock(star, kind) * 0.03));
+    if (amount <= 1e-6) { lastEvent = "nothing to buy here"; return 0.0; }
+    for (int pass = 0; pass < 2 && amount > 0.0; ++pass) {
+        const double avg = exoticExecutionPrice(star, kind, rec.stock[kind], clusterPriceLevel, amount, false);
+        if (avg <= 0.0) break;
+        amount = std::min(amount, std::max(0.0, player.money) / avg);
+    }
+    if (amount <= 1e-6) { lastEvent = "not enough credits"; return 0.0; }
+
+    const double avg = exoticExecutionPrice(star, kind, rec.stock[kind], clusterPriceLevel, amount, false);
+    const double cost = avg * amount;
+    if (cost > player.money) return 0.0;
+    player.money -= cost;
+    player.ship.exotic[kind] += amount;
+    rec.stock[kind] = exoticStockAfterTrade(star, kind, rec.stock[kind], -amount);
+    // Экзотика — товар, и лицензия распространяется на неё так же, как на руду:
+    // пошлина владельцу системы. Тариф КВОТЫ снимается только с продажи (см.
+    // sellCargo), поэтому здесь его нет.
+    const int owner = star.ownerFaction;
+    if (validFaction(*this, owner)) {
+        const double fee = cost * tariffFor(*this, starIndex, player.ship.ownerFaction, 0.014) /
+                           std::max(1.0, tech.charisma);
+        if (fee > 0.0 && player.money >= fee) {
+            player.money -= fee;
+            factions[size_t(owner)].treasury += fee;
+        }
+    }
+    lastEvent = "bought " + std::string(exoticDefs()[size_t(kind)].symbol);
+    return amount;
+}
+
+double Game::playerSellExotic(int kind, double units) {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return 0.0;
+    if (kind < 0 || kind >= EX_COUNT || !(units > 0.0)) return 0.0;
+    if (playerTradingBlocked()) return 0.0;
+    Agent& player = agents[size_t(playerAgent)];
+    if (player.ship.enRoute) { lastEvent = "cannot trade in transit"; return 0.0; }
+    const int starIndex = player.currentStar;
+    if (!validStar(*this, starIndex)) return 0.0;
+    const ClusterStar& star = cluster.stars[size_t(starIndex)];
+    if (exoticTargetStock(star, kind) <= 0.0) {
+        lastEvent = "no exotics market here";
+        return 0.0;
+    }
+    const double amount = std::min(units, player.ship.exotic[kind]);
+    if (amount <= 1e-6) { lastEvent = "nothing to sell"; return 0.0; }
+
+    ExoticStock& rec = exoticRecordFor(*this, starIndex);
+    const double avg = exoticExecutionPrice(star, kind, rec.stock[kind], clusterPriceLevel, amount, true);
+    const double gross = avg * amount;
+    player.ship.exotic[kind] -= amount;
+    rec.stock[kind] = exoticStockAfterTrade(star, kind, rec.stock[kind], amount);
+
+    double tariff = tariffFor(*this, starIndex, player.ship.ownerFaction, 0.026) /
+                    std::max(1.0, tech.charisma);
+    const double fee = gross * tariff;
+    // Лицензионный тариф с экзотики удерживается ТОЧНО ТАК ЖЕ, как с руды, и в
+    // ту же квоту. Это и делает хайтек-этаж выходом из квотной ловушки поздней
+    // игры: один рейс с конденсатом закрывает тысячелетнюю квоту целиком.
+    const double licenceFee = licenceRevoked ? 0.0 : gross * licenceTariffRate;
+    player.money += gross - fee - licenceFee;
+    const int owner = star.ownerFaction;
+    if (validFaction(*this, owner)) factions[size_t(owner)].treasury += fee;
+    if (licenceFee > 0.0) {
+        licenceQuotaPaid += licenceFee;
+        if (validFaction(*this, clearingFaction)) factions[size_t(clearingFaction)].treasury += licenceFee;
+    }
+    player.trades += 1;
+    lastEvent = "sold " + std::string(exoticDefs()[size_t(kind)].symbol);
+    return amount;
+}
+
+double Game::containmentNextPrice() const {
+    if (containmentLevel >= CONTAINMENT_MAX_LEVEL) return 0.0;
+    // Квадратично по ступени — как и цена систем (§13): вторая ячейка не «ещё
+    // одна такая же», она вчетверо больше по деньгам при той же прибавке.
+    const double step = double(containmentLevel + 1);
+    return CONTAINMENT_STEP_PRICE * step * step;
+}
+
+bool Game::playerUpgradeContainment() {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return false;
+    Agent& player = agents[size_t(playerAgent)];
+    if (player.ship.enRoute) { lastEvent = "cannot refit in transit"; return false; }
+    if (containmentLevel >= CONTAINMENT_MAX_LEVEL) { lastEvent = "containment at maximum"; return false; }
+    // Ячейку варят на верфи, а не в поле: удержание антивещества — это
+    // сверхпроводящая магнитная ловушка, а не ящик.
+    if (shipyardLevelAtStar(player.currentStar) < 2) {
+        lastEvent = "needs shipyard lvl 2 to fit containment";
+        return false;
+    }
+    const double price = containmentNextPrice();
+    if (player.money < price) { lastEvent = "containment bay needs more credits"; return false; }
+    player.money -= price;
+    containmentLevel += 1;
+    // ⚠️ Здесь НЕЛЬЗЯ звать полное перезапекание: хромокоры и прежние слои
+    // брони уже лежат в полях корабля, и повторное наложение их удвоило бы.
+    // Ёмкость — присваивание, а не прибавка, поэтому её ставим напрямую.
+    player.ship.containment = double(containmentLevel) * CONTAINMENT_STEP_UNITS;
+    pushNews("Containment bay fitted: exotic matter can be carried", 4);
+    lastEvent = "containment bay fitted";
+    return true;
+}
+
+double Game::platingNextPrice() const {
+    if (hullPlating >= PLATING_MAX_LAYERS) return 0.0;
+    const double step = double(hullPlating + 1);
+    return 900000.0 * step;
+}
+
+bool Game::playerAddHullPlating() {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return false;
+    Agent& player = agents[size_t(playerAgent)];
+    if (player.ship.enRoute) { lastEvent = "cannot refit in transit"; return false; }
+    if (hullPlating >= PLATING_MAX_LAYERS) { lastEvent = "plating at maximum"; return false; }
+    if (shipyardLevelAtStar(player.currentStar) < 2) {
+        lastEvent = "needs shipyard lvl 2 to weld plating";
+        return false;
+    }
+    if (player.ship.exotic[EX_NEUTRONIUM] < PLATING_NEUTRONIUM_UNITS) {
+        lastEvent = "needs neutronium in the containment bay";
+        return false;
+    }
+    const double price = platingNextPrice();
+    if (player.money < price) { lastEvent = "plating needs more credits"; return false; }
+    player.money -= price;
+    player.ship.exotic[EX_NEUTRONIUM] -= PLATING_NEUTRONIUM_UNITS;
+    hullPlating += 1;
+    // Наваривается ОДИН слой — прибавкой, а не полным перезапеканием: всё
+    // прежнее уже в полях корабля (см. комментарий в playerUpgradeContainment).
+    player.ship.armor += PLATING_ARMOR_PER_LAYER;
+    player.ship.maxHullHP += PLATING_HULL_PER_LAYER;
+    player.ship.dryMass += PLATING_MASS_PER_LAYER;
+    player.ship.hullHP = player.ship.maxHullHP;
+    pushNews("Neutronium welded onto the hull", 4);
+    lastEvent = "hull plated with neutronium";
+    return true;
+}
+
+double Game::forgeCondensateCost() const {
+    return FORGE_CONDENSATE_BASE + FORGE_CONDENSATE_PER_CORE * double(tech.cores);
+}
+
+double Game::forgeCreditCost() const {
+    // Кредитная часть намеренно скромная рядом с ценой конденсата: платит не
+    // кошелёк, а РЕЙС за конденсатом. Иначе кузница стала бы просто ещё одной
+    // покупкой, а она — повод лететь к мёртвой звезде.
+    return 250000.0 * double(tech.cores + 1);
+}
+
+bool Game::playerForgeChromocore(int stat) {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return false;
+    if (stat < 0 || stat >= TECH_STAT_COUNT) return false;
+    Agent& player = agents[size_t(playerAgent)];
+    if (player.ship.enRoute) { lastEvent = "cannot forge in transit"; return false; }
+    if (shipyardLevelAtStar(player.currentStar) < 2) {
+        lastEvent = "core forge needs shipyard lvl 2";
+        return false;
+    }
+    const double need = forgeCondensateCost();
+    if (player.ship.exotic[EX_CONDENSATE] < need) {
+        lastEvent = "core forge needs condensate";
+        return false;
+    }
+    const double price = forgeCreditCost();
+    if (player.money < price) { lastEvent = "core forge needs more credits"; return false; }
+    player.ship.exotic[EX_CONDENSATE] -= need;
+    player.money -= price;
+    // ⚠️ Именно ВЫБРАННЫЙ стат, а не случайный. Ядра, падающие из исследований,
+    // так и остаются рулеткой (`addResearch`) — это фон прогресса. Кузница же
+    // это РЕШЕНИЕ, и оно стоит рейса к мёртвой звезде: за конденсатом больше
+    // некуда лететь.
+    grantChromocore(stat);
     return true;
 }
 

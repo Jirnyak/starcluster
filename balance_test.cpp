@@ -18,6 +18,7 @@
 #include "modules.h"
 #include "drive.h"
 #include "local.h"
+#include "exotic.h"
 #include "i18n.h"
 #include "ui.h"
 #include <algorithm>
@@ -2164,6 +2165,206 @@ void testInsightBurnsReactorFuel() {
           "просчёт по V стоит процент бака, на сухом молчит", buf);
 }
 
+// --- Хайтек-этаж: экзотическая материя (§31) --------------------------------
+
+// Рынок экзотики обязан быть РЕДКИМ. В этом весь смысл: у каждого вещества свой
+// тип звезды, и источники надо искать. Если рынок окажется на каждом углу,
+// хайтек превратится в ещё один ряд цифр, а разведка снова потеряет поздний
+// смысл. Порог широкий — ловим ПОЛОМКУ ГЕЙТА (кто-то ослабил условие), а не
+// точное число.
+void testExoticMarketsAreRare() {
+    Game g;
+    g.seed = 42;
+    g.init(4096);
+    int markets[EX_COUNT] = {0, 0, 0};
+    int sources[EX_COUNT] = {0, 0, 0};
+    int any = 0;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        bool has = false;
+        for (int k = 0; k < EX_COUNT; ++k) {
+            const double t = exoticTargetStock(g.cluster.stars[i], k);
+            if (t <= 0.0) continue;
+            markets[k]++;
+            has = true;
+            if (exoticStockSourceStrength(g.cluster.stars[i], k) > 0.0) sources[k]++;
+        }
+        if (has) ++any;
+    }
+    const double n = double(g.cluster.stars.size());
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "любой рынок %.1f%%; AM %.1f%% (источников %d), NM %.1f%% (%d), QC %.1f%% (%d)",
+        100.0 * any / n, 100.0 * markets[0] / n, sources[0],
+        100.0 * markets[1] / n, sources[1], 100.0 * markets[2] / n, sources[2]);
+    bool ok = any > 0 && (100.0 * any / n) < 25.0;
+    for (int k = 0; k < EX_COUNT; ++k) {
+        const double share = 100.0 * markets[k] / n;
+        if (!(share > 0.3 && share < 15.0)) ok = false;
+        if (sources[k] <= 0) ok = false;   // без источника вещество взять негде вовсе
+    }
+    check(ok, "рынки экзотики редки и у каждого свой источник", buf);
+}
+
+// Рейс с экзотикой — это ДРУГОЙ ЭТАЖ денег, и при этом не бесконечный кран.
+// Проверяем оба свойства сразу: выручка за отсек должна мериться миллионами
+// (иначе хайтек не выводит к покупке систем за 1e9), а вторая такая же закупка
+// подряд обязана обойтись дороже — источник вырабатывается.
+void testExoticRunIsAnotherFloor() {
+    Game g;
+    buildWorld(g, 2026, 40);
+    const int pa = g.playerAgent;
+
+    // Ищем источник и потребителя одного вещества.
+    int source = -1, sink = -1, kind = -1;
+    for (int k = 0; k < EX_COUNT && source < 0; ++k) {
+        double bestLow = 1e18, bestHigh = 0.0;
+        int lowAt = -1, highAt = -1;
+        for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+            const double p = g.exoticPriceAt(int(i), k);
+            if (p <= 0.0) continue;
+            if (p < bestLow) { bestLow = p; lowAt = int(i); }
+            if (p > bestHigh) { bestHigh = p; highAt = int(i); }
+        }
+        if (lowAt >= 0 && highAt >= 0 && lowAt != highAt && bestHigh > bestLow * 1.5) {
+            source = lowAt; sink = highAt; kind = k;
+        }
+    }
+    if (source < 0) {
+        check(false, "рейс с экзотикой — другой этаж денег", "не нашлось пары источник/потребитель");
+        return;
+    }
+
+    // Ставим игрока на источник с ячейкой и деньгами.
+    g.containmentLevel = CONTAINMENT_MAX_LEVEL;
+    g.rebakePlayerBakedBonuses();
+    g.agents[pa].currentStar = source;
+    g.agents[pa].ship.enRoute = false;
+    g.agents[pa].money = 3.0e8;
+
+    const double firstPrice = g.exoticPriceAt(source, kind);
+    const double bought = g.playerBuyExotic(kind, 1.0e9);
+    const double spent = 3.0e8 - g.agents[pa].money;
+    const double secondPrice = g.exoticPriceAt(source, kind);
+
+    // Везём и продаём.
+    g.agents[pa].currentStar = sink;
+    const double before = g.agents[pa].money;
+    const double sold = g.playerSellExotic(kind, 1.0e9);
+    const double gained = g.agents[pa].money - before;
+
+    char buf[260];
+    std::snprintf(buf, sizeof(buf),
+        "%s: взято %.0f по %.0f (потрачено %.3g), продано %.0f за %.3g => %.2fx; источник подорожал %.0f -> %.0f",
+        exoticDefs()[size_t(kind)].symbol, bought, firstPrice, spent, sold, gained,
+        spent > 0.0 ? gained / spent : 0.0, firstPrice, secondPrice);
+    check(bought > 1.0 && sold > 1.0 && gained > 1.0e6 && gained > spent &&
+          secondPrice > firstPrice * 1.05,
+          "рейс с экзотикой — другой этаж денег", buf);
+}
+
+// Антивещество обязано и ДАВАТЬ энергию, и КОНЧАТЬСЯ. Это ровно то, что делает
+// его расходником, а не постоянным апгрейдом: доля в тысячную по массе удваивает
+// энергию смеси, но улетает вместе с рейсом.
+void testAntimatterBurnsWithTheFuel() {
+    Game g;
+    buildWorld(g, 77, 10);
+    Ship& ship = g.agents[g.playerAgent].ship;
+    const double plain = shipFuelMix(ship).specificEnergy;
+    ship.containment = 200.0;
+    ship.exotic[EX_ANTIMATTER] = 12.0;
+    const double boosted = shipFuelMix(ship).specificEnergy;
+    const double amBefore = ship.exotic[EX_ANTIMATTER];
+    shipConsumeForDeltaV(ship, 0.02, NULL);
+    const double amAfter = ship.exotic[EX_ANTIMATTER];
+
+    char buf[200];
+    std::snprintf(buf, sizeof(buf),
+        "энергия смеси %.4f -> %.4f МэВ/нуклон (x%.2f); антивещество %.3f -> %.3f",
+        plain, boosted, plain > 0.0 ? boosted / plain : 0.0, amBefore, amAfter);
+    check(boosted > plain * 1.5 && amAfter < amBefore && amAfter >= 0.0,
+          "антивещество греет смесь и сгорает вместе с ней", buf);
+}
+
+// Кузница — это ВЫБОР, в отличие от ядра из исследований. Проверяем, что растёт
+// именно названный стат и что за это списывают конденсат.
+void testForgePicksTheStat() {
+    Game g;
+    buildWorld(g, 313, 20);
+    const int pa = g.playerAgent;
+    // Ставим игрока туда, где есть верфь: кузница — не полевая работа.
+    int yard = -1;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        if (g.shipyardLevelAtStar(int(i)) >= 2) { yard = int(i); break; }
+    }
+    if (yard < 0) {
+        check(false, "кузница даёт ВЫБРАННОЕ ядро", "в мире не нашлось верфи 2 уровня");
+        return;
+    }
+    g.agents[pa].currentStar = yard;
+    g.agents[pa].ship.enRoute = false;
+    g.agents[pa].money = 1.0e9;
+    g.agents[pa].ship.containment = 400.0;
+    g.agents[pa].ship.exotic[EX_CONDENSATE] = 300.0;
+
+    const double sensorsBefore = g.tech.sensors;
+    const double luckBefore = g.tech.luck;
+    const double condBefore = g.agents[pa].ship.exotic[EX_CONDENSATE];
+    const bool forged = g.playerForgeChromocore(TECH_SENSORS);
+    const double condAfter = g.agents[pa].ship.exotic[EX_CONDENSATE];
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf),
+        "сенсоры %.3f -> %.3f, удача %.3f -> %.3f (не тронута), конденсат %.0f -> %.0f, ядер %d",
+        sensorsBefore, g.tech.sensors, luckBefore, g.tech.luck, condBefore, condAfter, g.tech.cores);
+    check(forged && g.tech.sensors > sensorsBefore * 1.01 &&
+          std::fabs(g.tech.luck - luckBefore) < 1e-9 && condAfter < condBefore,
+          "кузница даёт ВЫБРАННОЕ ядро", buf);
+}
+
+// Переоснастка запекается в поля корпуса, значит обязана пережить и покупку
+// нового корпуса, и сейв. Ровно та же грабля, что §32.2 с хромокорами: ячейка
+// и броня не хранятся больше нигде, кроме `containmentLevel`/`hullPlating`.
+void testRefitSurvivesHullAndSave() {
+    Game g;
+    buildWorld(g, 5150, 20);
+    const int pa = g.playerAgent;
+    g.containmentLevel = 2;
+    g.hullPlating = 3;
+    g.rebakePlayerBakedBonuses();
+    const double armorWithPlating = g.agents[pa].ship.armor;
+    const double bay = g.agents[pa].ship.containment;
+
+    // Покупаем корпус побольше — shipApplyClass обнулит поля.
+    int classId = -1;
+    for (size_t c = 0; c < shipClasses().size(); ++c) {
+        if (shipClasses()[c].cargoCapacity > g.agents[pa].ship.cargoCapacity * 1.5) { classId = int(c); break; }
+    }
+    g.agents[pa].money = 1.0e12;
+    const bool bought = classId >= 0 && g.buyShip(pa, g.agents[pa].currentStar, classId);
+    const double bayAfterHull = g.agents[pa].ship.containment;
+    const double platedArmor = g.agents[pa].ship.armor;
+
+    // И через сейв.
+    const std::string path = "balance_refit_save.txt";
+    const bool saved = g.saveToFile(path);
+    Game b;
+    b.init(1200);
+    const bool loaded = saved && b.loadFromFile(path);
+    std::remove(path.c_str());
+    const double bayAfterLoad = loaded && b.playerAgent >= 0 ? b.agents[b.playerAgent].ship.containment : -1.0;
+    const double armorAfterLoad = loaded && b.playerAgent >= 0 ? b.agents[b.playerAgent].ship.armor : -1.0;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "ячейка %.0f -> %.0f (корпус) -> %.0f (сейв); броня со слоями %.0f -> %.0f -> %.0f",
+        bay, bayAfterHull, bayAfterLoad, armorWithPlating, platedArmor, armorAfterLoad);
+    check(bought && loaded && bay > 0.0 &&
+          std::fabs(bayAfterHull - bay) < 0.5 && std::fabs(bayAfterLoad - bay) < 0.5 &&
+          platedArmor > PLATING_ARMOR_PER_LAYER * 2.5 &&
+          std::fabs(armorAfterLoad - platedArmor) < 0.5,
+          "переоснастка переживает корпус и сейв", buf);
+}
+
 // Загрузка сейва обязана вернуть ЖИВОЙ рынок, а не только его цифры.
 //
 // В файле лежат «движущиеся части» — запас, цены, темпы. Модель НУЖДЫ (`needs`,
@@ -2341,6 +2542,11 @@ int main() {
     testInsightBurnsReactorFuel();
     testSaveKeepsTheMarketAlive();
     testChromocoresSurviveHullChange();
+    testExoticMarketsAreRare();
+    testExoticRunIsAnotherFloor();
+    testAntimatterBurnsWithTheFuel();
+    testForgePicksTheStat();
+    testRefitSurvivesHullAndSave();
     testTranslationsKeepFormatOrder();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;

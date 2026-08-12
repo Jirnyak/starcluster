@@ -10,6 +10,7 @@
 #include "game.h"
 #include "i18n.h"
 #include "ui.h"
+#include "exotic.h"
 
 #include <cstdio>
 #include <string>
@@ -100,6 +101,39 @@ int main(int argc, char** argv) {
         UI::WindowState ui;
         cases[i].open(ui, here, SCREEN_W, SCREEN_H);
         shot((std::string(cases[i].name) + "_" + tag).c_str(), game, ui, sel);
+    }
+    {
+        // Хайтек-этаж (§31) снимается ОТДЕЛЬНО и на подготовленном мире: окно
+        // открывается только там, где рынок экзотики есть вообще, а таких систем
+        // около 12%. Игроку выдаётся ячейка и вещество на борт — иначе строки
+        // «на борту / цена / кузница» снимаются пустыми, то есть ровно те, что
+        // переполняются в русском.
+        Game ex;
+        ex.seed = 7;
+        ex.init(1200);
+        int host = -1;
+        for (size_t i = 0; i < ex.cluster.stars.size(); ++i) {
+            if (ex.exoticMarketAt(int(i))) { host = int(i); break; }
+        }
+        if (host >= 0) {
+            ex.agents[ex.playerAgent].currentStar = host;
+            ex.agents[ex.playerAgent].ship.enRoute = false;
+            ex.agents[ex.playerAgent].money = 4.2e8;
+            ex.containmentLevel = 3;
+            ex.hullPlating = 1;
+            ex.rebakePlayerBakedBonuses();
+            ex.agents[ex.playerAgent].ship.exotic[EX_ANTIMATTER] = 44.0;
+            ex.agents[ex.playerAgent].ship.exotic[EX_NEUTRONIUM] = 61.0;
+            ex.agents[ex.playerAgent].ship.exotic[EX_CONDENSATE] = 25.0;
+            UI::HudSelection esel;
+            esel.star = host;
+            esel.agent = ex.playerAgent;
+            UI::WindowState ui;
+            UI::openExoticsWindow(ui, host, SCREEN_W, SCREEN_H);
+            shot((std::string("exotics_") + tag).c_str(), ex, ui, esel);
+        } else {
+            std::printf("EXOTICS: no market found in the probe world\n");
+        }
     }
     {
         // Окно собственности снимается ДВАЖДЫ: в списке выше система чужая, и
