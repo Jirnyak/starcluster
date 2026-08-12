@@ -3690,9 +3690,15 @@ static void drawShipTechPanel(SDL_Renderer* renderer, const Game& game, int x, i
     std::snprintf(line, sizeof(line), "%.0F/%.0F", hull, hullMax);
     drawText(renderer, x + w - 66, y + 26, line, P.text, 1);
 
-    // Строки про добычу здесь не место: бурение живёт в локальном полёте и там
-    // же себя и показывает (`MINING … GRADE …` над камнем). В обзоре скопления
-    // это была вечная «ДОБЫЧА ВЫКЛ» — подсказка о клавише, которая тут не нужна.
+    // (§43) Пока бур РАБОТАЕТ — видно, сколько он уже дал. `miningYieldAccum`
+    // копился с самого начала и не читался никем: единственное оставшееся
+    // мёртвое поле экономики. Выключенный бур по-прежнему молчит — вечная
+    // «ДОБЫЧА ВЫКЛ» была подсказкой о клавише, которой тут не место.
+    if (game.playerMining && game.miningYieldAccum > 0.0) {
+        char mined[96];
+        std::snprintf(mined, sizeof(mined), "MINED %.1F U", game.miningYieldAccum);
+        drawText(renderer, x + w - 10 - textWidth(mined, 1), y + 9, mined, P.green, 1);
+    }
     const double threshold = 100.0 + game.tech.cores * 40.0;
     const double rprog = clamp01(threshold > 0.0 ? game.tech.research / threshold : 0.0);
     std::snprintf(line, sizeof(line), "CORES %d", game.tech.cores);

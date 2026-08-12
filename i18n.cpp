@@ -573,6 +573,7 @@ const Entry WORDS[] = {
     {"LUCK", "УДАЧА"},
     {"AMOUNT IN UNITS", "ОБЪЁМ В ЕДИНИЦАХ"},
     {"ATOMIC MASS", "АТОМНАЯ МАССА"},
+    {"MINED", "ДОБЫТО"},
     {"STARS", "ЗВЁЗД"},
     {"SHIPS", "БОРТОВ"},
     {"YEAR", "ГОД"},

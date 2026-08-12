@@ -1,4 +1,6 @@
 #include "game.h"
+#include "ship.h"
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -106,6 +108,23 @@ void Game::updateMining(double dt) {
         addResearch(0.5); // подпитка исследований
 
         // --- Редкий бонус у пульсара/нейтронной звезды/чёрной дыры ---
+        //
+        // (§43) У МЁРТВОЙ ЗВЕЗДЫ ДОБЫВАЕТСЯ НЕЙТРОНИУМ. Новость здесь всегда
+        // говорила «exotic matter siphoned from pulsar», а в трюм падал обычный
+        // дорогой элемент: экзотики в игре тогда просто не было (§31). Теперь
+        // она есть, и мёртвая звезда — её единственный источник; значит и
+        // ковыряние в её коре обязано давать именно её. Нужна ячейка удержания:
+        // без неё вырожденное вещество удержать нечем, и тогда работает
+        // прежний путь с дорогим элементом.
+        if ((star.stellarClass == 1 || star.stellarClass == 2) && randomer(rng, 99) < 4 &&
+            shipExoticRoom(p.ship) > 0.05) {
+            const double got = std::min(0.35, shipExoticRoom(p.ship));
+            p.ship.exotic[EX_NEUTRONIUM] += got;
+            addResearch(6.0);
+            pushNews("Neutronium siphoned from the dead star's crust", 3);
+            p.lastAction = "mining";
+            return;
+        }
         if ((star.stellarClass == 1 || star.stellarClass == 2) && randomer(rng, 99) < 4) {
             // Ищем самый дорогой (по базовой цене) элемент.
             int bestIdx = idx;
@@ -130,7 +149,7 @@ void Game::updateMining(double dt) {
                 }
                 if (!bfound) p.ship.cargo.emplace_back(bsym, bonusAmt);
                 addResearch(6.0);
-                pushNews("Exotic matter siphoned from pulsar", 3);
+                pushNews("Rare matter siphoned from the dead star", 3);
             }
         }
 

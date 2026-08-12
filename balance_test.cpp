@@ -2165,6 +2165,54 @@ void testInsightBurnsReactorFuel() {
           "просчёт по V стоит процент бака, на сухом молчит", buf);
 }
 
+// У мёртвой звезды добывается НЕЙТРОНИУМ (§43).
+//
+// ⚠️ Новость на этом месте всегда говорила «exotic matter siphoned from
+// pulsar», а в трюм падал обычный дорогой элемент: экзотики в игре тогда просто
+// не было. Теперь она есть, и мёртвая звезда — её единственный источник, так
+// что и ковыряние в её коре обязано давать именно её. Без ячейки удержания
+// работает прежний путь: вырожденное вещество удержать нечем.
+void testDeadStarYieldsNeutronium() {
+    Game g;
+    buildWorld(g, 8888, 10);
+    const int pa = g.playerAgent;
+
+    int dead = -1;
+    for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+        if (g.cluster.stars[i].stellarClass == 1 || g.cluster.stars[i].stellarClass == 2) {
+            dead = int(i);
+            break;
+        }
+    }
+    if (dead < 0) {
+        check(false, "у мёртвой звезды добывается нейтрониум", "в мире нет ни одной мёртвой звезды");
+        return;
+    }
+    g.agents[pa].currentStar = dead;
+    g.agents[pa].ship.enRoute = false;
+    g.agents[pa].ship.containmentLevel = 1;
+    g.rebakePlayerBakedBonuses();
+    g.agents[pa].ship.cargo.clear();
+    g.playerToggleMining();
+
+    // Бонус редкий (4%), поэтому крутим долго: проверяем МЕХАНИЗМ, а не удачу.
+    for (int y = 0; y < 4000 && g.agents[pa].ship.exotic[EX_NEUTRONIUM] <= 0.0; ++y) {
+        g.update(1.0);
+        // Трюм переполняется обычной рудой — освобождаем, иначе добыча встанет.
+        if (shipCargoMass(g.agents[pa].ship) > g.agents[pa].ship.cargoCapacity * 0.8) {
+            g.agents[pa].ship.cargo.clear();
+        }
+    }
+    const double got = g.agents[pa].ship.exotic[EX_NEUTRONIUM];
+
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "звезда %d (класс %d): нейтрониума на борту %.3f, ячейка %.0f",
+                  dead, g.cluster.stars[size_t(dead)].stellarClass, got,
+                  g.agents[pa].ship.containment);
+    check(got > 0.0 && got <= g.agents[pa].ship.containment + 1e-9,
+          "у мёртвой звезды добывается нейтрониум", buf);
+}
+
 // Игрок, который слушает советчика, обязан РАСТИ, а не запираться (§42).
 //
 // ⚠️ Самая дорогая находка сессии, и лестница проверок её не ловила: каждая
@@ -3021,6 +3069,7 @@ int main() {
     testAntimatterBurnsWithTheFuel();
     testForgePicksTheStat();
     testRefitSurvivesHullAndSave();
+    testDeadStarYieldsNeutronium();
     testAdvisorRunsCompound();
     testRevokedLicenceCanBeWorkedOff();
     testStrandedShipGetsTowed();
