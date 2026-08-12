@@ -542,8 +542,20 @@ double plannedRouteTravelTime(const Game& game, const Ship& ship, int originStar
     return cachedRouteTravelTime(game, ship, originStar, targetStar);
 }
 
+// Наценка станции за очистку и хранение: купить расходник можно только через
+// неё, и это ровно то, что делает СОБСТВЕННУЮ заправку (привезти вещество
+// грузом и перелить) вдвое выгоднее. Объявлена здесь, а не у `buyConsumable`,
+// потому что оба планировщика маршрута обязаны считать дорогу по ней же.
+const double REFINERY_MARKUP = 0.90;
+
 // Во сколько кредитов обойдётся долить недостающее в этой системе. Считает
 // ОБА расходника: и топливо, и рабочее тело, каждое по своей локальной цене.
+//
+// ⚠️ ПО СТАНЦИОННОЙ цене, а не по сырьевой. Купить расходник можно только
+// через `buyConsumable`, а тот берёт `price * (1 + REFINERY_MARKUP)` — то есть
+// вдвое. Пока здесь стояла голая рыночная цена, оба планировщика (совет игроку
+// и `findBestTrade` у NPC) занижали дорогу примерно вдвое и звали в рейсы,
+// которые сами же делали убыточными.
 double refillCost(const Game& game, const Ship& ship, int starIndex, const RouteCost& need) {
     if (!need.feasible || !validStar(game, starIndex)) return 0.0;
     double propellantPrice = 1.0;
@@ -553,7 +565,7 @@ double refillCost(const Game& game, const Ship& ship, int starIndex, const Route
     if (!driveUsesFuelAsPropellant(ship.driveIndex)) {
         cost += std::max(0.0, need.propellantMass - shipPropellantMix(ship).mass) * propellantPrice;
     }
-    return cost;
+    return cost * (1.0 + REFINERY_MARKUP);
 }
 
 RouteCost plannedRouteCost(const Game& game, const Ship& ship, int originStar, int targetStar) {
@@ -2007,7 +2019,6 @@ double tariffFor(const Game& game, int starIndex, int ownerFaction, double exter
 // Наценка станции за готовый к заливке расходник. Станция продаёт очищенное,
 // обогащённое и упакованное вещество; сырой элемент из трюма переливается
 // бесплатно. Наценка намеренно кусачая: своя топливная схема должна окупаться.
-const double REFINERY_MARKUP = 0.90;
 
 // Станционный макрос: купить расходник и сразу залить его в бак. Один поток
 // для игрока и для ИИ — правила общие (ship.md, «AI Requirements»).
@@ -2196,7 +2207,9 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
         // снято обратно 33.6 Cr).
         if (validFaction(game, game.clearingFaction)) game.factions[game.clearingFaction].treasury += licenceFee;
     }
-    agent.lastProfit = gross - fee - licenceFee - costShare;
+    // Выручка, ушедшая в погашение выкупа, прибылью НЕ является: игрок её не
+    // видел. Иначе он получал бы исследования за деньги, которых не получил.
+    agent.lastProfit = gross - fee - licenceFee - debtPaid - costShare;
     // (§34) Удачная сделка — тоже знание: рейс проверил модель рынка на деле.
     //
     // ⚠️ Прибыль КОПИТСЯ и превращается в очки раз в год (`Game::update`), а не
@@ -6220,7 +6233,23 @@ bool Game::agentBuyElementAmount(int agentIndex, int elementIndex, double amount
     // который вписал число, знает, что делает.
     double budgetCap = amount;
     if (agent.playerControlled && amount > 1.0e11) {
-        const double reserve = std::min(agentRefuelQuote(agentIndex), std::max(0.0, agent.money) * 0.5);
+        // ⚠️ Резерв считается на ЗАГРУЖЕННОМ корабле. Расход рабочего тела
+        // растёт вместе с массой, а котировка снималась с пустого трюма — и
+        // придержанного не хватало ровно тогда, когда груз тяжёлый: замер
+        // показывал «придержано 454, после погрузки нужно 643», и кошелёк
+        // садился в ноль. Считаем по копии корабля, набитого под завязку тем
+        // самым элементом, который сейчас покупаем.
+        double reserve = agentRefuelQuote(agentIndex);
+        if (validStar(*this, agent.destStar) && agent.destStar != agent.currentStar) {
+            Ship loaded = agent.ship;
+            loaded.cargo.clear();
+            const double room = std::max(0.0, loaded.cargoCapacity);
+            loaded.cargo.emplace_back(element.symbol,
+                                      room / std::max(1e-9, resourceUnitMassByIndex(elementIndex)));
+            const RouteCost need = plannedRouteCost(*this, loaded, agent.currentStar, agent.destStar);
+            reserve = std::max(reserve, refillCost(*this, loaded, agent.currentStar, need));
+        }
+        reserve = std::min(reserve, std::max(0.0, agent.money) * 0.5);
         if (reserve > 0.0 && buyPrice > 0.0) {
             budgetCap = std::max(0.0, agent.money - reserve) / buyPrice;
             if (budgetCap <= 0.01) {
@@ -6313,6 +6342,8 @@ double Game::agentRefuelQuote(int agentIndex) const {
 
     double total = 0.0;
     for (int pass = 0; pass < 2; ++pass) {
+        // Учитываем и то, чего на рынке ПРОСТО НЕТ: `buyConsumable` режет объём
+        // по запасу склада, и без этого котировка обещала бы то, чего не купит.
         const bool bunker = pass == 0;
         if (!bunker && driveUsesFuelAsPropellant(agent.ship.driveIndex)) continue;
         const int element = bunker ? shipDominantFuelElement(agent.ship)
@@ -6325,8 +6356,18 @@ double Game::agentRefuelQuote(int agentIndex) const {
         const double unitMass = elementUnitMass(element);
         const double roomUnits = std::max(0.0, (capacity - mix.volume) /
                                           std::max(1e-9, elementUnitVolume(element)));
-        const double wantUnits = std::min(std::max(0.0, target - mix.mass) / std::max(1e-6, unitMass), roomUnits);
+        double wantUnits = std::min(std::max(0.0, target - mix.mass) / std::max(1e-6, unitMass), roomUnits);
+        if (element < int(market.supply.size())) {
+            wantUnits = std::min(wantUnits, std::max(0.0, market.supply[size_t(element)].amount));
+        }
         total += wantUnits * market.prices[size_t(element)] * (1.0 + REFINERY_MARKUP) * (1.0 + tariff);
+    }
+    // ⚠️ И потолок кошелька — тот же, что применит покупка. Без него кнопка
+    // показывала 232 133 Cr там, где списывала 600: цена на кнопке врала в
+    // сотни раз ровно в том случае, ради которого её и завели, — у бедного
+    // игрока с сухими баками.
+    if (agent.playerControlled) {
+        total = std::min(total, std::max(0.0, agent.money) * REFUEL_WALLET_SHARE);
     }
     return total;
 }
@@ -7965,6 +8006,16 @@ void Game::payShareDividends(double years) {
             origin = (playerAgent >= 0 && playerAgent < int(agents.size()))
                          ? agents[size_t(playerAgent)].currentStar : -1;
         }
+        // ⚠️ ДЕНЬГИ СНАЧАЛА ЗАЧИСЛЯЮТСЯ, и только потом придерживаются светом.
+        //
+        // Здесь стоял один `addCreditFloat` без зачисления в казну — то есть
+        // приход существовал ТОЛЬКО как задержка. А доступное к трате считается
+        // как `казна − в пути`, и каждый дивиденд ВЫЧИТАЛ из счёта: замер —
+        // казна 0, в пути 820 675 Cr, доступно 0, и внесённые игроком 10 000
+        // после сорока лет ожидания не снимались вовсе. Счёт ломался навсегда.
+        // Все остальные вызывающие (`playerAccountDeposit`, излишек колонии)
+        // делают именно эту пару.
+        if (validFaction(*this, playerFaction)) factions[size_t(playerFaction)].treasury += payout;
         addCreditFloat(playerFaction, payout, origin);
         if (validFaction(*this, int(f))) {
             factions[f].treasury = std::max(0.0, factions[f].treasury - payout);

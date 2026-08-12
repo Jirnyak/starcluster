@@ -2165,6 +2165,76 @@ void testInsightBurnsReactorFuel() {
           "просчёт по V стоит процент бака, на сухом молчит", buf);
 }
 
+// Дивиденд обязан ДОХОДИТЬ до счёта, а не ломать его (§44).
+//
+// ⚠️ Самый тихий из всех найденных багов. Выплата вызывала только
+// `addCreditFloat` — то есть создавала ЗАДЕРЖКУ, ничего не зачислив. А
+// доступное к трате считается как «казна минус в пути», поэтому каждый дивиденд
+// ВЫЧИТАЛ из счёта: замер — казна 0, в пути 820 675 Cr, доступно 0, и внесённые
+// игроком деньги не снимались уже никогда. Счёт ломался навсегда и молча.
+void testDividendsReachTheAccount() {
+    Game g;
+    buildWorld(g, 1234, 20);
+    const int pa = g.playerAgent;
+    for (size_t f = 0; f < g.factions.size(); ++f) g.publishFactionBook(int(f));
+
+    int probe = -1;
+    for (size_t f = 0; f < g.factions.size(); ++f) {
+        if (int(f) != g.playerFaction && g.factionShareDividend(int(f)) > 0.0) { probe = int(f); break; }
+    }
+    if (probe < 0) { check(false, "дивиденд доходит до счёта", "нет державы с дивидендом"); return; }
+
+    g.agents[pa].money = 1.0e9;
+    g.playerBuyShares(probe, 20000.0);
+    g.payShareDividends(10.0);
+
+    // Ждём, пока свет обойдёт скопление, и пробуем СНЯТЬ.
+    for (int y = 0; y < 400; ++y) g.update(1.0);
+    const double cleared = g.factionClearedTreasury(g.playerFaction);
+    const double before = g.agents[pa].money;
+    const double taken = g.playerAccountWithdraw(cleared > 0.0 ? cleared : 1.0);
+    const double after = g.agents[pa].money;
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "казна %.4g, в пути %.4g, доступно %.4g, снято %.4g (кошелёк %.4g -> %.4g)",
+                  g.factionTreasuryAt(g.playerFaction), g.factionCreditsInFlight(g.playerFaction),
+                  cleared, taken, before, after);
+    check(cleared > 0.0 && taken > 0.0 && after > before, "дивиденд доходит до счёта", buf);
+}
+
+// Цена на кнопке заправки обязана совпадать со списанной (§44).
+//
+// ⚠️ Котировка не применяла ни потолок кошелька, ни запас склада, а покупка
+// применяла оба: кнопка показывала 232 133 Cr там, где списывала 600, — то есть
+// врала в сотни раз ровно у бедного игрока с сухими баками, ради которого её и
+// завели.
+void testRefuelQuoteMatchesCharge() {
+    double worst = 0.0;
+    char detail[200] = "";
+    for (int si = 0; si < 3; ++si) {
+        static const unsigned seeds[3] = {1234u, 42u, 777u};
+        Game g;
+        buildWorld(g, seeds[si], 10);
+        const int pa = g.playerAgent;
+        g.agents[pa].ship.propellant.clear();
+        g.agents[pa].ship.fuel.clear();
+        g.agents[pa].money = 5000.0;
+        const double quote = g.agentRefuelQuote(pa);
+        const double before = g.agents[pa].money;
+        g.agentBuyFuel(pa);
+        const double charged = before - g.agents[pa].money;
+        const double err = quote > 0.0 ? std::fabs(charged - quote) / quote : (charged > 0.0 ? 1.0 : 0.0);
+        if (err > worst) {
+            worst = err;
+            std::snprintf(detail, sizeof(detail), "seed %u: обещано %.0f, списано %.0f",
+                          seeds[si], quote, charged);
+        }
+    }
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "%s; худшее расхождение %.1f%%", detail, worst * 100.0);
+    check(worst < 0.10, "цена заправки на кнопке равна списанной", buf);
+}
+
 // У мёртвой звезды добывается НЕЙТРОНИУМ (§43).
 //
 // ⚠️ Новость на этом месте всегда говорила «exotic matter siphoned from
@@ -3069,6 +3139,8 @@ int main() {
     testAntimatterBurnsWithTheFuel();
     testForgePicksTheStat();
     testRefitSurvivesHullAndSave();
+    testDividendsReachTheAccount();
+    testRefuelQuoteMatchesCharge();
     testDeadStarYieldsNeutronium();
     testAdvisorRunsCompound();
     testRevokedLicenceCanBeWorkedOff();
