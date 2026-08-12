@@ -103,6 +103,23 @@ int main(int argc, char** argv) {
         shot((std::string(cases[i].name) + "_" + tag).c_str(), game, ui, sel);
     }
     {
+        // Карточка управления (F1) — единственный экран, который новый игрок
+        // читает целиком, и единственное место, где написано про клавишу L.
+        // Групп стало шесть (добавлено управление внутри системы), и раскладка
+        // на три колонки могла не влезть по высоте.
+        SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, SCREEN_W, SCREEN_H, 32, SDL_PIXELFORMAT_RGB888);
+        SDL_Renderer* r = SDL_CreateSoftwareRenderer(surf);
+        SDL_SetRenderDrawColor(r, 5, 8, 16, 255);
+        SDL_RenderClear(r);
+        UI::drawControlsCard(r, SCREEN_W, SCREEN_H);
+        SDL_RenderPresent(r);
+        const std::string path = std::string("uishot_controls_") + tag + ".bmp";
+        SDL_SaveBMP(surf, path.c_str());
+        std::printf("shot: %s\n", path.c_str());
+        SDL_DestroyRenderer(r);
+        SDL_FreeSurface(surf);
+    }
+    {
         // Биржа держав (§33) снимается в режиме акций и на мире, где книги уже
         // опубликованы, а портфель не пуст: на нулях строка «нет отчёта»
         // ничего не проверяет, а вылезают в русском именно цифры и знак прибыли.
