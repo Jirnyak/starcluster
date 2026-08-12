@@ -426,11 +426,14 @@ void testHoldArrowsMoveMatter() {
     // --- Кредиты между своими бортами (зеркалит UI::holdGiveRect/holdTakeRect) ---
     // Кошелёк лежит НА БОРТУ, поэтому второй корабль рождается пустым, и деньги
     // на него надо переложить руками, пока оба стоят в одной системе.
+    // Ряд из ТРЁХ кнопок в тех же 196 пикселях: отдать, взять, автопилот (§35).
     SDL_Rect give = opt;
     give.x -= 196;
-    give.w = 92;
+    give.w = 60;
     SDL_Rect take = give;
-    take.x += 96;
+    take.x += 64;
+    SDL_Rect autoBtn = give;
+    autoBtn.x += 128;
 
     // Кнопки мертвы, пока второго борта рядом нет.
     game.lastEvent.clear();
@@ -471,6 +474,21 @@ void testHoldArrowsMoveMatter() {
     check(std::fabs(game.agents[pa].money - 5000.0) < 0.01 &&
           std::fabs(game.agents.back().money) < 0.01,
           "TAKE CR draws them back");
+
+    // (§35) Тумблер автопилота действует на СОСЕДНИЙ борт и переключается.
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H,
+                            autoBtn.x + autoBtn.w / 2, autoBtn.y + autoBtn.h / 2, SDL_BUTTON_LEFT);
+    }
+    const bool armed = game.agents.back().autoTrade;
+    {
+        UI::HudSelection sel;
+        UI::handleMouseDown(ui, game, sel, SCREEN_W, SCREEN_H,
+                            autoBtn.x + autoBtn.w / 2, autoBtn.y + autoBtn.h / 2, SDL_BUTTON_LEFT);
+    }
+    check(armed && !game.agents.back().autoTrade && !game.agents[pa].autoTrade,
+          "AUTO toggles the hull alongside and never the one you fly");
 
     // Улетел — перевод закрыт: деньги ездят вместе с кораблём, а не по эфиру.
     game.agents.back().ship.enRoute = true;

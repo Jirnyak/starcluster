@@ -535,8 +535,8 @@ const Entry WORDS[] = {
     {"LICENCE REVOKED - BUY BACK", "ЛИЦЕНЗИЯ ОТОЗВАНА - ВЫКУП"},
 
     // ---------------- автопилот флота (§35) ----------------
-    {"AUTOPILOT ON", "АВТОПИЛОТ ВКЛ"},
-    {"AUTOPILOT OFF", "АВТОПИЛОТ ВЫКЛ"},
+    {"AUTO ON", "АВТО ВКЛ"},
+    {"AUTO OFF", "АВТО ВЫКЛ"},
     {"HULL PUT ON AUTOPILOT", "БОРТ ПОСТАВЛЕН НА АВТОПИЛОТ"},
     {"HULL BACK UNDER MANUAL ORDERS", "БОРТ СНОВА ПОД РУЧНЫМ УПРАВЛЕНИЕМ"},
     {"CANNOT CHANGE ORDERS IN TRANSIT", "В ПОЛЁТЕ ПРИКАЗ НЕ СМЕНИТЬ"},

@@ -1190,16 +1190,19 @@ SDL_Rect holdOptimalRect(const Window& window) {
 // предмет на борту, как груз: у фракции касса общая, у корабля — своя.
 // Сумму берут из того же поля шага, что и переливы вещества, — одно понятие на
 // все операции окна.
+// Ряд из ТРЁХ кнопок в тех же 196 пикселях: отдать, взять, автопилот. Кнопка
+// автопилота сначала стояла строкой выше и ложилась поверх строки двигателя
+// «ЗАЛИТЬ РАБ. ТЕЛО» — по-русски та длиннее и уходила под неё целиком.
 SDL_Rect holdGiveRect(const Window& window) {
     SDL_Rect r = holdOptimalRect(window);
     r.x -= 196;
-    r.w = 92;
+    r.w = 60;
     return r;
 }
 
 SDL_Rect holdTakeRect(const Window& window) {
     SDL_Rect r = holdGiveRect(window);
-    r.x += 96;
+    r.x += 64;
     return r;
 }
 
@@ -1209,8 +1212,7 @@ SDL_Rect holdTakeRect(const Window& window) {
 // полёте, и незачем отдельно это проверять в интерфейсе.
 SDL_Rect holdAutoRect(const Window& window) {
     SDL_Rect r = holdGiveRect(window);
-    r.y -= 28;
-    r.w = 188;
+    r.x += 128;
     return r;
 }
 
@@ -3502,8 +3504,8 @@ void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     // Кошелёк лежит НА БОРТУ, а не у игрока: перевозить деньги приходится так
     // же, как груз. Кнопки живы только когда второй свой борт стоит рядом.
     const int mate = game.playerOtherShipHere();
-    drawButton(renderer, holdGiveRect(window), "GIVE CR", P.amber, mate >= 0);
-    drawButton(renderer, holdTakeRect(window), "TAKE CR", P.green, mate >= 0);
+    drawButton(renderer, holdGiveRect(window), "GIVE", P.amber, mate >= 0);
+    drawButton(renderer, holdTakeRect(window), "TAKE", P.green, mate >= 0);
     if (mate >= 0) {
         std::snprintf(line, sizeof(line), "%s HAS %s CR",
                       game.agents[mate].ship.name.c_str(),
@@ -3512,8 +3514,7 @@ void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& win
     }
     // (§35) Автопилот соседнего борта: купленный корпус перестаёт быть мебелью.
     const bool mateAuto = mate >= 0 && game.agents[mate].autoTrade;
-    drawButton(renderer, holdAutoRect(window),
-               mateAuto ? "AUTOPILOT ON" : "AUTOPILOT OFF",
+    drawButton(renderer, holdAutoRect(window), mateAuto ? "AUTO ON" : "AUTO OFF",
                mateAuto ? P.green : P.dim, mate >= 0);
 
     // Поле шага: сколько двигает ОДНО нажатие стрелки. То же число, что AMOUNT
