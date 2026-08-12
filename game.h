@@ -851,6 +851,22 @@ public:
     double factionShareDividend(int factionIndex) const;   // Cr за акцию в год
     double factionBookAge(int factionIndex) const;         // сколько лет отчёту
     double playerShareValue() const;                       // весь портфель, Cr
+    // --- Сводка состояния (§40) ---------------------------------------------
+    // Всё, чем игрок владеет, в одном числе: кошельки всех бортов, счёт
+    // фракции (с тем, что ещё в пути), кассы колоний, портфель акций, экзотика
+    // в ячейках и оценка самих корпусов. Нужна не для механики, а для ответа
+    // на единственный вопрос поздней игры — «я вообще расту?».
+    struct NetWorth {
+        double wallets = 0.0;
+        double account = 0.0;
+        double inFlight = 0.0;
+        double vaults = 0.0;
+        double shares = 0.0;
+        double exotics = 0.0;
+        double hulls = 0.0;
+        double total = 0.0;
+    };
+    NetWorth playerNetWorth() const;
     double playerBuyShares(int factionIndex, double shares);
     double playerSellShares(int factionIndex, double shares);
     // Дивиденды за прошедшее время: идут на СЧЁТ фракции игрока и потому

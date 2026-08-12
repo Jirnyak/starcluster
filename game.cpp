@@ -7702,6 +7702,40 @@ double Game::playerShareValue() const {
     return total;
 }
 
+Game::NetWorth Game::playerNetWorth() const {
+    NetWorth w;
+    for (size_t i = 0; i < agents.size(); ++i) {
+        const Agent& a = agents[i];
+        if (!a.playerControlled) continue;
+        w.wallets += std::max(0.0, a.money);
+        for (int k = 0; k < EX_COUNT; ++k) {
+            if (a.ship.exotic[k] <= 0.0) continue;
+            // Экзотика оценивается ЗДЕСЬ, где борт стоит: увезённая к
+            // потребителю она стоит втрое, и делать вид, что это уже случилось,
+            // было бы враньём в свою пользу.
+            const double price = exoticPriceAt(a.currentStar, k);
+            w.exotics += a.ship.exotic[k] * (price > 0.0 ? price : exoticDefs()[size_t(k)].basePrice * 0.5);
+        }
+        // Корпус: цена класса из таблицы. Модули и переоснастка в неё не входят —
+        // они не продаются обратно, и записывать их в состояние было бы
+        // приписыванием несуществующего.
+        for (size_t c = 0; c < shipClasses().size(); ++c) {
+            if (shipClasses()[c].name != a.ship.name) continue;
+            w.hulls += shipClasses()[c].price;
+            break;
+        }
+    }
+    w.account = factionClearedTreasury(playerFaction);
+    w.inFlight = factionCreditsInFlight(playerFaction);
+    for (size_t i = 0; i < colonies.size(); ++i) {
+        if (!playerOwnsStar(colonies[i].starIndex)) continue;
+        w.vaults += std::max(0.0, colonies[i].localLedger);
+    }
+    w.shares = playerShareValue();
+    w.total = w.wallets + w.account + w.inFlight + w.vaults + w.shares + w.exotics + w.hulls;
+    return w;
+}
+
 double Game::playerBuyShares(int factionIndex, double shares) {
     resizeShareBooks();
     if (!validFaction(*this, factionIndex) || !(shares > 0.0)) return 0.0;

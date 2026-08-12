@@ -908,7 +908,13 @@ void drawContractRouteLine(SDL_Renderer* renderer, const Game& game, const Contr
     if (needMass > 0.0 && needMass > fleetMass + 0.001) {
         std::snprintf(fleetNote, sizeof(fleetNote), " FLEET %.0F/%.0F T", fleetMass, needMass);
     } else if (needMass > 0.0 && !cargoFits) {
-        std::snprintf(fleetNote, sizeof(fleetNote), " HOLD/HEAVY");
+        // ⚠️ Причина у серой кнопки бывает ДВЕ, и «HOLD/HEAVY» называло только
+        // одну. Заказ грузится только в ПУСТОЙ трюм (`agentContractCargoFits`),
+        // и чаще всего кнопка гаснет именно поэтому — а игрок читал «тяжело» и
+        // шёл покупать корпус побольше.
+        const bool holdBusy = game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()) &&
+                              !game.agents[size_t(game.playerAgent)].ship.cargo.empty();
+        std::snprintf(fleetNote, sizeof(fleetNote), holdBusy ? " EMPTY THE HOLD FIRST" : " HOLD TOO SMALL");
     }
 
     // (§37.3) Залог виден ДО взятия — иначе кнопка ACCEPT просто отказывала бы
@@ -2977,7 +2983,9 @@ void drawContractRow(SDL_Renderer* renderer, const Game& game, const Window& win
 
     char line[192];
     if (contractUsesCargo(contract.type)) {
-        std::snprintf(line, sizeof(line), "%s#%d %s %.0F %s > %s  CR %.0F  %.1FY",
+        // «250» — ЕДИНИЦЫ, а не масса; «85.3Y» — сколько осталось до срока.
+        // Ни то, ни другое подписано не было.
+        std::snprintf(line, sizeof(line), "%s#%d %s %.0FU %s > %s  %.0F CR  DUE %.0FY",
             contract.rushFactor > 1.01 ? "RUSH " : "",
             contract.id,
             validResource ? elements[contract.resource].symbol : "?",
@@ -2987,7 +2995,7 @@ void drawContractRow(SDL_Renderer* renderer, const Game& game, const Window& win
             contract.reward,
             yearsLeft);
         if (textWidth(line, 1) > button.x - x - 16) {
-            std::snprintf(line, sizeof(line), "#%d %s %.0F > %s CR%.0F %.1FY",
+            std::snprintf(line, sizeof(line), "#%d %s %.0FU > %s %.0FCR %.0FY",
                 contract.id,
                 validResource ? elements[contract.resource].symbol : "?",
                 contract.amount,
@@ -2996,7 +3004,7 @@ void drawContractRow(SDL_Renderer* renderer, const Game& game, const Window& win
                 yearsLeft);
         }
     } else {
-        std::snprintf(line, sizeof(line), "%s#%d %s %s > %s  CR %.0F  %.1FY",
+        std::snprintf(line, sizeof(line), "%s#%d %s %s > %s  %.0F CR  DUE %.0FY",
             contract.rushFactor > 1.01 ? "RUSH " : "",
             contract.id,
             contractTypeLabel(contract.type),
@@ -3307,7 +3315,30 @@ void drawTransactionsWindow(SDL_Renderer* renderer, const Game& game, const Wind
     
     int y = window.rect.y + TITLE_H + 12;
     int x = window.rect.x + 12;
-    
+
+    // (§40) СВОДКА СОСТОЯНИЯ. Всё, чем игрок владеет, в одном числе — иначе
+    // поздняя игра не отвечает на единственный вопрос, который в ней есть:
+    // «я вообще расту?». Деньги лежат в шести разных местах (кошельки бортов,
+    // счёт фракции, то что ещё летит светом, кассы колоний, портфель акций,
+    // экзотика в ячейках), и до этой строки сложить их было негде.
+    {
+        const Game::NetWorth w = game.playerNetWorth();
+        char line[220];
+        std::snprintf(line, sizeof(line), "NET WORTH %s CR", creditsLabel(w.total).c_str());
+        drawText(renderer, x, y, line, P.amber, 1);
+        y += 14;
+        std::snprintf(line, sizeof(line), "WALLETS %s   ACCOUNT %s   IN FLIGHT %s",
+                      creditsLabel(w.wallets).c_str(), creditsLabel(w.account).c_str(),
+                      creditsLabel(w.inFlight).c_str());
+        drawText(renderer, x, y, line, P.dim, 1);
+        y += 12;
+        std::snprintf(line, sizeof(line), "VAULTS %s   SHARES %s   EXOTICS %s   HULLS %s",
+                      creditsLabel(w.vaults).c_str(), creditsLabel(w.shares).c_str(),
+                      creditsLabel(w.exotics).c_str(), creditsLabel(w.hulls).c_str());
+        drawText(renderer, x, y, line, P.dim, 1);
+        y += 18;
+    }
+
     if (game.transactions.empty()) {
         drawText(renderer, x, y, "NO TRANSACTIONS RECORDED.", P.dim, 1);
         return;
@@ -3928,7 +3959,11 @@ std::string getTutorialText(const Game& game, int step, TutorialCue& cue, Visual
         case 2: cue.arrow = 1; return I18N::tr("You can view your balance here.");
         // Квота — главный таймер партии (§21), и до сих пор новелла о нём молчала:
         // игрок узнавал про отзыв лицензии только когда терминалы гасли.
-        case 3: cue.arrow = 6; return I18N::tr("The licence is a lease, not a gift. The banks audit it every period: pay the QUOTA out of your tariff or the terminals go dark. That counter is the real clock of your life here.");
+        // ⚠️ Реплика обязана называть ОБА пути. Квота первого периода торговлей
+        // в одиночку не берётся по замыслу (§21.1), а про кнопку «откупиться»
+        // не было сказано нигде — игрок узнавал об отзыве лицензии как о
+        // катастрофе, которой нельзя было избежать.
+        case 3: cue.arrow = 6; return I18N::tr("The licence is a lease, not a gift. The banks audit it every period: pay the QUOTA out of your tariff, or settle the rest in cash at the brokerage. Let it lapse and the terminals go dark.");
         case 4: return I18N::tr("You own 1 space ship unit for now.");
         case 5: cue.arrow = 2; return I18N::tr("My subagents will monitor its system states here.");
         case 6: {

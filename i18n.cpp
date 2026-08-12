@@ -73,8 +73,8 @@ const Entry EXACT[] = {
     {"Congratulations on obtaining your trading licence!",
      "Поздравляю с получением торговой лицензии!"},
     {"You can view your balance here.", "Твой баланс - вот здесь."},
-    {"The licence is a lease, not a gift. The banks audit it every period: pay the QUOTA out of your tariff or the terminals go dark. That counter is the real clock of your life here.",
-     "Лицензия - это аренда, а не подарок. Раз в период банки её проверяют: плати КВОТУ из тарифа, иначе терминалы погаснут. Этот счётчик - настоящие часы твоей жизни здесь."},
+    {"The licence is a lease, not a gift. The banks audit it every period: pay the QUOTA out of your tariff, or settle the rest in cash at the brokerage. Let it lapse and the terminals go dark.",
+     "Лицензия - это аренда, а не подарок. Раз в период банки её проверяют: плати КВОТУ из тарифа или доплати остаток на бирже. Прозеваешь - терминалы погаснут."},
     {"You own 1 space ship unit for now.", "Пока у тебя один корабль."},
     {"My subagents will monitor its system states here.",
      "Мои субагенты будут следить за его системами здесь."},
@@ -496,6 +496,8 @@ const Entry WORDS[] = {
     {"YEAR", "ГОД"},
     {"TOOK", "ВЗЯТ"},
     {"DUE", "СРОК"},
+    {"EMPTY THE HOLD FIRST", "СНАЧАЛА ОСВОБОДИТЕ ТРЮМ"},
+    {"HOLD TOO SMALL", "ТРЮМ МАЛ"},
     {"EXPIRED", "ПРОСРОЧЕН"},
     {"LATE", "С ОПОЗДАНИЕМ"},
     {"AVAILABLE IN CARGO", "ЕСТЬ В ТРЮМЕ"},
@@ -534,6 +536,7 @@ const Entry WORDS[] = {
     {"NEED LICENCE", "НУЖНА ЛИЦЕНЗИЯ"},
     // Залог за заказ (§37.3): в строке доски и в объяснении отказа.
     {"BOND", "ЗАЛОГ"},
+    {"DUE", "СРОК"},
     {"DEPOSIT TOO HIGH", "ЗАЛОГ НЕ ПО КАРМАНУ"},
     {"LICENCE REVOKED - BUY BACK", "ЛИЦЕНЗИЯ ОТОЗВАНА - ВЫКУП"},
 
@@ -605,6 +608,12 @@ const Entry WORDS[] = {
     // drawText УЖЕ собранной, и словарь видит подставленные числа. Формат-ключи
     // работают только там, где переводят САМ формат (реплики Тимертии).
     {"PORTFOLIO", "ПОРТФЕЛЬ"},
+    // Сводка состояния (§40): всё имущество игрока одной строкой.
+    {"NET WORTH", "СОСТОЯНИЕ"},
+    {"WALLETS", "КОШЕЛЬКИ"},
+    {"IN FLIGHT", "В ПУТИ"},
+    {"VAULTS", "КАССЫ"},
+    {"HULLS", "КОРПУСА"},
     {"REPORT", "ОТЧЁТ"},
     {"YOUR STANDING KEEPS IT FRESH", "ВАША РЕПУТАЦИЯ ДЕРЖИТ ЕГО СВЕЖИМ"},
     {"DIVIDENDS ARRIVE ON THE ACCOUNT AT THE SPEED OF LIGHT",
