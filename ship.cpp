@@ -890,6 +890,22 @@ void shipApplyChromocoreFactors(Ship& ship, double materials, double tactics, do
     }
 }
 
+void shipEmergencyPrime(Ship& ship, double share) {
+    if (share <= 0.0) return;
+    if (share > 1.0) share = 1.0;
+    const double fuelWant = shipFuelTankVolume(ship) * share;
+    if (listVolume(ship.fuel) < fuelWant) {
+        fillTank(ship.fuel, defaultFuelElement(ship.driveIndex), fuelWant, 1.0);
+    }
+    if (!driveUsesFuelAsPropellant(ship.driveIndex)) {
+        const double propWant = ship.propellantVolume * share;
+        if (listVolume(ship.propellant) < propWant) {
+            fillTank(ship.propellant, defaultPropellantElement(), propWant, 1.0);
+        }
+    }
+    shipTuneDrive(ship, 1.0, 1.0);
+}
+
 void shipTrimTanks(Ship& ship) {
     const double fuelCapacity = shipFuelTankVolume(ship);
     const double fuelUsed = listVolume(ship.fuel);

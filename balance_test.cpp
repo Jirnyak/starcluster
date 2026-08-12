@@ -2165,6 +2165,83 @@ void testInsightBurnsReactorFuel() {
           "просчёт по V стоит процент бака, на сухом молчит", buf);
 }
 
+// Корабль с сухими баками обязан быть СПАСЁН, а не заперт навсегда (§38).
+//
+// ⚠️ Это был единственный настоящий тупик игры. `X STOP` с пустыми баками:
+// `shipConsumeForDeltaV` возвращает ноль, скорость не падает никогда,
+// `enRoute` остаётся true вечно, а на нём завязано всё — покупка, продажа,
+// добыча, заказы, верфь. Выхода не было вообще, только новая партия.
+void testStrandedShipGetsTowed() {
+    Game g;
+    buildWorld(g, 5959, 10);
+    const int pa = g.playerAgent;
+    Agent& p = g.agents[pa];
+
+    // Разгоняем корабль и осушаем баки: тормозить нечем.
+    p.ship.enRoute = true;
+    p.ship.targetStar = -2;          // режим экстренной остановки
+    p.ship.vx = 0.05; p.ship.vy = 0.0; p.ship.vz = 0.0;
+    p.ship.fuel.clear();
+    p.ship.propellant.clear();
+    p.currentStar = -1;
+    p.money = 20000.0;
+    p.ship.cargo.clear();
+    p.ship.cargo.emplace_back("Fe", 40.0);
+    const double moneyBefore = p.money;
+    const double cargoBefore = p.ship.cargo.empty() ? 0.0 : p.ship.cargo[0].amount;
+
+    for (int y = 0; y < 40 && g.agents[pa].ship.enRoute; ++y) g.update(1.0);
+
+    const Agent& after = g.agents[pa];
+    const double cargoAfter = after.ship.cargo.empty() ? 0.0 : after.ship.cargo[0].amount;
+    const bool freed = !after.ship.enRoute && after.currentStar >= 0;
+    const bool paid = after.money < moneyBefore * 0.9;
+    const bool lostCargo = cargoAfter < cargoBefore * 0.9;
+    const bool canFly = shipFuelMass(after.ship) > 0.0;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "освобождён %s (система %d), кошелёк %.0f -> %.0f, груз %.0f -> %.0f, топливо на борту %.2f",
+        freed ? "да" : "НЕТ", after.currentStar, moneyBefore, after.money,
+        cargoBefore, cargoAfter, shipFuelMass(after.ship));
+    check(freed && paid && lostCargo && canFly, "застрявший корабль вытаскивает буксир", buf);
+}
+
+// Дробление партии не должно печатать хромокоры (§34).
+//
+// ⚠️ Замер, похоронивший первую версию: очки начислялись НА КАЖДЫЙ ВЫЗОВ
+// продажи со слагаемым, не зависящим от объёма, а нижний порог сделки — сотая
+// единицы. Одна партия давала 1.10 очка целиком и 100.11 очка, если продавать
+// её по половинке за клик. Годовой накопитель от дробления не зависит.
+void testInsightIgnoresLotSplitting() {
+    const double sold = 60.0;
+    double research[2] = {0.0, 0.0};
+    for (int mode = 0; mode < 2; ++mode) {
+        Game g;
+        buildWorld(g, 2718, 30);
+        const int pa = g.playerAgent;
+        g.agents[pa].money = 500000.0;
+        g.agentBuyElementAmount(pa, 25, sold);
+        // Перевозим в соседнюю систему, чтобы продажа была прибыльной.
+        g.agents[pa].currentStar = (g.agents[pa].currentStar + 3) % int(g.cluster.stars.size());
+        g.tradeInsightPending = 0.0;
+        g.tech.research = 0.0;
+        if (mode == 0) {
+            g.agentSellCargoAmount(pa, 1.0e9, 25);
+        } else {
+            for (int i = 0; i < 120; ++i) g.agentSellCargoAmount(pa, 0.5, 25);
+        }
+        for (int y = 0; y < 3; ++y) g.update(1.0);   // годовая сводка
+        research[mode] = g.tech.research + g.tech.cores * 100.0;
+    }
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "одной партией %.2f, по половинке %.2f (отношение %.2f)",
+                  research[0], research[1],
+                  research[0] > 0.0 ? research[1] / research[0] : 0.0);
+    check(research[0] > 0.0 && research[1] < research[0] * 1.35,
+          "дробление партии не печатает исследования", buf);
+}
+
 // Залог за заказ: провал обязан стоить ДЕНЕГ, а не одной репутации (§37.3).
 //
 // ⚠️ Проверяются оба конца сразу. Верхний: залог возвращается при сдаче и
@@ -2222,8 +2299,17 @@ void testJobBondBurnsOnFailure() {
     const double afterTake = g.agents[pa].money;
 
     // Проваливаем: прокручиваем мир далеко за срок и льготу.
-    for (int y = 0; y < 900 && !jobById(g, jobId)->failed; ++y) g.update(1.0);
-    const bool failed = jobById(g, jobId)->failed;
+    //
+    // ⚠️ Заказ могут снять с доски целиком, поэтому «провалился» — это либо
+    // поднятый флаг, либо исчезновение записи. Прежняя форма разыменовывала
+    // указатель без проверки и читала мусор, когда запись удаляли.
+    auto jobGone = [&](void) -> bool {
+        const Contract* c = jobById(g, jobId);
+        return c == NULL || c->failed || c->completed;
+    };
+    for (int y = 0; y < 1200 && !jobGone(); ++y) g.update(1.0);
+    const Contract* endState = jobById(g, jobId);
+    const bool failed = endState == NULL || endState->failed;
     const double afterFail = g.agents[pa].money;
 
     char buf[240];
@@ -2847,6 +2933,8 @@ int main() {
     testAntimatterBurnsWithTheFuel();
     testForgePicksTheStat();
     testRefitSurvivesHullAndSave();
+    testStrandedShipGetsTowed();
+    testInsightIgnoresLotSplitting();
     testJobBondBurnsOnFailure();
     testGrownColonyOutgrowsItsMarket();
     testFleetAutopilotEarnsAndKeepsDeterminism();

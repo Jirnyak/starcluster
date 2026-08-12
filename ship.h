@@ -212,6 +212,12 @@ double shipDrainPropellant(Ship& ship, int elementIdx, double units);
 // Сливает за борт то, что перестало влезать после смены баков или движка.
 void shipTrimTanks(Ship& ship);
 
+// Аварийная заправка «на дорогу» (§38): доливает бункер и бак дефолтными
+// веществами до доли `share` от ёмкости, если они пусты. Нужна буксиру:
+// корабль, которого притащили в порт без единой капли, встал бы ровно так же
+// на следующем плече, и буксир превратился бы в бесконечную петлю.
+void shipEmergencyPrime(Ship& ship, double share = 0.25);
+
 void shipAutofit(Ship& ship);
 
 struct ShipClass;

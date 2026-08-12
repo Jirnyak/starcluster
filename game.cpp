@@ -2171,11 +2171,23 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
     }
     agent.lastProfit = gross - fee - licenceFee - costShare;
     // (§34) Удачная сделка — тоже знание: рейс проверил модель рынка на деле.
-    // Логарифм намеренно: рост капитала на порядки не должен превращать
-    // прокачку в формальность, поэтому миллионный куш даёт вдвое больше
-    // тысячного, а не в тысячу раз.
-    if (agent.playerControlled && agent.lastProfit > 0.0) {
-        game.addResearch(1.0 + 2.0 * std::log10(1.0 + agent.lastProfit / 1000.0));
+    //
+    // ⚠️ Прибыль КОПИТСЯ и превращается в очки раз в год (`Game::update`), а не
+    // начисляется тут же. Сразу было написано «начислить логарифм от прибыли», и
+    // замер это похоронил: слагаемое не зависело от объёма, а нижний порог
+    // сделки — сотая единицы. Одна партия в 100 единиц давала 1.10 очка целиком
+    // и 100.11 очка, если продавать её по половинке за клик, — то есть готовое
+    // ядро за тридцать секунд кликанья. Логарифм, поставленный ради того, чтобы
+    // куш не давал в тысячу раз больше, обходился с другой стороны — дроблением.
+    // Годовой накопитель от дробления не зависит по построению.
+    //
+    // ⚠️ И только у КАПИТАНА (`agentIndex == playerAgent` проверяется в
+    // накопителе): борт под автопилотом (§35) не исследует ничего. Иначе
+    // `addResearch` на пороге дёргает `randomer(rng, …)`, и один поднятый флаг
+    // сдвигал бы весь дальнейший мир — то самое §2.3, ради которого автопилот и
+    // писался отдельной функцией.
+    if (agent.playerControlled && !agent.autoTrade && agent.lastProfit > 0.0) {
+        game.tradeInsightPending += agent.lastProfit;
     }
     agent.cargoCost = std::max(0.0, agent.cargoCost - costShare);
     agent.trades += 1;
@@ -2852,19 +2864,53 @@ void updateFleetTrader(Game& game, int agentIndex, Agent& agent, double dt) {
     if (game.licenceRevoked) { agent.missionCooldown = 1.0; return; }
     if (!validStar(game, agent.currentStar)) return;
     // В собственной системе всё даром (§13), а `findBestTrade` считает по
-    // рыночным ценам и потому оценивает такой рейс неверно. Автопилот из своей
-    // колонии не торгует — насос из собственного склада это не торговля.
-    if (freeMarketFor(game, agent, agent.currentStar)) { agent.missionCooldown = 1.0; return; }
+    // рыночным ценам и потому оценивает такой рейс неверно — насос из
+    // собственного склада это не торговля.
+    //
+    // ⚠️ Но «не торговать» не значит «стоять вечно». Сначала здесь был просто
+    // выход по таймеру, и замер показал цену такой лаконичности: `freeMarketFor`
+    // истинна для ЛЮБОГО борта игрока в его системе, а систему покупают обычно
+    // там, где флот и стоит, — то есть кнопка AUTO после покупки дома переставала
+    // делать что-либо навсегда и молча (400 лет, 0 сделок против 4 у того же
+    // мира без покупки). Поэтому отсюда УЛЕТАЮТ: к ближайшему известному
+    // чужому рынку, где торговать уже можно.
+    if (freeMarketFor(game, agent, agent.currentStar)) {
+        agent.missionCooldown = 1.0;
+        int nearest = -1;
+        double bestD2 = 1e300;
+        const ClusterStar& from = game.cluster.stars[size_t(agent.currentStar)];
+        for (size_t st = 0; st < game.cluster.stars.size(); ++st) {
+            if (int(st) == agent.currentStar) continue;
+            if (!game.factionKnowsMarketAt(agent.ship.ownerFaction, agent.currentStar, int(st))) continue;
+            if (game.playerOwnsStar(int(st))) continue;
+            const ClusterStar& to = game.cluster.stars[st];
+            const double dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+            const double d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < bestD2) { bestD2 = d2; nearest = int(st); }
+        }
+        if (nearest >= 0) {
+            startJourney(game, agent, nearest);
+            agent.lastAction = "auto: leaving home port";
+        } else {
+            agent.lastAction = "auto: nowhere to trade";
+        }
+        return;
+    }
 
     sellCargo(game, agent, agent.currentStar);
 
     const TradePlan plan = findBestTrade(game, agent);
+    // ⚠️ Пауза ставится В ЛЮБОМ исходе. Раньше она стояла только в ветке «плана
+    // нет», и провалившийся `startJourney` (маршрут не строится, плечо
+    // нефизично) оставлял борт покупать и продавать одно и то же на одном рынке
+    // каждый такт, пока пошлины не съедят кошелёк. У NPC это тратило деньги NPC,
+    // а тут — деньги игрока.
+    agent.missionCooldown = 0.25;   // константа: ни бита из глобального rng
     if (plan.destStar >= 0 && plan.elementIndex >= 0) {
         buyCargo(game, agent, agent.currentStar, plan);
         if (!agent.ship.cargo.empty()) startJourney(game, agent, plan.destStar);
         agent.lastAction = "auto: hauling";
     } else {
-        agent.missionCooldown = 0.25;   // константа: ни бита из глобального rng
         agent.lastAction = "auto: watching market";
     }
 }
@@ -4236,10 +4282,35 @@ bool Game::loadFromFile(const std::string& path) {
             loaded.shareCostBasis[f] = basis;
         }
 
-        if (!expectTag(in, "EXOTIC") ||
-            !(in >> count >> loaded.coresForged)) {
+        // ⚠️ Формат строки СМЕНИЛСЯ между 16 и 17: версия 16 писала сюда
+        // `containmentLevel` и `hullPlating` (тогда они жили в партии, §31.4),
+        // версия 17 пишет `coresForged`. Поле не дописано и не выделено, а
+        // ЗАМЕНЕНО на том же теге — третий способ сломать совместимость, и
+        // единственный, который правило «новое поле отдельным блоком или новой
+        // версией» не покрывает. Без этой развилки сейв 16 с непустым списком
+        // рынков экзотики не грузился вовсе.
+        if (!expectTag(in, "EXOTIC") || !(in >> count)) {
             lastEvent = "load failed: exotics";
             return false;
+        }
+        if (version >= 17) {
+            if (!(in >> loaded.coresForged)) {
+                lastEvent = "load failed: forged cores";
+                return false;
+            }
+        } else {
+            // Версия 16: два числа, которые с тех пор переехали на корпус.
+            // Ступени восстанавливаем на ПИЛОТИРУЕМЫЙ борт — другого владельца
+            // у них тогда и не было.
+            int oldBay = 0, oldPlating = 0;
+            if (!(in >> oldBay >> oldPlating)) {
+                lastEvent = "load failed: legacy refit";
+                return false;
+            }
+            if (loaded.playerAgent >= 0 && loaded.playerAgent < int(loaded.agents.size())) {
+                loaded.agents[size_t(loaded.playerAgent)].ship.containmentLevel = oldBay;
+                loaded.agents[size_t(loaded.playerAgent)].ship.platingLayers = oldPlating;
+            }
         }
         loaded.exoticStocks.clear();
         loaded.exoticStocks.reserve(count);
@@ -4540,6 +4611,8 @@ void Game::init(size_t num_stars) {
     playerShieldFrac = 1.0;
     exoticStocks.clear();
     coresForged = 0;
+    tradeInsightPending = 0.0;
+    tradeInsightTimer = 0.0;
     factionBook.clear();
     factionIncome.clear();
     factionBookAt.clear();
@@ -4895,6 +4968,16 @@ void Game::update(double dt) {
     processSignals();
     updateAnomalies(dt);
     updateLicence(dt);
+    // (§34) Годовая сводка прибыли -> очки исследований. Раз в год, а не на
+    // каждую продажу: см. комментарий в `sellCargo` про дробление партии.
+    tradeInsightTimer += dt;
+    if (tradeInsightTimer >= 1.0) {
+        if (tradeInsightPending > 0.0) {
+            addResearch(2.0 * std::log10(1.0 + tradeInsightPending / 1000.0));
+            tradeInsightPending = 0.0;
+        }
+        tradeInsightTimer = 0.0;
+    }
     // Свет дошёл до края скопления — приход стал доступен к трате где угодно.
     // Список короткий (по одной записи на взнос), поэтому чистка тривиальна.
     if (!creditFloat.empty()) {
@@ -5043,7 +5126,9 @@ void Game::updateColonies(double dt) {
         // которого она выросла, и петля «вложился в колонию → она больше
         // производит» была разомкнута. Пересчёт срабатывает ступенькой, при
         // расхождении масштаба на 5%, — не работа на каждый тик.
-        if (market.rescale(star.population, star.industry)) {
+        // Новость — только про СВОИ колонии: ростом чужих лента забивалась
+        // одной и той же строкой на длинной партии.
+        if (market.rescale(star.population, star.industry) && playerOwnsStar(colony.starIndex)) {
             pushNews(star.name + " has outgrown its old market", 1);
         }
 
@@ -5058,7 +5143,29 @@ void Game::updateColonies(double dt) {
             ConstructionItem& item = colony.constructionQueue.front();
             const double spend = std::min(colony.localLedger, std::max(1.0, item.cost * 0.08) * dt);
             colony.localLedger -= spend;
-            item.progress += spend;
+            // (§37.5) Привезённые материалы ИДУТ В ДЕЛО. `Colony::stockpile`
+            // копился с поставок (`applyColonySupplyDelivery`) и не тратился
+            // никогда: заказ «привезти колонии металл» кончался тем, что металл
+            // ложился в вечную кучу, а стройка всё равно шла за деньги. Теперь
+            // склад ускоряет стройку — вдвое, если материалов на весь остаток, —
+            // и на это же и расходуется. Так доставка становится вкладом, а не
+            // жестом вежливости.
+            double boost = 0.0;
+            if (!colony.stockpile.empty() && colony.stockpileValue > 0.0) {
+                const double want = std::min(colony.stockpileValue, spend);
+                const double share = want / std::max(1e-9, colony.stockpileValue);
+                for (size_t r = 0; r < colony.stockpile.size(); ) {
+                    colony.stockpile[r].amount *= (1.0 - share);
+                    if (colony.stockpile[r].amount <= 1e-6) {
+                        colony.stockpile.erase(colony.stockpile.begin() + long(r));
+                    } else {
+                        ++r;
+                    }
+                }
+                colony.stockpileValue = std::max(0.0, colony.stockpileValue - want);
+                boost = want;
+            }
+            item.progress += spend + boost;
             if (item.progress >= item.cost) {
                 colonyApplyConstructionEffect(colony, item);
                 colony.constructionQueue.erase(colony.constructionQueue.begin());
@@ -5184,7 +5291,8 @@ void Game::updateFactions(double dt) {
     resizeShareBooks();
     if (!factions.empty()) {
         factionBookCursor %= int(factions.size());
-        publishFactionBook(factionBookCursor);
+        const int published = factionBookCursor;
+        publishFactionBook(published);
         factionBookCursor = (factionBookCursor + 1) % int(factions.size());
         // (§37.1) РЕПУТАЦИЯ ОТКРЫВАЕТ КНИГИ. У доверенного возчика отчёт всегда
         // свежий: он и есть тот, кто возит их грузы и видит их склады изнутри.
@@ -5193,11 +5301,20 @@ void Game::updateFactions(double dt) {
         // она копилась до потолка 1000 и упиралась в звание. А отставание
         // котировки от жизни (§33) — главное, чем биржа вообще интересна:
         // знать раньше рынка и есть заработок.
-        for (size_t f = 0; f < factions.size(); ++f) {
-            if (int(f) == factionBookCursor) continue;   // эту уже обновили выше
-            if (factionJobTier(int(f)) < SHARE_INSIDER_TIER) continue;
-            publishFactionBook(int(f));
+        // ⚠️ Не больше ОДНОЙ дополнительной книги за такт. Смысл курсора — в
+        // амортизации: проход по всем системам державы стоит `systemTurnover` на
+        // каждую, а у доверенного возчика инсайдерских держав может оказаться
+        // хоть пять. Круг по инсайдерам идёт своим курсором, поэтому свежесть
+        // сохраняется, а цена такта — нет.
+        int insider = -1;
+        for (size_t k = 0; k < factions.size(); ++k) {
+            const int f = (published + 1 + int(k)) % int(factions.size());
+            if (f == published) continue;                // эту уже обновили выше
+            if (factionJobTier(f) < SHARE_INSIDER_TIER) continue;
+            insider = f;
+            break;
         }
+        if (insider >= 0) publishFactionBook(insider);
     }
     payShareDividends(1.0);
 
@@ -5385,6 +5502,49 @@ void Game::processSignals() {
     }
 }
 
+// (§38) Буксир для корабля, которому нечем тормозить.
+//
+// Берёт долю кошелька и половину трюма, ставит корабль в БЛИЖАЙШУЮ систему и
+// заливает по глотку обоих расходников — ровно столько, чтобы можно было
+// доползти до рынка, а не столько, чтобы происшествие ничего не стоило.
+void towStrandedShip(Game& game, int agentIndex) {
+    if (agentIndex < 0 || agentIndex >= int(game.agents.size())) return;
+    Agent& agent = game.agents[size_t(agentIndex)];
+    if (game.cluster.stars.empty()) return;
+
+    int nearest = -1;
+    double bestD2 = 1e300;
+    for (size_t s = 0; s < game.cluster.stars.size(); ++s) {
+        const ClusterStar& st = game.cluster.stars[s];
+        const double dx = st.x - agent.ship.x, dy = st.y - agent.ship.y, dz = st.z - agent.ship.z;
+        const double d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; nearest = int(s); }
+    }
+    if (nearest < 0) return;
+
+    const double fee = std::max(0.0, agent.money) * TOW_CREDIT_SHARE;
+    agent.money -= fee;
+    for (size_t c = 0; c < agent.ship.cargo.size(); ++c) {
+        agent.ship.cargo[c].amount *= (1.0 - TOW_CARGO_SHARE);
+    }
+    const ClusterStar& port = game.cluster.stars[size_t(nearest)];
+    agent.ship.x = port.x; agent.ship.y = port.y; agent.ship.z = port.z;
+    agent.ship.vx = agent.ship.vy = agent.ship.vz = 0.0;
+    agent.ship.enRoute = false;
+    agent.ship.targetStar = -1;
+    agent.currentStar = nearest;
+    agent.destStar = nearest;
+    agent.missionCooldown = 0.0;
+    // Глоток «на дорогу»: без него корабль встанет ровно так же на следующем
+    // же плече, и буксир превратится в бесконечную петлю.
+    shipEmergencyPrime(agent.ship);
+    agent.lastAction = "towed in";
+    if (agent.playerControlled) {
+        game.lastEvent = "towed to " + port.name + " - the tug took its share";
+        game.pushNews("Distress call answered: towed to " + port.name, 0);
+    }
+}
+
 void Game::updateAgents(double dt) {
     for (size_t i = 0; i < agents.size(); ++i) {
         Agent& agent = agents[i];
@@ -5411,6 +5571,15 @@ void Game::updateAgents(double dt) {
                         agent.ship.vx -= agent.ship.vx / speed * brake;
                         agent.ship.vy -= agent.ship.vy / speed * brake;
                         agent.ship.vz -= agent.ship.vz / speed * brake;
+                        agent.missionCooldown = 0.0;   // тормозим — счётчик дрейфа сбрасываем
+                    } else {
+                        // (§38) Тормозить НЕЧЕМ. Считаем годы беспомощного
+                        // дрейфа и после TOW_WAIT_YEARS зовём буксир: иначе
+                        // корабль летел бы в пустоту вечно, а с ним и партия.
+                        agent.missionCooldown += dt;
+                        if (agent.missionCooldown >= TOW_WAIT_YEARS) {
+                            towStrandedShip(*this, int(i));
+                        }
                     }
                     agent.ship.x += agent.ship.vx * dt;
                     agent.ship.y += agent.ship.vy * dt;
@@ -7942,19 +8111,31 @@ bool Game::playerSetAutoTrade(int agentIndex, bool on) {
 bool Game::markLocalBountyTarget(int agentIndex) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
     bool marked = false;
+    // Два прохода: сперва заказ, взятый ИГРОКОМ, потом любой свободный. Иначе
+    // выбор зависел бы от порядка на доске, а не от того, что игрок сделал.
+    for (int pass = 0; pass < 2 && !marked; ++pass) {
     for (size_t i = 0; i < contracts.size(); ++i) {
         Contract& c = contracts[i];
         if (c.completed || c.failed) continue;
         if (c.type != ContractType::Bounty) continue;
         if (c.targetAgent != agentIndex) continue;
+        if (pass == 0 && c.acceptedByAgent != playerAgent) continue;
+        if (pass == 1 && c.acceptedByAgent >= 0) continue;
         // Ничей заказ или ВЗЯТЫЙ ИГРОКОМ. Если игрок сбил пирата раньше, чем
         // взял заказ, доска обязана это признать — иначе награда зависела бы от
         // порядка нажатий. Но заказ, который везёт конкурент, чужой: закрывать
         // его чужой работой значило бы платить NPC за то, чего он не делал.
-        if (c.acceptedByAgent >= 0 && c.acceptedByAgent != playerAgent) continue;
         c.targetDown = true;
         c.progress = std::max(c.progress, 0.9);
         marked = true;
+        // ⚠️ РОВНО ОДИН заказ за убийство. Заказы на голову выписываются
+        // независимо разными системами, и на одного пирата их может висеть
+        // несколько: без выхода одно убийство закрывало бы их все разом, то
+        // есть платило бы несколько наград за одно дело. Взятый игроком идёт
+        // первым (он его и брал), потому что цикл встречает его раньше только
+        // при равных условиях — поэтому сперва ищем именно его.
+        break;
+    }
     }
     if (marked) pushNews("Bounty target destroyed - claim it at the board", 2);
     return marked;
@@ -8348,7 +8529,12 @@ void Game::observeStar(int starIndex) {
     // не получал НИ ОДНОГО хромокора за всю партию, а прокачка доставалась
     // тому, кто стреляет. Новый рынок в модели — это новые данные, и цена у
     // них та же, что у обломка в поясе.
-    const bool freshMarket = validStar(*this, starIndex) && !playerKnowsMarket(starIndex);
+    // ⚠️ Спрашиваем ЗАПИСЬ ЗНАНИЯ напрямую, а не `playerKnowsMarket`: тот мерит
+    // знание ОТ ТЕКУЩЕЙ ЗВЕЗДЫ ИГРОКА, а `observeStar` зовётся ровно для неё —
+    // и `factionKnowsMarketAt(f, X, X)` возвращает true безусловно. Условие было
+    // ложным всегда, и обещанные «+3 за новый рынок» не начислялись ни разу.
+    const bool freshMarket = validStar(*this, starIndex) &&
+                             !factionKnowsMarket(playerFaction, starIndex);
     observeStarForFaction(playerFaction, starIndex);
     observeMarketForFaction(playerFaction, starIndex);
     absorbLocalSignalsForFaction(playerFaction, starIndex, true);
