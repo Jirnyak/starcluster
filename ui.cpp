@@ -1203,6 +1203,17 @@ SDL_Rect holdTakeRect(const Window& window) {
     return r;
 }
 
+// (§35) Тумблер автопилота соседнего борта. Место выбрано не случайно: он
+// действует на `playerOtherShipHere()`, а тот по определению стоит рядом, —
+// значит физически невозможно поставить под автопилот борт, который сейчас в
+// полёте, и незачем отдельно это проверять в интерфейсе.
+SDL_Rect holdAutoRect(const Window& window) {
+    SDL_Rect r = holdGiveRect(window);
+    r.y -= 28;
+    r.w = 188;
+    return r;
+}
+
 // Кнопка «за борт»: единственный выход, если перегрузился вдали от рынка.
 SDL_Rect holdJettisonRect(const Window& window, int row) {
     SDL_Rect r;
@@ -1252,6 +1263,11 @@ bool handleCargoWindowMouseDown(WindowState& state, Game& game, const Window& wi
     }
     if (contains(holdTakeRect(window), mouseX, mouseY)) {
         game.playerTransferCredits(amount, false);
+        return true;
+    }
+    if (contains(holdAutoRect(window), mouseX, mouseY)) {
+        const int mate = game.playerOtherShipHere();
+        if (mate >= 0) game.playerSetAutoTrade(mate, !game.agents[mate].autoTrade);
         return true;
     }
     {
@@ -1776,6 +1792,16 @@ void openExchangeWindow(WindowState& state, int starIndex, int screenW, int scre
 // а повторное посещение системы обновляет её запись в базе знаний, и сводка обязана
 // это подхватить). Два года игрового времени = две секунды на скорости x1.
 void updateExchangeBoard(WindowState& state, const Game& game) {
+    const int docked = playerMarketStar(game);
+    // Хайтек-этаж следует за кораблём: покупает он по системе СТОЯНКИ, а
+    // показывать обязан её же. Иначе игрок, глядя на цену дальнего рынка,
+    // покупал бы по цене своего. Стоит ВЫШЕ раннего выхода: окно экзотики
+    // живёт само по себе и от биржи не зависит.
+    for (size_t i = 0; i < state.windows.size(); ++i) {
+        Window& w = state.windows[i];
+        if (w.kind == WindowKind::Exotics && docked >= 0 && game.exoticMarketAt(docked)) w.star = docked;
+    }
+
     Window* exchange = nullptr;
     for (Window& w : state.windows) {
         if (w.kind == WindowKind::Exchange) { exchange = &w; break; }
@@ -1786,7 +1812,6 @@ void updateExchangeBoard(WindowState& state, const Game& game) {
     // после перелёта окно продолжало показывать прежнюю систему: котировки покупки
     // считались чужими, список пропадал, а снимок текущей системы (который игра
     // обновляет каждый тик, пока корабль стоит) в сводку не попадал.
-    const int docked = playerMarketStar(game);
     if (docked >= 0 && exchange->star != docked) {
         exchange->star = docked;
         exchange->scrollOffset = 0;
@@ -1852,8 +1877,11 @@ bool handleExchangeWindowMouseDown(WindowState& state, Game& game, const Window&
                 return true;
             }
         }
-        // Поле объёма и кнопки счёта в режиме акций работают как обычно —
-        // именно ими игрок и задаёт, сколько акций брать.
+        // Ниже в режиме акций НЕ рисуется ничего: ни лицензии, ни счёт, ни
+        // фильтр по элементам — `drawExchangeWindow` выходит раньше. Значит и
+        // кликов там быть не может: без этого `return` клик по пустому месту
+        // молча покупал лицензию или переводил деньги на счёт.
+        return true;
     }
     if (contains(layout.elementsBtn, mouseX, mouseY)) {
         // Один тумблер: показать таблицу для выбора элемента, а если фильтр уже
@@ -2353,7 +2381,7 @@ void drawExoticsWindow(SDL_Renderer* renderer, const Game& game, const Window& w
 
     const double bayPrice = game.containmentNextPrice();
     if (bayPrice > 0.0) {
-        std::snprintf(line, sizeof(line), "BAY %d %s", game.containmentLevel + 1,
+        std::snprintf(line, sizeof(line), "BAY %d %s", game.playerRefitLevel(false) + 1,
                       creditsLabel(bayPrice).c_str());
     } else {
         std::snprintf(line, sizeof(line), "BAY MAXED");
@@ -2365,7 +2393,7 @@ void drawExoticsWindow(SDL_Renderer* renderer, const Game& game, const Window& w
     const bool canPlate = ship && onSite && shipyard >= 2 && platePrice > 0.0 &&
                           cash >= platePrice && ship->exotic[EX_NEUTRONIUM] >= PLATING_NEUTRONIUM_UNITS;
     if (platePrice > 0.0) {
-        std::snprintf(line, sizeof(line), "PLATE %d: %.0F NM", game.hullPlating + 1,
+        std::snprintf(line, sizeof(line), "PLATE %d: %.0F NM", game.playerRefitLevel(true) + 1,
                       PLATING_NEUTRONIUM_UNITS);
     } else {
         std::snprintf(line, sizeof(line), "PLATING MAXED");
@@ -2384,6 +2412,11 @@ bool handleExoticsWindowMouseDown(WindowState& state, Game& game, const Window& 
                                   HudSelection& selection, int mouseX, int mouseY, int button) {
     const ExoticsLayout layout = exoticsLayout(window);
     const double amount = tradeRequestedAmount(state);
+    // Все действия окна работают по системе, ГДЕ СТОИТ КОРАБЛЬ, а показывает
+    // окно ту, что открыли. Кнопки в чужой системе нарисованы серыми — значит
+    // и кликаться не должны, иначе игрок, глядя на цену дальнего рынка, купил
+    // бы по цене своего.
+    const bool onSite = game.playerAtStar(window.star);
 
     if (button == SDL_BUTTON_LEFT && contains(layout.amount, mouseX, mouseY)) {
         state.tradeAmountEditing = true;
@@ -2395,6 +2428,7 @@ bool handleExoticsWindowMouseDown(WindowState& state, Game& game, const Window& 
         SDL_StopTextInput();
     }
 
+    if (!onSite) return true;
     for (int k = 0; k < EX_COUNT; ++k) {
         if (contains(layout.buy[k], mouseX, mouseY)) {
             if (game.playerBuyExotic(k, amount) > 0.0) selection.agent = game.playerAgent;
@@ -3476,6 +3510,11 @@ void drawCargoWindow(SDL_Renderer* renderer, const Game& game, const Window& win
                       creditsLabel(game.agents[mate].money).c_str());
         drawText(renderer, holdGiveRect(window).x, holdGiveRect(window).y - 13, line, P.dim, 1);
     }
+    // (§35) Автопилот соседнего борта: купленный корпус перестаёт быть мебелью.
+    const bool mateAuto = mate >= 0 && game.agents[mate].autoTrade;
+    drawButton(renderer, holdAutoRect(window),
+               mateAuto ? "AUTOPILOT ON" : "AUTOPILOT OFF",
+               mateAuto ? P.green : P.dim, mate >= 0);
 
     // Поле шага: сколько двигает ОДНО нажатие стрелки. То же число, что AMOUNT
     // в окне торговли, — одно понятие на все операции с веществом.
@@ -3565,30 +3604,67 @@ static void drawShipTechPanel(SDL_Renderer* renderer, const Game& game, int x, i
 static void drawObjectivesPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w) {
     struct Obj { const char* text; bool done; };
     std::vector<Obj> objs;
-    if (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size())) {
-        const Agent& p = game.agents[game.playerAgent];
-        const Ship& sh = p.ship;
-        objs.push_back({"TRADE: BUY (B) / SELL (Q)", p.trades > 0});
-        // Локальный полёт — самая зрелищная часть игры и при этом дальше всего
-        // от глаз новичка: без явной цели о клавише L никто не узнаёт.
-        objs.push_back({"FLY THE SYSTEM: PRESS L", game.everEnteredLocal});
-        objs.push_back({"UPGRADE: SHIPYARD (U)", !sh.modules.empty()});
-        objs.push_back({"RESEARCH A CHROMOCORE", game.tech.cores > 0});
-        bool anomalyKnown = false;
-        for (size_t i = 0; i < game.anomalies.size(); ++i) {
-            if (game.anomalies[i].discovered && !game.anomalies[i].resolved) { anomalyKnown = true; break; }
+    if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) return;
+    const Agent& p = game.agents[game.playerAgent];
+    const Ship& sh = p.ship;
+
+    // ЛЕСТНИЦА, а не список. Раньше здесь лежали четыре пункта, и после них
+    // игра не ставила целей никогда: про заказы, про покупку системы, про
+    // экзотику и про акции игрок мог узнать только случайно. Панель показывает
+    // окно вокруг первой незакрытой ступени — последнюю взятую и то, что
+    // дальше, — поэтому она остаётся короткой, но никогда не кончается.
+    double repTotal = 0.0;
+    for (size_t f = 0; f < game.factionReputation.size(); ++f) repTotal += game.factionReputation[f];
+
+    objs.push_back({"TRADE: BUY (B) / SELL (Q)", p.trades > 0});
+    // Локальный полёт — самая зрелищная часть игры и при этом дальше всего
+    // от глаз новичка: без явной цели о клавише L никто не узнаёт.
+    objs.push_back({"FLY THE SYSTEM: PRESS L", game.everEnteredLocal});
+    objs.push_back({"UPGRADE: SHIPYARD (U)", !sh.modules.empty()});
+    objs.push_back({"SURVEY 10 MARKETS", game.playerSurveyedMarketCount() >= 10});
+    objs.push_back({"TAKE A JOB: JOBS BOARD", repTotal > 0.0});
+    objs.push_back({"RESEARCH A CHROMOCORE", game.tech.cores > 0});
+    objs.push_back({"MEET THE LICENCE QUOTA", game.licencePeriodsMet > 0});
+    objs.push_back({"BUY A SECOND HULL (E)", game.playerShipCount() > 1});
+    objs.push_back({"BUY A SYSTEM (C)", game.boughtSystems > 0});
+    objs.push_back({"FIT A CONTAINMENT BAY (Y)", game.playerRefitLevel(false) > 0});
+    objs.push_back({"RUN EXOTIC MATTER (Y)", !game.exoticStocks.empty()});
+    objs.push_back({"FORGE A CORE YOU CHOSE (Y)", game.coresForged > 0});
+    objs.push_back({"BUY INTO A POWER (E)", game.playerShareValue() > 0.0});
+    objs.push_back({"PLATE THE HULL IN NEUTRONIUM", game.playerRefitLevel(true) > 0});
+
+    // Срочное — поверх лестницы: это не прогресс, а «сделай сейчас».
+    std::vector<Obj> urgent;
+    for (size_t i = 0; i < game.anomalies.size(); ++i) {
+        if (game.anomalies[i].discovered && !game.anomalies[i].resolved) {
+            urgent.push_back({"SCAN ANOMALY: PRESS K", false});
+            break;
         }
-        if (anomalyKnown) objs.push_back({"SCAN ANOMALY: PRESS K", false});
-        if (sh.hullHP < sh.maxHullHP - 0.5) objs.push_back({"REPAIR HULL: DOCK + PRESS J", false});
     }
-    const int rows = std::min(6, int(objs.size()));
+    if (sh.hullHP < sh.maxHullHP - 0.5) urgent.push_back({"REPAIR HULL: DOCK + PRESS J", false});
+
+    // Окно лестницы: одна закрытая ступень позади (чтобы был виден прогресс)
+    // и всё остальное — впереди.
+    int first = 0;
+    while (first < int(objs.size()) && objs[size_t(first)].done) ++first;
+    const int start = std::max(0, first - 1);
+    const int budget = 6 - int(urgent.size());
+    std::vector<Obj> shown;
+    for (int i = start; i < int(objs.size()) && int(shown.size()) < std::max(1, budget); ++i) {
+        shown.push_back(objs[size_t(i)]);
+    }
+    for (size_t i = 0; i < urgent.size(); ++i) shown.push_back(urgent[i]);
+
+    const int rows = int(shown.size());
     const int h = 30 + rows * 13;
     panel(renderer, x, y, w, h);
     drawText(renderer, x + 10, y + 9, "OBJECTIVES", P.amber, 1);
     for (int i = 0; i < rows; ++i) {
         const int ry = y + 26 + i * 13;
-        drawText(renderer, x + 10, ry, objs[i].done ? "[X]" : "[ ]", objs[i].done ? P.green : P.dim, 1);
-        drawText(renderer, x + 34, ry, objs[i].text, objs[i].done ? P.dim : P.text, 1);
+        drawText(renderer, x + 10, ry, shown[size_t(i)].done ? "[X]" : "[ ]",
+                 shown[size_t(i)].done ? P.green : P.dim, 1);
+        drawText(renderer, x + 34, ry, shown[size_t(i)].text,
+                 shown[size_t(i)].done ? P.dim : P.text, 1);
     }
 }
 

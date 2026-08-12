@@ -321,6 +321,15 @@ double shipExoticMass(const Ship& ship) {
     return mass;
 }
 
+double shipInertExoticMass(const Ship& ship) {
+    double inert = 0.0;
+    for (int k = 0; k < EX_COUNT; ++k) {
+        if (k == EX_ANTIMATTER) continue;
+        inert += ship.exotic[k] * exoticDefs()[size_t(k)].unitMass;
+    }
+    return inert;
+}
+
 double shipExoticRoom(const Ship& ship) {
     double held = 0.0;
     for (int k = 0; k < EX_COUNT; ++k) held += ship.exotic[k];
@@ -377,13 +386,8 @@ double shipTotalMass(const Ship& ship) {
     // в `shipFuelMass` (см. shipFuelMix). А нейтрониум и конденсат — мёртвый
     // груз в ячейке, и вес у них настоящий: полный отсек нейтрониума реально
     // сажает разгон, потому что единица его тяжелее любого элемента таблицы.
-    double inert = 0.0;
-    for (int k = 0; k < EX_COUNT; ++k) {
-        if (k == EX_ANTIMATTER) continue;
-        inert += ship.exotic[k] * exoticDefs()[size_t(k)].unitMass;
-    }
     return std::max(1.0, ship.dryMass + shipCargoMass(ship) + shipFuelMass(ship) +
-                    shipPropellantMass(ship) + inert);
+                    shipPropellantMass(ship) + shipInertExoticMass(ship));
 }
 
 double shipFuelTankVolume(const Ship& ship) {
@@ -528,7 +532,7 @@ RouteCost shipRouteCost(const Ship& ship, double deltaV, double propellantPrice,
 
     // Полезная нагрузка: корпус и груз. Топливо в неё НЕ входит — оно решается
     // из уравнения ниже.
-    const double payload = std::max(1.0, ship.dryMass + shipCargoMass(ship));
+    const double payload = std::max(1.0, ship.dryMass + shipCargoMass(ship) + shipInertExoticMass(ship));
     const double effectiveDeltaV = deltaV * DELTAV_SCALE;
 
     // Факел жжёт топливо как рабочее тело: скорость истечения не выбирается,
@@ -585,7 +589,7 @@ void shipTuneDrive(Ship& ship, double propellantPrice, double fuelPrice) {
     const double energyPerMass = fuelMix.specificEnergy / NUCLEON_REST_MEV *
                                  driveJetEfficiency(ship.driveIndex, exhaustMix);
     if (energyPerMass <= 1e-12) return;
-    const double payload = std::max(1.0, ship.dryMass + shipCargoMass(ship));
+    const double payload = std::max(1.0, ship.dryMass + shipCargoMass(ship) + shipInertExoticMass(ship));
     ship.cruiseExhaust = chosenExhaustVelocity(ship, propellantPrice, fuelPrice,
                                                ceiling, energyPerMass, payload);
 }
@@ -716,7 +720,14 @@ double shipDrillPower(const Ship& ship) {
 
 double shipDrawReactorEnergy(Ship& ship, double energy, std::vector<Resource>* ashOut) {
     if (energy <= 0.0) return 0.0;
-    const MixSummary fuelMix = shipFuelMix(ship);
+    // ⚠️ Здесь берётся ЧИСТАЯ топливная смесь, БЕЗ антивещества.
+    //
+    // Антивещество впрыскивается в камеру тяги, а не в активную зону реактора:
+    // катализировать им нагрев бура физически нечего. Формально смесь одна, и
+    // сначала так и было написано — но тогда сеанс добычи в поясе или одно
+    // нажатие `V` (просчёт Тимертии, §28) молча уничтожали антивещество по
+    // 240 000 Cr за единицу, и нигде в интерфейсе этот расход не показывался.
+    const MixSummary fuelMix = summarize(ship.fuel, ship.driveIndex);
     if (fuelMix.mass <= 0.0) return 0.0;
     // Энергия единицы массы топлива — та же величина, что и в полёте (§12), но БЕЗ
     // КПД струи: реактор греет буровую, а не разгоняет рабочее тело.
@@ -725,7 +736,7 @@ double shipDrawReactorEnergy(Ship& ship, double energy, std::vector<Resource>* a
     const double want = energy / energyPerMass;
     const double burn = std::min(want, fuelMix.mass);
     if (burn <= 1e-12) return 0.0;
-    spillAsh(consumeBunkerMass(ship, burn), ashOut);
+    spillAsh(listConsumeMass(ship.fuel, burn), ashOut);
     return burn * energyPerMass;
 }
 

@@ -534,6 +534,29 @@ const Entry WORDS[] = {
     {"NEED LICENCE", "НУЖНА ЛИЦЕНЗИЯ"},
     {"LICENCE REVOKED - BUY BACK", "ЛИЦЕНЗИЯ ОТОЗВАНА - ВЫКУП"},
 
+    // ---------------- автопилот флота (§35) ----------------
+    {"AUTOPILOT ON", "АВТОПИЛОТ ВКЛ"},
+    {"AUTOPILOT OFF", "АВТОПИЛОТ ВЫКЛ"},
+    {"HULL PUT ON AUTOPILOT", "БОРТ ПОСТАВЛЕН НА АВТОПИЛОТ"},
+    {"HULL BACK UNDER MANUAL ORDERS", "БОРТ СНОВА ПОД РУЧНЫМ УПРАВЛЕНИЕМ"},
+    {"CANNOT CHANGE ORDERS IN TRANSIT", "В ПОЛЁТЕ ПРИКАЗ НЕ СМЕНИТЬ"},
+    {"THIS HULL IS CARRYING A JOB", "ЭТОТ БОРТ ВЕЗЁТ ЗАКАЗ"},
+    {"THIS IS THE HULL YOU ARE FLYING", "ЭТИМ БОРТОМ ВЫ УПРАВЛЯЕТЕ САМИ"},
+    {"BOUNTY TARGET DOWN", "ЦЕЛЬ ЗАКАЗА СБИТА"},
+    {"SHIP DOWN - NO BOUNTY LEFT HERE", "БОРТ СБИТ - НАГРАД ЗДЕСЬ БОЛЬШЕ НЕТ"},
+
+    // ---------------- лестница целей (§34) ----------------
+    {"SURVEY 10 MARKETS", "РАЗВЕДАТЬ 10 РЫНКОВ"},
+    {"TAKE A JOB: JOBS BOARD", "ВЗЯТЬ ЗАКАЗ: ДОСКА ЗАКАЗОВ"},
+    {"MEET THE LICENCE QUOTA", "ЗАКРЫТЬ КВОТУ ЛИЦЕНЗИИ"},
+    {"BUY A SECOND HULL (E)", "КУПИТЬ ВТОРОЙ КОРПУС (E)"},
+    {"BUY A SYSTEM (C)", "КУПИТЬ СИСТЕМУ (C)"},
+    {"FIT A CONTAINMENT BAY (Y)", "ПОСТАВИТЬ ЯЧЕЙКУ УДЕРЖАНИЯ (Y)"},
+    {"RUN EXOTIC MATTER (Y)", "СВОЗИТЬ ЭКЗОТИКУ (Y)"},
+    {"FORGE A CORE YOU CHOSE (Y)", "СКОВАТЬ ЯДРО ПО ВЫБОРУ (Y)"},
+    {"BUY INTO A POWER (E)", "ВОЙТИ В ДОЛЮ К ДЕРЖАВЕ (E)"},
+    {"PLATE THE HULL IN NEUTRONIUM", "ОБШИТЬ КОРПУС НЕЙТРОНИУМОМ"},
+
     // ---------------- биржа держав (§33) ----------------
     {"POWER          PER SHARE  PER YEAR     HELD     VALUE    PROFIT",
      "ДЕРЖАВА        ЗА АКЦИЮ    В ГОД   НА РУКАХ   СТОИТ    ПРИБЫЛЬ"},

@@ -19,6 +19,11 @@ public:
     double missionCooldown = 0.0;
     int targetFaction = -1;
     bool playerControlled = false;
+    // (§35) Борт под АВТОПИЛОТОМ-ТОРГОВЦЕМ. Флаг собственности —
+    // `playerControlled`, он стоит у всего флота; этот — про то, ведёт ли борт
+    // себя сам. Пилотируемый борт (`playerAgent`) не трогается никогда, даже с
+    // поднятым флагом: руль отнимать нельзя.
+    bool autoTrade = false;
     double tradeBias = 1.0;
     double questBias = 0.35;
     double piracyBias = 0.0;

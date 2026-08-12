@@ -839,6 +839,10 @@ int main(int argc, char** argv) {
                     int nextAgent = game.playerAgent;
                     for (size_t i = 1; i <= game.agents.size(); ++i) {
                         int index = (game.playerAgent + i) % game.agents.size();
+                        // (§35) Борт под автопилотом руля не отдаёт: пересадка
+                        // посреди его перелёта заперла бы игрока на корабле, к
+                        // которому неприменимо ни одно действие порта.
+                        if (game.agents[index].autoTrade) continue;
                         if (game.agents[index].playerControlled && game.agents[index].ship.ownerFaction == game.playerFaction) {
                             nextAgent = index;
                             break;

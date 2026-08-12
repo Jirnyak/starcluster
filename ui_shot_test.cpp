@@ -140,8 +140,8 @@ int main(int argc, char** argv) {
             ex.agents[ex.playerAgent].currentStar = host;
             ex.agents[ex.playerAgent].ship.enRoute = false;
             ex.agents[ex.playerAgent].money = 4.2e8;
-            ex.containmentLevel = 3;
-            ex.hullPlating = 1;
+            ex.agents[ex.playerAgent].ship.containmentLevel = 3;
+            ex.agents[ex.playerAgent].ship.platingLayers = 1;
             ex.rebakePlayerBakedBonuses();
             ex.agents[ex.playerAgent].ship.exotic[EX_ANTIMATTER] = 44.0;
             ex.agents[ex.playerAgent].ship.exotic[EX_NEUTRONIUM] = 61.0;

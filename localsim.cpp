@@ -1263,6 +1263,15 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                             if (c.agentIndex >= 0 && c.agentIndex < (int)game.agents.size()
                                 && c.agentIndex != game.playerAgent) {
                                 downgradeAgentToEscapePod(game.agents[c.agentIndex]);
+                                // (§34) Доска заказов обязана узнать о том, что
+                                // произошло у неё на глазах: заказ на эту голову
+                                // закрывается по факту, а не абстрактной стычкой
+                                // в порту. Иначе бой в микромире и заказы жили бы
+                                // в двух разных играх.
+                                if (game.markLocalBountyTarget(c.agentIndex)) {
+                                    scene.toast = "BOUNTY TARGET DOWN";
+                                    scene.toastTimer = 3.0;
+                                }
                             }
                         }
                         break;                                 // один выстрел — одно попадание

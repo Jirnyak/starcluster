@@ -59,13 +59,14 @@ void Game::rebakePlayerBakedBonuses() {
     Ship& ship = agents[playerAgent].ship;
     shipApplyChromocoreFactors(ship, tech.materials, tech.tactics, tech.kinematics);
     // Хайтек-переоснастка (§31.4) запекается тем же порядком и по той же
-    // причине: ни ячейка, ни броня не хранятся в полях корабля — они хранятся
-    // в партии, а поля лишь ОТРАЖАЮТ их, и новый корпус это отражение стирает.
-    ship.containment = double(containmentLevel) * CONTAINMENT_STEP_UNITS;
-    if (hullPlating > 0) {
-        ship.armor += PLATING_ARMOR_PER_LAYER * hullPlating;
-        ship.maxHullHP += PLATING_HULL_PER_LAYER * hullPlating;
-        ship.dryMass += PLATING_MASS_PER_LAYER * hullPlating;
+    // причине: ёмкость ячейки, броня, корпус и масса — это ОТРАЖЕНИЕ ступеней
+    // `containmentLevel`/`platingLayers`, и новый корпус это отражение стирает.
+    // Сами ступени живут на корабле, потому и переживают пересадку игрока.
+    ship.containment = double(ship.containmentLevel) * CONTAINMENT_STEP_UNITS;
+    if (ship.platingLayers > 0) {
+        ship.armor += PLATING_ARMOR_PER_LAYER * ship.platingLayers;
+        ship.maxHullHP += PLATING_HULL_PER_LAYER * ship.platingLayers;
+        ship.dryMass += PLATING_MASS_PER_LAYER * ship.platingLayers;
     }
     ship.hullHP = std::min(ship.hullHP, ship.maxHullHP);
     // Ячейка могла ужаться (капсула после гибели) — лишнее вещество выпадает

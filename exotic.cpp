@@ -171,12 +171,18 @@ double exoticExecutionPrice(const ClusterStar& star, int kind, double stock,
     // взять интегралом по ходу сделки. Экспоненты тут нет (закон степенной),
     // и интеграл берётся численно — но дёшево: сделка на рынке экзотики
     // случается несколько раз за партию, а не в каждом кадре.
+    // Проба берётся в СЕРЕДИНЕ шага, а не по левому краю. По краю первая проба
+    // покупки была самой дешёвой, а первая проба продажи — самой дорогой, то
+    // есть обе ошибки смещения работали в пользу игрока: круг «купил-продал на
+    // той же звезде» выходил валово положительным, и только пошлины его
+    // перекрывали. Середина отрезка убирает смещение целиком.
     const int steps = 12;
     double sum = 0.0;
     double s = std::max(0.0, stock);
     const double step = units / steps;
     for (int i = 0; i < steps; ++i) {
-        sum += exoticPriceAt(star, kind, s, priceLevel);
+        const double mid = exoticStockAfterTrade(star, kind, s, selling ? step * 0.5 : -step * 0.5);
+        sum += exoticPriceAt(star, kind, mid, priceLevel);
         s = exoticStockAfterTrade(star, kind, s, selling ? step : -step);
     }
     return sum / steps;

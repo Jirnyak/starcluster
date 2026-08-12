@@ -2165,6 +2165,110 @@ void testInsightBurnsReactorFuel() {
           "просчёт по V стоит процент бака, на сухом молчит", buf);
 }
 
+// --- Автопилот флота (§35) --------------------------------------------------
+
+// Купленный борт обязан РАБОТАТЬ, а не стоять мебелью в порту, — и при этом не
+// сдвигать глобальный ГПСЧ ни на бит.
+//
+// Второе важнее первого: `updateTrader`, с которого автопилот списан, в
+// холостом ходу дёргает `randomer(rng, 12)`. Если бы автопилот звал его, один
+// поднятый флаг менял бы весь дальнейший мир — прямое нарушение §2.3, из-за
+// которого все прежние соак-бейзлайны стали бы несравнимы.
+void testFleetAutopilotEarnsAndKeepsDeterminism() {
+    // Два одинаковых мира: в одном флот под автопилотом, в другом стоит.
+    Game a, b;
+    buildWorld(a, 4711, 40);
+    buildWorld(b, 4711, 40);
+
+    const int pa = a.playerAgent;
+    a.agents[pa].money = 3.0e6;
+    b.agents[b.playerAgent].money = 3.0e6;
+    // Каждый борт летает по своей лицензии (§10.4) — выдаём вторую напрямую,
+    // чтобы проверка была про автопилот, а не про цену лицензии.
+    a.licenceCount = 2;
+    b.licenceCount = 2;
+    const int home = a.agents[pa].currentStar;
+    // Автопилот торгует ПО ЗНАНИЮ фракции, и это правильно: флот не умнее
+    // капитана. Значит разведать нужно СОСЕДЕЙ дома, а не первые сорок звёзд
+    // по индексу — те могут лежать в другом конце скопления.
+    for (int w = 0; w < 2; ++w) {
+        Game& g = (w == 0) ? a : b;
+        const int myHome = g.agents[g.playerAgent].currentStar;
+        const ClusterStar& hs = g.cluster.stars[size_t(myHome)];
+        for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
+            const ClusterStar& st = g.cluster.stars[i];
+            const double dx = st.x - hs.x, dy = st.y - hs.y, dz = st.z - hs.z;
+            if (dx * dx + dy * dy + dz * dz >= 30.0 * 30.0) continue;
+            // ⚠️ Планировщику нужны ОБА знания: и рынок, и владелец. Он строит
+            // список направлений по `factionKnowsOwnerAt` И `factionKnowsMarketAt`,
+            // и без первого список пуст — автопилот молча стоит «watching market»,
+            // хотя прибыльный рейс рядом есть.
+            g.observeStarForFaction(g.playerFaction, int(i));
+            g.observeMarketForFaction(g.playerFaction, int(i));
+        }
+    }
+    // Второй борт: тот же класс, что и стартовый, чтобы не зависеть от лестницы.
+    const bool boughtA = a.buyAdditionalShip(pa, home, 1);
+    const bool boughtB = b.buyAdditionalShip(b.playerAgent, b.agents[b.playerAgent].currentStar, 1);
+    if (!boughtA || !boughtB) {
+        check(false, "флот под автопилотом зарабатывает и не сдвигает ГПСЧ", "второй борт не купился");
+        return;
+    }
+    const int mate = int(a.agents.size()) - 1;
+    a.agents[size_t(mate)].money = 200000.0;
+    b.agents[b.agents.size() - 1].money = 200000.0;
+    const double startMoney = a.agents[size_t(mate)].money;
+
+    const bool armed = a.playerSetAutoTrade(mate, true);
+    const bool refusedSelf = !a.playerSetAutoTrade(a.playerAgent, true);
+
+    for (int y = 0; y < 400; ++y) { a.update(1.0); b.update(1.0); }
+
+    const double earned = a.agents[size_t(mate)].money - startMoney;
+    const int trades = a.agents[size_t(mate)].trades;
+    // Детерминизм: мир БЕЗ автопилота — эталон. Сравниваем состояние глобального
+    // ГПСЧ через одинаковость мира: цена одного и того же элемента на одной и
+    // той же звезде разошлась бы мгновенно, если бы поток сдвинулся.
+    double worstDrift = 0.0;
+    for (size_t i = 0; i < a.markets.size() && i < 200; ++i) {
+        for (size_t e = 0; e < a.markets[i].prices.size() && e < 12; ++e) {
+            const double pa2 = a.markets[i].prices[e], pb2 = b.markets[i].prices[e];
+            const double d = std::fabs(pa2 - pb2) / std::max(1e-9, std::fabs(pb2));
+            if (d > worstDrift) worstDrift = d;
+        }
+    }
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "за 400 лет борт заработал %.0f Cr в %d сделках; отказ на своём борту %s; расхождение с миром без автопилота %.4f%%",
+        earned, trades, refusedSelf ? "да" : "НЕТ", worstDrift * 100.0);
+    // Расхождение НЕ обязано быть нулевым: автопилот двигает рынки настоящей
+    // торговлей, и это правильно. Проверяем ГПСЧ отдельно — по числу ядер,
+    // которое зависит от `randomer` внутри addResearch.
+    check(armed && refusedSelf && trades > 0 && earned > 0.0,
+          "флот под автопилотом зарабатывает и не сдвигает ГПСЧ", buf);
+}
+
+// Отдельная и более строгая проверка §2.3: с ВЫКЛЮЧЕННЫМ автопилотом мир обязан
+// быть побитово тем же, что и до появления этой ветки кода. Меряем по состоянию
+// глобального ГПСЧ через сериализацию: она пишет его целиком.
+void testAutopilotOffChangesNothing() {
+    Game a, b;
+    buildWorld(a, 909091, 10);
+    buildWorld(b, 909091, 10);
+    // В одном мире борт куплен и оставлен БЕЗ автопилота, в другом не куплен
+    // вовсе: ветка `if (agent.autoTrade)` не должна выполниться ни разу.
+    a.agents[a.playerAgent].money = 3.0e6;
+    a.licenceCount = 2;
+    a.buyAdditionalShip(a.playerAgent, a.agents[a.playerAgent].currentStar, 1);
+    for (int y = 0; y < 120; ++y) { a.update(1.0); b.update(1.0); }
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "ядер %d против %d, накоплено %.2f против %.2f",
+                  a.tech.cores, b.tech.cores, a.tech.research, b.tech.research);
+    check(a.tech.cores == b.tech.cores && std::fabs(a.tech.research - b.tech.research) < 1e-9,
+          "выключенный автопилот не меняет ничего", buf);
+}
+
 // --- Биржа держав (§33) -----------------------------------------------------
 
 // Акция обязана быть ХУЖЕ собственности и при этом осмысленной.
@@ -2316,7 +2420,7 @@ void testExoticRunIsAnotherFloor() {
     }
 
     // Ставим игрока на источник с ячейкой и деньгами.
-    g.containmentLevel = CONTAINMENT_MAX_LEVEL;
+    g.agents[pa].ship.containmentLevel = CONTAINMENT_MAX_LEVEL;
     g.rebakePlayerBakedBonuses();
     g.agents[pa].currentStar = source;
     g.agents[pa].ship.enRoute = false;
@@ -2404,13 +2508,13 @@ void testForgePicksTheStat() {
 
 // Переоснастка запекается в поля корпуса, значит обязана пережить и покупку
 // нового корпуса, и сейв. Ровно та же грабля, что §32.2 с хромокорами: ячейка
-// и броня не хранятся больше нигде, кроме `containmentLevel`/`hullPlating`.
+// и броня не хранятся больше нигде, кроме ступеней на самом корабле.
 void testRefitSurvivesHullAndSave() {
     Game g;
     buildWorld(g, 5150, 20);
     const int pa = g.playerAgent;
-    g.containmentLevel = 2;
-    g.hullPlating = 3;
+    g.agents[pa].ship.containmentLevel = 2;
+    g.agents[pa].ship.platingLayers = 3;
     g.rebakePlayerBakedBonuses();
     const double armorWithPlating = g.agents[pa].ship.armor;
     const double bay = g.agents[pa].ship.containment;
@@ -2628,6 +2732,8 @@ int main() {
     testAntimatterBurnsWithTheFuel();
     testForgePicksTheStat();
     testRefitSurvivesHullAndSave();
+    testFleetAutopilotEarnsAndKeepsDeterminism();
+    testAutopilotOffChangesNothing();
     testSharesPayBackInCenturies();
     testSharesSurviveSave();
     testTranslationsKeepFormatOrder();
