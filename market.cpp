@@ -162,6 +162,7 @@ void Market::seed(const std::vector<Resource>& localResources, const std::vector
     // Порог задан так, чтобы ТИПИЧНАЯ система села в середину шкалы: если он
     // ниже, доступ у всех упирается в 1.0, «глухой фронтир» исчезает как класс
     // и вместе с ним — широкая ценовая вилка, ради которой на отшиб и летают.
+    seededScale = scale;
     const double saturationScale = POPULATION_TYPICAL * 0.005;
     tradeAccess = clamp(0.10 + 0.90 * std::min(1.0, scale / saturationScale), 0.10, 1.0);
     const double* profile = econRoleNeedProfile(role);
@@ -208,6 +209,31 @@ void Market::seed(const std::vector<Resource>& localResources, const std::vector
     for (int pass = 0; pass < 12; ++pass) updatePrices();
 
     for (size_t i = 0; i < n; ++i) demand[i].amount = demandRate[i] * 8.0;
+}
+
+bool Market::rescale(double population, double industry) {
+    const size_t n = prices.size();
+    if (n == 0 || needs.size() != size_t(EF_COUNT)) return false;
+    // Тот же закон, что и в seed(): хозяйство системы — это её люди, а
+    // индустриализация лишь поднимает потребление на душу. Одна формула на
+    // засев и на рост, иначе выросшая система жила бы по другой экономике.
+    const double scale = std::max(0.5, population * (0.0015 + industry * 0.0024));
+    if (seededScale <= 0.0) { seededScale = scale; return false; }
+    const double ratio = scale / seededScale;
+    // Порог не косметический: пересчёт зовётся с такта колоний, а рост за один
+    // такт — доли процента. Без порога это была бы работа на каждый тик ради
+    // изменения в шестом знаке.
+    if (ratio > 0.95 && ratio < 1.05) return false;
+
+    const double* profile = econRoleNeedProfile(role);
+    for (int f = 0; f < EF_COUNT; ++f) needs[f] = scale * profile[f];
+    const double saturationScale = POPULATION_TYPICAL * 0.005;
+    tradeAccess = clamp(0.10 + 0.90 * std::min(1.0, scale / saturationScale), 0.10, 1.0);
+    // Добыча растёт вместе с нуждой: население, которое больше ест, и копает
+    // больше. Пропорции недр не трогаем — они свойство системы, а не её размера.
+    for (size_t i = 0; i < n && i < productionRate.size(); ++i) productionRate[i] *= ratio;
+    seededScale = scale;
+    return true;
 }
 
 void Market::updatePrices() {

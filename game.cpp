@@ -5026,6 +5026,16 @@ void Game::updateColonies(double dt) {
         star.defense = std::max(star.defense, colony.defense);
         colony.infrastructure += star.industry * 0.000035 * supplySatisfaction * dt;
 
+        // (§36) Хозяйство выросло — рынок обязан это заметить. Раньше `needs` и
+        // `productionRate` задавались только при генерации мира: система с
+        // миллиардом жителей потребляла столько же, сколько посёлок, из
+        // которого она выросла, и петля «вложился в колонию → она больше
+        // производит» была разомкнута. Пересчёт срабатывает ступенькой, при
+        // расхождении масштаба на 5%, — не работа на каждый тик.
+        if (market.rescale(star.population, star.industry)) {
+            pushNews(star.name + " has outgrown its old market", 1);
+        }
+
         const double income = colonyIncomeAt(colony.starIndex) * dt;
         colony.localLedger += income;
         colony.stockpileValue = 0.0;

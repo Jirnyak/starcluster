@@ -2165,6 +2165,50 @@ void testInsightBurnsReactorFuel() {
           "просчёт по V стоит процент бака, на сухом молчит", buf);
 }
 
+// Выросшая система обязана и потреблять больше (§36).
+//
+// ⚠️ `needs` и `productionRate` задавались ТОЛЬКО при генерации мира, а колония
+// всё это время растила население и индустрию. Система с миллиардом жителей
+// потребляла столько же, сколько посёлок, из которого она выросла: петля
+// «вложился в колонию → она больше производит и больше приносит» была
+// разомкнута, и доход владельца не рос никогда, сколько ни строй.
+void testGrownColonyOutgrowsItsMarket() {
+    Game g;
+    buildWorld(g, 31415, 20);
+    const int star = g.agents[g.playerAgent].currentStar;
+
+    double needsBefore = 0.0;
+    for (size_t f = 0; f < g.markets[size_t(star)].needs.size(); ++f) needsBefore += g.markets[size_t(star)].needs[f];
+    const double popBefore = g.cluster.stars[size_t(star)].population;
+
+    // Утраиваем хозяйство руками — так же, как это делает стройка колонии за
+    // сотни лет, только без ожидания.
+    g.cluster.stars[size_t(star)].population *= 3.0;
+    g.cluster.stars[size_t(star)].industry *= 1.4;
+    const bool moved = g.markets[size_t(star)].rescale(g.cluster.stars[size_t(star)].population,
+                                                       g.cluster.stars[size_t(star)].industry);
+    for (int y = 0; y < 12; ++y) g.update(1.0);
+
+    double needsAfter = 0.0;
+    for (size_t f = 0; f < g.markets[size_t(star)].needs.size(); ++f) needsAfter += g.markets[size_t(star)].needs[f];
+
+    // И обратная сторона: усохшее хозяйство рынок тоже обязан заметить.
+    g.cluster.stars[size_t(star)].population = popBefore;
+    g.cluster.stars[size_t(star)].industry /= 1.4;
+    const bool shrank = g.markets[size_t(star)].rescale(g.cluster.stars[size_t(star)].population,
+                                                        g.cluster.stars[size_t(star)].industry);
+    double needsBack = 0.0;
+    for (size_t f = 0; f < g.markets[size_t(star)].needs.size(); ++f) needsBack += g.markets[size_t(star)].needs[f];
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf), "нужда %.3g -> %.3g (x%.2f) -> %.3g; порог сработал %s/%s",
+                  needsBefore, needsAfter, needsBefore > 0.0 ? needsAfter / needsBefore : 0.0, needsBack,
+                  moved ? "да" : "НЕТ", shrank ? "да" : "НЕТ");
+    check(moved && shrank && needsBefore > 0.0 && needsAfter > needsBefore * 2.0 &&
+          needsBack < needsAfter * 0.6,
+          "выросшая система потребляет больше", buf);
+}
+
 // --- Автопилот флота (§35) --------------------------------------------------
 
 // Купленный борт обязан РАБОТАТЬ, а не стоять мебелью в порту, — и при этом не
@@ -2732,6 +2776,7 @@ int main() {
     testAntimatterBurnsWithTheFuel();
     testForgePicksTheStat();
     testRefitSurvivesHullAndSave();
+    testGrownColonyOutgrowsItsMarket();
     testFleetAutopilotEarnsAndKeepsDeterminism();
     testAutopilotOffChangesNothing();
     testSharesPayBackInCenturies();
