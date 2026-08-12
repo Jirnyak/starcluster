@@ -901,12 +901,18 @@ void drawContractRouteLine(SDL_Renderer* renderer, const Game& game, const Contr
         std::snprintf(fleetNote, sizeof(fleetNote), " HOLD/HEAVY");
     }
 
+    // (§37.3) Залог виден ДО взятия — иначе кнопка ACCEPT просто отказывала бы
+    // без объяснения, а провал стоил бы денег, о которых игрока не предупредили.
+    char depositNote[48] = "";
+    if (contract.acceptedByAgent < 0 && contract.deposit > 0.0) {
+        std::snprintf(depositNote, sizeof(depositNote), "  BOND %.0F", contract.deposit);
+    }
     if (fuelShort) {
-        std::snprintf(line, sizeof(line), "%s %.0FY  FUEL %.0F SHORT %.0F  RISK %.0F%%%s",
-            remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, shortfall, risk * 100.0, fleetNote);
+        std::snprintf(line, sizeof(line), "%s %.0FY  FUEL %.0F SHORT %.0F  RISK %.0F%%%s%s",
+            remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, shortfall, risk * 100.0, depositNote, fleetNote);
     } else {
-        std::snprintf(line, sizeof(line), "%s %.0FY  FUEL %.0F OK  RISK %.0F%%%s",
-            remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, risk * 100.0, fleetNote);
+        std::snprintf(line, sizeof(line), "%s %.0FY  FUEL %.0F OK  RISK %.0F%%%s%s",
+            remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, risk * 100.0, depositNote, fleetNote);
     }
     if (textWidth(line, 1) > maxW) {
         // Короткая форма. Нехватка флота остаётся и здесь: она важнее топлива,

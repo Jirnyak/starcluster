@@ -1069,6 +1069,17 @@ bool payContractReward(Game& game, Contract& contract, Agent& agent, bool emitSi
     const double earlyBonus = late ? 0.0 : contractEarlyBonus(game, contract);
     const double payout = contract.reward * lateFactor * (1.0 + earlyBonus);
     agent.money += payout;
+    // (§37.3) Залог возвращается ЦЕЛИКОМ и при просрочке тоже: он платой за
+    // опоздание не является — за опоздание режется награда (CONTRACT_LATE_FACTOR).
+    const double refund = agent.playerControlled ? contract.deposit : 0.0;
+    if (refund > 0.0) {
+        agent.money += refund;
+        if (validFaction(game, contract.issuerFaction)) {
+            game.factions[size_t(contract.issuerFaction)].treasury =
+                std::max(0.0, game.factions[size_t(contract.issuerFaction)].treasury - refund);
+        }
+        game.journalExplained += refund;
+    }
 
     // Репутация. УСПЕХ ВСЕГДА +1, независимо от размера: единица шкалы — один
     // сданный заказ, и потолок честно стоит своей тысячи (§24). Асимметрия
@@ -1394,7 +1405,7 @@ bool tryCreateDeliveryContract(Game& game, int originStar) {
     contract.resource = resourceIndex;
     contract.amount = amount;
     contract.reward = std::max(80.0, scarcityPay + tripPay);
-    contract.deposit = 0.0;
+    contract.deposit = contract.reward * CONTRACT_DEPOSIT_RATE * contract.tier;
     contract.postedTime = game.time;
     contract.deadline = contractDeadlineFor(game, originStar, targetStar);
     contract.risk = std::min(1.0, distance / 95.0);
@@ -1439,7 +1450,7 @@ bool tryCreateCourierContract(Game& game, int originStar) {
     // Тир для него — это не масса (её нет), а ДАЛЬНОСТЬ и ставка.
     contract.reward = 65.0 + contractTripPay(game, originStar, best) * 0.75 *
         Game::jobPayMultiplierForTier(tier);
-    contract.deposit = 0.0;
+    contract.deposit = contract.reward * CONTRACT_DEPOSIT_RATE * contract.tier;
     contract.postedTime = game.time;
     contract.deadline = contractDeadlineFor(game, originStar, best);
     contract.risk = std::min(1.0, distance / 120.0);
@@ -1493,7 +1504,7 @@ bool tryCreateScoutContract(Game& game, int originStar) {
     contract.tier = tier;
     contract.reward = 90.0 + bestScore * 2.2 +
         contractTripPay(game, originStar, best) * Game::jobPayMultiplierForTier(tier);
-    contract.deposit = 0.0;
+    contract.deposit = contract.reward * CONTRACT_DEPOSIT_RATE * contract.tier;
     contract.postedTime = game.time;
     // Разведке мало долететь — на месте ещё смотрят и ждут ухода сигнала,
     // поэтому сверх дороги ей даётся четверть рейса, как охоте и конвою.
@@ -1561,7 +1572,7 @@ bool tryCreateColonySupplyContract(Game& game, int originStar) {
     contract.reward = std::max(100.0,
         amount * target.prices[resourceIndex] * 0.035 + scarcity * 120.0 +
         contractTripPay(game, originStar, best) * Game::jobPayMultiplierForTier(tier));
-    contract.deposit = 0.0;
+    contract.deposit = contract.reward * CONTRACT_DEPOSIT_RATE * contract.tier;
     contract.postedTime = game.time;
     contract.deadline = contractDeadlineFor(game, originStar, best);
     contract.risk = std::min(1.0, 0.12 + distance / 110.0);
@@ -1589,7 +1600,7 @@ bool tryCreateBountyContract(Game& game, int originStar) {
     contract.tier = tier;
     contract.reward = 180.0 + report.threatValue * 64.0 + report.cargoValue * 0.018 +
         contractTripPay(game, originStar, report.starIndex) * Game::jobPayMultiplierForTier(tier);
-    contract.deposit = 0.0;
+    contract.deposit = contract.reward * CONTRACT_DEPOSIT_RATE * contract.tier;
     contract.postedTime = game.time;
     // Охоте нужен запас сверх дороги: цель ещё надо застать на месте.
     contract.deadline = contractDeadlineFor(game, originStar, report.starIndex) +
@@ -1655,7 +1666,7 @@ bool tryCreateRaidContract(Game& game, int originStar) {
     contract.tier = tier;
     contract.reward = 150.0 + bestScore * 12.0 + target.industry * 42.0 + hostility * 180.0 +
         contractTripPay(game, originStar, best) * Game::jobPayMultiplierForTier(tier);
-    contract.deposit = 0.0;
+    contract.deposit = contract.reward * CONTRACT_DEPOSIT_RATE * contract.tier;
     contract.postedTime = game.time;
     contract.deadline = contractDeadlineFor(game, originStar, best);
     contract.risk = std::min(1.0, 0.24 + target.defense * 0.018 + distance / 125.0 + hostility * 0.20);
@@ -1717,7 +1728,7 @@ bool tryCreateEscortContract(Game& game, int originStar) {
     contract.tier = tier;
     contract.reward = 120.0 + bestNeed * 12.0 + threatRisk * 80.0 +
         contractTripPay(game, originStar, targetStar) * Game::jobPayMultiplierForTier(tier);
-    contract.deposit = 0.0;
+    contract.deposit = contract.reward * CONTRACT_DEPOSIT_RATE * contract.tier;
     contract.postedTime = game.time;
     // Конвой идёт не быстрее подопечного — срок щедрее обычного.
     contract.deadline = contractDeadlineFor(game, originStar, targetStar) +
@@ -5113,8 +5124,9 @@ void Game::updateContracts(double dt) {
         const double lost = applyContractFailureReputation(*this, contract);
         // Текст журнала собирается ПО-АНГЛИЙСКИ: перевод делает сама
         // `UI::drawText` по словарю (§14), числа и имена звёзд она не трогает.
-        char penalty[48];
-        std::snprintf(penalty, sizeof(penalty), " EXPIRED -%.0F REP", lost);
+        char penalty[96];
+        std::snprintf(penalty, sizeof(penalty), " EXPIRED -%.0F REP -%.0F Cr DEPOSIT",
+                      lost, contract.deposit);
         pushJournal(JournalKind::JobFailed,
             contractJournalText(contract) + penalty, 0.0, holder.currentStar);
     }
@@ -6226,6 +6238,17 @@ bool Game::agentAcceptContract(int agentIndex, int contractId) {
     Agent& agent = agents[agentIndex];
     if (agent.ship.enRoute || agent.currentStar != contract->originStar) return false;
 
+    // (§37.3) ЗАЛОГ. Берётся только с игрока и только при взятии: без него
+    // провал стоил одной репутации, а груз ложился в трюм даром — взять
+    // срочный заказ и бросить его было выгоднее, чем везти.
+    if (agent.playerControlled && contract->deposit > 0.0) {
+        if (agent.money < contract->deposit) {
+            lastEvent = "job needs a " + std::to_string(int(std::ceil(contract->deposit))) + " Cr deposit";
+            agent.lastAction = "deposit too high";
+            return false;
+        }
+    }
+
     if (contractUsesCargo(contract->type)) {
         if (contract->resource < 0 || contract->resource >= int(elementCount()) || contract->amount <= 0.0) return false;
         Market& origin = markets[contract->originStar];
@@ -6302,6 +6325,18 @@ bool Game::agentAcceptContract(int agentIndex, int contractId) {
     }
     agent.cargoCost = 0.0;
     contract->acceptedByAgent = agentIndex;
+    // Залог уходит выдавшему заказ: он и есть тот, кто рискует грузом.
+    if (agent.playerControlled && contract->deposit > 0.0) {
+        agent.money -= contract->deposit;
+        if (validFaction(*this, contract->issuerFaction)) {
+            factions[size_t(contract->issuerFaction)].treasury += contract->deposit;
+        }
+        pushJournal(JournalKind::JobAccepted,
+            contractJournalText(*contract) + " DEPOSIT -" +
+                std::to_string(int(std::ceil(contract->deposit))) + " Cr",
+            -contract->deposit, agent.currentStar);
+        journalExplained -= contract->deposit;
+    }
 
     // Остальные носители уходят к цели САМИ (§24). Иначе игроку пришлось бы
     // переключаться на каждый борт и вести его вручную по одному маршруту —

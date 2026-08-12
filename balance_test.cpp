@@ -2165,6 +2165,77 @@ void testInsightBurnsReactorFuel() {
           "просчёт по V стоит процент бака, на сухом молчит", buf);
 }
 
+// Залог за заказ: провал обязан стоить ДЕНЕГ, а не одной репутации (§37.3).
+//
+// ⚠️ Проверяются оба конца сразу. Верхний: залог возвращается при сдаче и
+// сгорает при провале. Нижний: на НУЛЕВОМ тире залога нет вовсе — плоская
+// четверть награды запирала доску ровно для новичка, у которого 100 Cr в
+// кармане, а новелла отправляет его туда на 20-й реплике.
+// `contractById` и `contractUsesCargo` живут в анонимном namespace game.cpp и
+// снаружи не видны — здесь свои крошечные двойники, по тем же правилам.
+Contract* jobById(Game& g, int id) {
+    for (size_t i = 0; i < g.contracts.size(); ++i) {
+        if (g.contracts[i].id == id) return &g.contracts[i];
+    }
+    return NULL;
+}
+bool jobCarriesCargo(ContractType type) {
+    return type == ContractType::Delivery || type == ContractType::Courier ||
+           type == ContractType::ColonySupply;
+}
+
+void testJobBondBurnsOnFailure() {
+    Game g;
+    buildWorld(g, 1337, 30);
+    const int pa = g.playerAgent;
+    const int here = g.agents[pa].currentStar;
+
+    // Нижний конец: заказ нулевого тира берётся без единого кредита залога.
+    double zeroTierBond = -1.0;
+    for (size_t i = 0; i < g.contracts.size(); ++i) {
+        if (g.contracts[i].tier > 0.001) continue;
+        zeroTierBond = g.contracts[i].deposit;
+        break;
+    }
+
+    // Верхний конец: поднимаем тир руками и смотрим на движение кошелька.
+    Contract* job = NULL;
+    for (size_t i = 0; i < g.contracts.size(); ++i) {
+        Contract& c = g.contracts[i];
+        if (c.completed || c.failed || c.acceptedByAgent >= 0) continue;
+        if (c.originStar != here || !jobCarriesCargo(c.type)) continue;
+        c.tier = 0.8;
+        c.deposit = c.reward * CONTRACT_DEPOSIT_RATE * c.tier;
+        c.deadline = g.time + 400.0;
+        job = &c;
+        break;
+    }
+    if (!job || zeroTierBond < 0.0) {
+        check(false, "залог за заказ сгорает при провале", "подходящего заказа на доске нет");
+        return;
+    }
+    const double bond = job->deposit;
+    const int jobId = job->id;
+    g.agents[pa].money = bond * 4.0 + 1000.0;
+    const double before = g.agents[pa].money;
+    const bool taken = g.agentAcceptContract(pa, jobId);
+    const double afterTake = g.agents[pa].money;
+
+    // Проваливаем: прокручиваем мир далеко за срок и льготу.
+    for (int y = 0; y < 900 && !jobById(g, jobId)->failed; ++y) g.update(1.0);
+    const bool failed = jobById(g, jobId)->failed;
+    const double afterFail = g.agents[pa].money;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "залог %.0f: кошелёк %.0f -> %.0f (взятие) -> %.0f (провал %s); на нулевом тире залог %.0f",
+        bond, before, afterTake, afterFail, failed ? "да" : "НЕТ", zeroTierBond);
+    check(taken && failed && bond > 0.0 && zeroTierBond == 0.0 &&
+          std::fabs((before - afterTake) - bond) < 0.5 &&
+          std::fabs(afterFail - afterTake) < 0.5,
+          "залог за заказ сгорает при провале", buf);
+}
+
 // Выросшая система обязана и потреблять больше (§36).
 //
 // ⚠️ `needs` и `productionRate` задавались ТОЛЬКО при генерации мира, а колония
@@ -2776,6 +2847,7 @@ int main() {
     testAntimatterBurnsWithTheFuel();
     testForgePicksTheStat();
     testRefitSurvivesHullAndSave();
+    testJobBondBurnsOnFailure();
     testGrownColonyOutgrowsItsMarket();
     testFleetAutopilotEarnsAndKeepsDeterminism();
     testAutopilotOffChangesNothing();
