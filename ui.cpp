@@ -1707,6 +1707,10 @@ struct ExchangeLayout {
     SDL_Rect scrollUp = {0, 0, 0, 0};
     SDL_Rect scrollDown = {0, 0, 0, 0};
     SDL_Rect elementsBtn = {0, 0, 0, 0};
+    // Биржа держав (§33): тумблер режима и по паре кнопок на строку.
+    SDL_Rect sharesBtn = {0, 0, 0, 0};
+    SDL_Rect shareBuy[8];
+    SDL_Rect shareSell[8];
     // Счёт фракции: деньги, которые ходят СВЕТОМ, а не с кораблём.
     SDL_Rect accountIn = {0, 0, 0, 0};
     SDL_Rect accountOut = {0, 0, 0, 0};
@@ -1731,6 +1735,12 @@ ExchangeLayout exchangeLayout(const Window& window) {
     layout.scrollUp    = {window.rect.x + window.rect.w - 46, top - 18, 36, 16};
     layout.scrollDown  = {window.rect.x + window.rect.w - 46, by, 36, 24};
     layout.elementsBtn = {x + 376, by, 150, 24};
+    layout.sharesBtn = {x + 534, by, 130, 24};
+    for (int i = 0; i < 8; ++i) {
+        const int ry = layout.board.y + 18 + i * 22;
+        layout.shareBuy[i]  = {window.rect.x + window.rect.w - 190, ry, 82, 19};
+        layout.shareSell[i] = {window.rect.x + window.rect.w - 100, ry, 82, 19};
+    }
     // Взнос и снятие — над нижним рядом, чтобы не тесниться с лицензиями.
     layout.accountIn  = {x, by - 28, 170, 24};
     layout.accountOut = {x + 178, by - 28, 190, 24};
@@ -1823,6 +1833,27 @@ bool handleExchangeWindowMouseDown(WindowState& state, Game& game, const Window&
             w->scrollOffset = std::min(std::max(0, total - layout.rows), w->scrollOffset + layout.rows);
             return true;
         }
+    }
+    if (contains(layout.sharesBtn, mouseX, mouseY)) {
+        state.exchangeShares = !state.exchangeShares;
+        state.exchangeTable = false;
+        if (w) w->scrollOffset = 0;
+        return true;
+    }
+    if (state.exchangeShares) {
+        const double want = tradeRequestedAmount(state);
+        for (int i = 0; i < 8 && i < int(game.factions.size()); ++i) {
+            if (contains(layout.shareBuy[i], mouseX, mouseY)) {
+                game.playerBuyShares(i, want);
+                return true;
+            }
+            if (contains(layout.shareSell[i], mouseX, mouseY)) {
+                game.playerSellShares(i, want);
+                return true;
+            }
+        }
+        // Поле объёма и кнопки счёта в режиме акций работают как обычно —
+        // именно ими игрок и задаёт, сколько акций брать.
     }
     if (contains(layout.elementsBtn, mouseX, mouseY)) {
         // Один тумблер: показать таблицу для выбора элемента, а если фильтр уже
@@ -1944,6 +1975,58 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
         drawText(renderer, x, y, sub, P.dim, 1);
     }
 
+    // --- Режим акций держав (§33): вместо сделок — список держав.
+    const double cash = (game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()))
+                            ? game.agents[size_t(game.playerAgent)].money : 0.0;
+    if (state.exchangeShares) {
+        int by = layout.board.y;
+        drawText(renderer, x, by, "POWER          PER SHARE  PER YEAR     HELD     VALUE    PROFIT", P.cyan, 1);
+        by += 18;
+        char row[220];
+        for (size_t f = 0; f < game.factions.size() && f < 8; ++f) {
+            const double price = game.factionSharePrice(int(f));
+            const double div = game.factionShareDividend(int(f));
+            const double held = f < game.playerShares.size() ? game.playerShares[f] : 0.0;
+            const double value = held * price;
+            const double basis = f < game.shareCostBasis.size() ? game.shareCostBasis[f] : 0.0;
+            const double pl = value - basis;
+            const double age = game.factionBookAge(int(f));
+            if (int(f) == game.playerFaction) {
+                std::snprintf(row, sizeof(row), "%-16s YOUR OWN FREEHOLD",
+                              game.factions[f].name.substr(0, 16).c_str());
+                drawText(renderer, x, by, row, P.dim, 1);
+            } else if (price <= 0.0) {
+                std::snprintf(row, sizeof(row), "%-16s NO REPORT PUBLISHED YET",
+                              game.factions[f].name.substr(0, 16).c_str());
+                drawText(renderer, x, by, row, P.dim, 1);
+            } else {
+                std::snprintf(row, sizeof(row), "%-14s %9s %9s %8.0F %9s %9s",
+                              game.factions[f].name.substr(0, 14).c_str(),
+                              creditsLabel(price).c_str(), creditsLabel(div).c_str(), held,
+                              creditsLabel(value).c_str(),
+                              (pl >= 0.0 ? "+" + creditsLabel(pl) : "-" + creditsLabel(-pl)).c_str());
+                drawText(renderer, x, by, row, held > 0.0 ? (pl >= 0.0 ? P.green : P.red) : P.text, 1);
+            }
+            // Возраст отчёта — это и есть вся игра в акции: котировка отстаёт от
+            // жизни, и тот, кто там ЛЕТАЛ, знает больше биржи.
+            if (age >= 0.0) {
+                std::snprintf(row, sizeof(row), "REPORT %.0FY", age);
+                drawText(renderer, x + 12, by + 10, row, age > 4.0 ? P.amber : P.dim, 1);
+            }
+            const bool canBuy = price > 0.0 && cash > price && int(f) != game.playerFaction;
+            drawButton(renderer, layout.shareBuy[f], "BUY", P.green, canBuy);
+            drawButton(renderer, layout.shareSell[f], "SELL", P.amber, held > 0.0);
+            by += 22;
+        }
+        by += 6;
+        std::snprintf(row, sizeof(row), "PORTFOLIO %s CR", creditsLabel(game.playerShareValue()).c_str());
+        drawText(renderer, x, by, row, P.dim, 1);
+        drawText(renderer, x, by + 13, "DIVIDENDS ARRIVE ON THE ACCOUNT AT THE SPEED OF LIGHT", P.dim, 1);
+        drawText(renderer, x, by + 26, "A POWER IS PRICED BY WHAT IT EARNS - HELP IT AND YOUR STAKE GROWS", P.dim, 1);
+        drawButton(renderer, layout.sharesBtn, "BACK TO DEALS", P.violet, true);
+        return;
+    }
+
     // --- Режим выбора элемента: таблица Менделеева вместо списка.
     if (state.exchangeTable) {
         drawText(renderer, x, layout.board.y, "PICK AN ELEMENT TO LIST EVERY SURVEYED MARKET FOR IT", P.cyan, 1);
@@ -2026,6 +2109,7 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
         std::snprintf(btn, sizeof(btn), "QUOTA MET");
     }
     drawButton(renderer, layout.settleQuota, btn, P.green, canSettle);
+    drawButton(renderer, layout.sharesBtn, "SHARES", P.violet, true);
     if (state.exchangeElement >= 0) {
         std::snprintf(btn, sizeof(btn), "ALL ELEMENTS (%s)",
                       elementDefinitions()[state.exchangeElement].symbol);
@@ -2252,10 +2336,12 @@ void drawExoticsWindow(SDL_Renderer* renderer, const Game& game, const Window& w
     if (shipyard < 2) {
         drawText(renderer, x, fy, "REFIT AND FORGE NEED A SHIPYARD - THIS SYSTEM HAS NONE", P.dim, 1);
     } else {
-        std::snprintf(line, sizeof(line), "FORGE A CHROMOCORE OF YOUR CHOICE: %.0F %s AND %s CR",
-                      game.forgeCondensateCost(), exoticDefs()[EX_CONDENSATE].symbol,
-                      creditsLabel(game.forgeCreditCost()).c_str());
-        drawText(renderer, x, fy, line, P.amber, 1);
+        // Строка собирается из ПЕРЕВОДИМОГО куска и чисел отдельно: словарь
+        // видит текст уже собранным, поэтому ключ с «%s» здесь не сработал бы.
+        drawText(renderer, x, fy, "FORGE A CHROMOCORE OF YOUR CHOICE", P.amber, 1);
+        std::snprintf(line, sizeof(line), "%.0F %s + %s CR", game.forgeCondensateCost(),
+                      exoticDefs()[EX_CONDENSATE].symbol, creditsLabel(game.forgeCreditCost()).c_str());
+        drawText(renderer, x + 240, fy, line, P.amber, 1);
     }
 
     drawText(renderer, layout.amount.x, layout.amount.y - 11, "AMOUNT", P.dim, 1);

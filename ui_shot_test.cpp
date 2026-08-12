@@ -103,6 +103,27 @@ int main(int argc, char** argv) {
         shot((std::string(cases[i].name) + "_" + tag).c_str(), game, ui, sel);
     }
     {
+        // Биржа держав (§33) снимается в режиме акций и на мире, где книги уже
+        // опубликованы, а портфель не пуст: на нулях строка «нет отчёта»
+        // ничего не проверяет, а вылезают в русском именно цифры и знак прибыли.
+        Game sh;
+        sh.seed = 11;
+        sh.init(600);
+        for (int y = 0; y < 12; ++y) sh.update(1.0);
+        sh.agents[sh.playerAgent].money = 9.0e11;
+        for (size_t f = 0; f < sh.factions.size(); ++f) {
+            sh.publishFactionBook(int(f));
+            sh.playerBuyShares(int(f), 900.0 * double(f + 1));
+        }
+        UI::HudSelection ssel;
+        ssel.star = sh.agents[sh.playerAgent].currentStar;
+        ssel.agent = sh.playerAgent;
+        UI::WindowState ui;
+        UI::openExchangeWindow(ui, ssel.star, SCREEN_W, SCREEN_H);
+        ui.exchangeShares = true;
+        shot((std::string("shares_") + tag).c_str(), sh, ui, ssel);
+    }
+    {
         // Хайтек-этаж (§31) снимается ОТДЕЛЬНО и на подготовленном мире: окно
         // открывается только там, где рынок экзотики есть вообще, а таких систем
         // около 12%. Игроку выдаётся ячейка и вещество на борт — иначе строки

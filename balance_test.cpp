@@ -2165,6 +2165,87 @@ void testInsightBurnsReactorFuel() {
           "просчёт по V стоит процент бака, на сухом молчит", buf);
 }
 
+// --- Биржа держав (§33) -----------------------------------------------------
+
+// Акция обязана быть ХУЖЕ собственности и при этом осмысленной.
+//
+// ⚠️ Первая версия считала цену от АКТИВОВ (казна + цена всех подвластных
+// систем), и замер показал 20 млн Cr за акцию при дивиденде 18 Cr — окупаемость
+// миллион лет, то есть «инвестиция», которая не окупается никогда. Цена акции
+// обязана идти от ДОХОДА, тогда окупаемость задана построением. Меряем именно
+// её, а не абсолютные числа: лестница цен может двигаться, отношение — нет.
+void testSharesPayBackInCenturies() {
+    Game g;
+    buildWorld(g, 8080, 20);
+    for (size_t f = 0; f < g.factions.size(); ++f) g.publishFactionBook(int(f));
+
+    int probe = -1;
+    for (size_t f = 0; f < g.factions.size(); ++f) {
+        if (int(f) == g.playerFaction) continue;
+        if (g.factionSharePrice(int(f)) > 0.0 && g.factionShareDividend(int(f)) > 0.0) { probe = int(f); break; }
+    }
+    if (probe < 0) {
+        check(false, "акция окупается веками, а не тысячелетиями", "ни у одной державы нет котировки");
+        return;
+    }
+    const double price = g.factionSharePrice(probe);
+    const double div = g.factionShareDividend(probe);
+    const double payback = div > 0.0 ? price / div : 1.0e18;
+
+    // Портфель: покупка списывает деньги, продажа их возвращает, доля упирается
+    // в потолок, и своё собственное владение не продаётся.
+    const int pa = g.playerAgent;
+    g.agents[pa].money = 1.0e12;
+    const double bought = g.playerBuyShares(probe, SHARE_FLOAT);   // просим больше, чем дадут
+    const double afterBuy = g.agents[pa].money;
+    const double sold = g.playerSellShares(probe, bought * 0.5);
+    const double afterSell = g.agents[pa].money;
+    const double ownStake = g.playerFaction >= 0 ? g.playerBuyShares(g.playerFaction, 10.0) : 0.0;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "%s: %.0f Cr за акцию, %.1f Cr/год => окупаемость %.0f лет; взято %.0f (потолок %.0f), продано %.0f, своя %.0f",
+        g.factions[size_t(probe)].name.c_str(), price, div, payback, bought,
+        SHARE_FLOAT * SHARE_MAX_STAKE, sold, ownStake);
+    check(payback > 80.0 && payback < 900.0 &&
+          std::fabs(bought - SHARE_FLOAT * SHARE_MAX_STAKE) < 1.0 &&
+          afterBuy < 1.0e12 && afterSell > afterBuy && sold > 0.0 && ownStake == 0.0,
+          "акция окупается веками, а не тысячелетиями", buf);
+}
+
+// Портфель и котировки обязаны пережить сейв: без книг после загрузки цена была
+// бы нулевой до первого такта фракций — портфель на миллиард показался бы
+// пустым, а продать его было бы нельзя.
+void testSharesSurviveSave() {
+    Game g;
+    buildWorld(g, 606, 10);
+    for (size_t f = 0; f < g.factions.size(); ++f) g.publishFactionBook(int(f));
+    int probe = -1;
+    for (size_t f = 0; f < g.factions.size(); ++f) {
+        if (int(f) != g.playerFaction && g.factionSharePrice(int(f)) > 0.0) { probe = int(f); break; }
+    }
+    if (probe < 0) { check(false, "акции переживают сейв", "нет котировок"); return; }
+    g.agents[g.playerAgent].money = 1.0e12;
+    const double held = g.playerBuyShares(probe, 4000.0);
+    const double value = g.playerShareValue();
+
+    const std::string path = "balance_shares_save.txt";
+    const bool saved = g.saveToFile(path);
+    Game b;
+    b.init(1200);
+    const bool loaded = saved && b.loadFromFile(path);
+    std::remove(path.c_str());
+    const double heldAfter = loaded && probe < int(b.playerShares.size()) ? b.playerShares[size_t(probe)] : -1.0;
+    const double valueAfter = loaded ? b.playerShareValue() : -1.0;
+
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "на руках %.0f -> %.0f, портфель %.4g -> %.4g Cr",
+                  held, heldAfter, value, valueAfter);
+    check(loaded && held > 0.0 && std::fabs(heldAfter - held) < 0.5 &&
+          value > 0.0 && std::fabs(valueAfter - value) < value * 0.001,
+          "акции переживают сейв", buf);
+}
+
 // --- Хайтек-этаж: экзотическая материя (§31) --------------------------------
 
 // Рынок экзотики обязан быть РЕДКИМ. В этом весь смысл: у каждого вещества свой
@@ -2547,6 +2628,8 @@ int main() {
     testAntimatterBurnsWithTheFuel();
     testForgePicksTheStat();
     testRefitSurvivesHullAndSave();
+    testSharesPayBackInCenturies();
+    testSharesSurviveSave();
     testTranslationsKeepFormatOrder();
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;

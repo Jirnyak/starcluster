@@ -534,17 +534,38 @@ const Entry WORDS[] = {
     {"NEED LICENCE", "НУЖНА ЛИЦЕНЗИЯ"},
     {"LICENCE REVOKED - BUY BACK", "ЛИЦЕНЗИЯ ОТОЗВАНА - ВЫКУП"},
 
+    // ---------------- биржа держав (§33) ----------------
+    {"POWER          PER SHARE  PER YEAR     HELD     VALUE    PROFIT",
+     "ДЕРЖАВА        ЗА АКЦИЮ    В ГОД   НА РУКАХ   СТОИТ    ПРИБЫЛЬ"},
+    {"NO REPORT PUBLISHED YET", "ОТЧЁТА ЕЩЁ НЕ БЫЛО"},
+    {"YOUR OWN FREEHOLD", "ВАШЕ СОБСТВЕННОЕ ВЛАДЕНИЕ"},
+    {"YOU CANNOT BUY SHARES IN YOUR OWN FREEHOLD", "АКЦИИ СОБСТВЕННОГО ВЛАДЕНИЯ НЕ КУПИТЬ"},
+    {"NO PUBLISHED REPORT FOR THIS POWER", "ПО ЭТОЙ ДЕРЖАВЕ ОТЧЁТА НЕТ"},
+    // ⚠️ Ключей с «%s» здесь быть не может: в интерфейсе строка приходит в
+    // drawText УЖЕ собранной, и словарь видит подставленные числа. Формат-ключи
+    // работают только там, где переводят САМ формат (реплики Тимертии).
+    {"PORTFOLIO", "ПОРТФЕЛЬ"},
+    {"REPORT", "ОТЧЁТ"},
+    {"DIVIDENDS ARRIVE ON THE ACCOUNT AT THE SPEED OF LIGHT",
+     "ДИВИДЕНДЫ ПРИХОДЯТ НА СЧЁТ СО СКОРОСТЬЮ СВЕТА"},
+    {"A POWER IS PRICED BY WHAT IT EARNS - HELP IT AND YOUR STAKE GROWS",
+     "ДЕРЖАВА СТОИТ СТОЛЬКО, СКОЛЬКО ЗАРАБАТЫВАЕТ - ПОМОГИ ЕЙ, И ДОЛЯ ВЫРАСТЕТ"},
+    {"BACK TO DEALS", "НАЗАД К СДЕЛКАМ"},
+    {"SHARES", "АКЦИИ"},
+    {"STAKE CAPPED AT A QUARTER OF THE POWER", "БОЛЬШЕ ЧЕТВЕРТИ ДЕРЖАВЫ НЕ ПРОДАЮТ"},
+    {"NOT ENOUGH CREDITS FOR SHARES", "НА АКЦИИ НЕ ХВАТАЕТ КРЕДИТОВ"},
+    {"NO SHARES TO SELL", "АКЦИЙ НА РУКАХ НЕТ"},
+
     // ---------------- хайтек-этаж: экзотическая материя (§31) ----------------
     // Слова, которых в игре не было вовсе: три вещества, отсек удержания,
     // кузница ядер. Двухбуквенные коды AM/NM/QC в словарь НЕ идут — они
     // столкнулись бы с символами элементов (Am — америций!), и остаются как есть.
+    {"FORGE A CHROMOCORE OF YOUR CHOICE", "ХРОМОКОР ПО ВАШЕМУ ВЫБОРУ"},
     {"MATTER      HELD    RESERVE      UNIT PRICE",
      "ВЕЩЕСТВО   НА БОРТУ     ЗАПАС     ЦЕНА ЕДИНИЦЫ"},
     {"NOT TRADED HERE", "ЗДЕСЬ НЕ ТОРГУЮТ"},
     {"REFIT AND FORGE NEED A SHIPYARD - THIS SYSTEM HAS NONE",
      "ПЕРЕОСНАСТКЕ И КУЗНИЦЕ НУЖНА ВЕРФЬ - ЗДЕСЬ ЕЁ НЕТ"},
-    {"FORGE A CHROMOCORE OF YOUR CHOICE: %.0F %s AND %s CR",
-     "ХРОМОКОР ПО ВЫБОРУ: %.0F %s И %s CR"},
     {"NOT ON SITE - DOCK HERE TO TRADE", "ВАС ЗДЕСЬ НЕТ - ПРИЧАЛЬТЕ, ЧТОБЫ ТОРГОВАТЬ"},
     {"HIGH-TECH EXCHANGE", "ХАЙТЕК-БИРЖА"},
     {"EXOTICS", "ЭКЗОТИКА"},

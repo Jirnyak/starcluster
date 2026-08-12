@@ -3375,6 +3375,18 @@ bool Game::saveToFile(const std::string& path) {
     // Хайтек-этаж (§31). Ступень ячейки и слои брони обязаны быть здесь: они
     // ЗАПЕКАЮТСЯ в поля корабля, а поля пересобираются из таблицы классов, —
     // не сохранив их, загрузка тихо разденет корпус (та же грабля §32.2).
+    // (§33) Акции держав. Портфель и КНИГИ: без книг котировка после загрузки
+    // была бы нулевой до первого такта фракций, то есть портфель на миллиард
+    // показывался бы пустым, а продать его было бы нельзя.
+    out << "SHARES " << factions.size() << ' ' << factionBookCursor << '\n';
+    for (size_t f = 0; f < factions.size(); ++f) {
+        out << "SH " << (f < factionBook.size() ? factionBook[f] : 0.0) << ' '
+            << (f < factionIncome.size() ? factionIncome[f] : 0.0) << ' '
+            << (f < factionBookAt.size() ? factionBookAt[f] : -1.0e18) << ' '
+            << (f < playerShares.size() ? playerShares[f] : 0.0) << ' '
+            << (f < shareCostBasis.size() ? shareCostBasis[f] : 0.0) << '\n';
+    }
+
     out << "EXOTIC " << exoticStocks.size() << ' ' << containmentLevel << ' ' << hullPlating << '\n';
     for (const ExoticStock& e : exoticStocks) {
         out << "EX " << e.starIndex << ' ' << e.updatedAt;
@@ -4107,6 +4119,26 @@ bool Game::loadFromFile(const std::string& path) {
             loaded.localClaims.push_back(c);
         }
 
+        size_t shareCount = 0;
+        if (!expectTag(in, "SHARES") || !(in >> shareCount >> loaded.factionBookCursor)) {
+            lastEvent = "load failed: shares";
+            return false;
+        }
+        loaded.resizeShareBooks();
+        for (size_t f = 0; f < shareCount; ++f) {
+            double book = 0.0, income = 0.0, at = -1.0e18, held = 0.0, basis = 0.0;
+            if (!expectTag(in, "SH") || !(in >> book >> income >> at >> held >> basis)) {
+                lastEvent = "load failed: share entry";
+                return false;
+            }
+            if (f >= loaded.factionBook.size()) continue;   // фракций стало меньше — лишнее отбрасываем
+            loaded.factionBook[f] = book;
+            loaded.factionIncome[f] = income;
+            loaded.factionBookAt[f] = at;
+            loaded.playerShares[f] = held;
+            loaded.shareCostBasis[f] = basis;
+        }
+
         if (!expectTag(in, "EXOTIC") ||
             !(in >> count >> loaded.containmentLevel >> loaded.hullPlating)) {
             lastEvent = "load failed: exotics";
@@ -4410,6 +4442,12 @@ void Game::init(size_t num_stars) {
     exoticStocks.clear();
     containmentLevel = 0;
     hullPlating = 0;
+    factionBook.clear();
+    factionIncome.clear();
+    factionBookAt.clear();
+    playerShares.clear();
+    shareCostBasis.clear();
+    factionBookCursor = 0;
     lastEvent = "cluster seeded";
     if (num_stars == 0) return;
 
@@ -5030,6 +5068,17 @@ void Game::updateFactions(double dt) {
     factionUpdateTimer = 1.0;
     resizeFactionRelations();
     resizeFactionReputation();
+    // (§33) Книга ОДНОЙ державы по кругу. Пересчёт стоит прохода по всем её
+    // системам, поэтому делать его сразу для всех — расточительство; а отставание
+    // котировки от жизни здесь не недостаток, а суть: биржа узнаёт о потерянной
+    // системе позже, чем игрок, который там был.
+    resizeShareBooks();
+    if (!factions.empty()) {
+        factionBookCursor %= int(factions.size());
+        publishFactionBook(factionBookCursor);
+        factionBookCursor = (factionBookCursor + 1) % int(factions.size());
+    }
+    payShareDividends(1.0);
 
     for (size_t i = 0; i < factions.size(); ++i) {
         Faction& faction = factions[i];
@@ -7198,6 +7247,149 @@ bool Game::playerSettleQuota() {
     pushNews("Quota settled in cash for " + std::to_string(int(std::ceil(cost))) + " Cr.", 4);
     lastEvent = "quota settled";
     return true;
+}
+
+// --- Акции держав (§33) -----------------------------------------------------
+
+void Game::resizeShareBooks() {
+    const size_t n = factions.size();
+    if (factionBook.size() != n) factionBook.assign(n, 0.0);
+    if (factionIncome.size() != n) factionIncome.assign(n, 0.0);
+    if (factionBookAt.size() != n) factionBookAt.assign(n, -1.0e18);
+    if (playerShares.size() != n) playerShares.resize(n, 0.0);
+    if (shareCostBasis.size() != n) shareCostBasis.resize(n, 0.0);
+}
+
+void Game::publishFactionBook(int factionIndex) {
+    resizeShareBooks();
+    if (!validFaction(*this, factionIndex)) return;
+    const Faction& f = factions[size_t(factionIndex)];
+    // Активы державы — это её казна плюс её системы, оценённые ровно тем же
+    // законом, каким система продаётся игроку (§13). Никакой отдельной
+    // «стоимости фракции» не заводим: если бы она считалась иначе, покупка
+    // системы у державы двигала бы её книгу не на цену сделки.
+    // Доход державы — это её суверенный сбор с оборота подвластных систем, та
+    // же величина и тот же закон, что и доход владельца системы (§18).
+    double income = 0.0;
+    for (size_t i = 0; i < f.controlledStars.size(); ++i) {
+        const int starIndex = f.controlledStars[i];
+        if (!validStar(*this, starIndex)) continue;
+        const double own = colonyIncomeAt(starIndex);
+        income += own > 0.0 ? own : systemTurnover(starIndex) * COLONY_OWNER_DUTY;
+    }
+    // Капитализация: касса плюс поток, оценённый в годах. Активы (цена систем)
+    // в цену акции НЕ входят — см. комментарий у SHARE_CAPITALISATION_YEARS.
+    const double book = std::max(0.0, f.treasury) + income * SHARE_CAPITALISATION_YEARS;
+    factionBook[size_t(factionIndex)] = book;
+    factionIncome[size_t(factionIndex)] = income;
+    factionBookAt[size_t(factionIndex)] = time;
+}
+
+double Game::factionSharePrice(int factionIndex) const {
+    if (!validFaction(*this, factionIndex)) return 0.0;
+    if (size_t(factionIndex) >= factionBook.size()) return 0.0;
+    if (factionBookAt[size_t(factionIndex)] < -1.0e17) return 0.0;   // отчёта ещё не было
+    return std::max(0.0, factionBook[size_t(factionIndex)]) / SHARE_FLOAT;
+}
+
+double Game::factionShareDividend(int factionIndex) const {
+    if (!validFaction(*this, factionIndex)) return 0.0;
+    if (size_t(factionIndex) >= factionIncome.size()) return 0.0;
+    // Владелец системы берёт ВСЮ пошлину с её оборота; акционер — только ту
+    // долю, которую держава распределяет, а не тратит на флоты и войны. Отсюда
+    // и вся разница доходности: система окупается быстрее акции в четыре раза,
+    // зато за её кассой надо летать.
+    return std::max(0.0, factionIncome[size_t(factionIndex)]) * SHARE_PAYOUT / SHARE_FLOAT;
+}
+
+double Game::factionBookAge(int factionIndex) const {
+    if (!validFaction(*this, factionIndex)) return -1.0;
+    if (size_t(factionIndex) >= factionBookAt.size()) return -1.0;
+    if (factionBookAt[size_t(factionIndex)] < -1.0e17) return -1.0;
+    return std::max(0.0, time - factionBookAt[size_t(factionIndex)]);
+}
+
+double Game::playerShareValue() const {
+    double total = 0.0;
+    for (size_t f = 0; f < playerShares.size(); ++f) {
+        total += playerShares[f] * factionSharePrice(int(f));
+    }
+    return total;
+}
+
+double Game::playerBuyShares(int factionIndex, double shares) {
+    resizeShareBooks();
+    if (!validFaction(*this, factionIndex) || !(shares > 0.0)) return 0.0;
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return 0.0;
+    if (playerTradingBlocked()) return 0.0;
+    Agent& player = agents[size_t(playerAgent)];
+    if (player.ship.enRoute) { lastEvent = "cannot trade in transit"; return 0.0; }
+    if (factionIndex == playerFaction) {
+        // Своя фракция — это и есть кошелёк игрока (§16): покупка её акций была
+        // бы переводом денег самому себе с потерей на дивидендах.
+        lastEvent = "you cannot buy shares in your own freehold";
+        return 0.0;
+    }
+    const double price = factionSharePrice(factionIndex);
+    if (price <= 0.0) { lastEvent = "no published report for this power"; return 0.0; }
+    // Больше четверти державы не продадут никому: остальное лежит у тех, кто
+    // её и построил. Без этого потолка игрок с поздними деньгами скупал бы
+    // скопление целиком одной кнопкой.
+    const double roomShares = std::max(0.0, SHARE_FLOAT * SHARE_MAX_STAKE - playerShares[size_t(factionIndex)]);
+    double amount = std::min(shares, roomShares);
+    amount = std::min(amount, std::max(0.0, player.money) / price);
+    if (amount <= 1e-6) {
+        lastEvent = roomShares <= 1e-6 ? "stake capped at a quarter of the power"
+                                       : "not enough credits for shares";
+        return 0.0;
+    }
+    const double cost = amount * price;
+    player.money -= cost;
+    playerShares[size_t(factionIndex)] += amount;
+    shareCostBasis[size_t(factionIndex)] += cost;
+    lastEvent = "bought shares in " + factions[size_t(factionIndex)].name;
+    return amount;
+}
+
+double Game::playerSellShares(int factionIndex, double shares) {
+    resizeShareBooks();
+    if (!validFaction(*this, factionIndex) || !(shares > 0.0)) return 0.0;
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return 0.0;
+    if (playerTradingBlocked()) return 0.0;
+    Agent& player = agents[size_t(playerAgent)];
+    if (player.ship.enRoute) { lastEvent = "cannot trade in transit"; return 0.0; }
+    const double price = factionSharePrice(factionIndex);
+    if (price <= 0.0) { lastEvent = "no published report for this power"; return 0.0; }
+    const double amount = std::min(shares, playerShares[size_t(factionIndex)]);
+    if (amount <= 1e-6) { lastEvent = "no shares to sell"; return 0.0; }
+    const double held = playerShares[size_t(factionIndex)];
+    // Себестоимость списывается ПРОПОРЦИОНАЛЬНО проданной доле — тем же
+    // законом, что и `cargoCost` при продаже части трюма.
+    const double basisShare = held > 1e-9 ? shareCostBasis[size_t(factionIndex)] * (amount / held) : 0.0;
+    player.money += amount * price;
+    playerShares[size_t(factionIndex)] -= amount;
+    shareCostBasis[size_t(factionIndex)] = std::max(0.0, shareCostBasis[size_t(factionIndex)] - basisShare);
+    lastEvent = "sold shares in " + factions[size_t(factionIndex)].name;
+    return amount;
+}
+
+void Game::payShareDividends(double years) {
+    if (!(years > 0.0) || playerFaction < 0) return;
+    resizeShareBooks();
+    for (size_t f = 0; f < playerShares.size(); ++f) {
+        if (playerShares[f] <= 0.0) continue;
+        const double payout = playerShares[f] * factionShareDividend(int(f)) * years;
+        if (payout <= 0.0) continue;
+        // Дивиденд платит держава ОТТУДА, ГДЕ ОНА ЕСТЬ, — из своей столицы.
+        // Значит, деньги идут на счёт и подчиняются световой сверке (§16):
+        // получить их можно, но не мгновенно и не где угодно.
+        const int origin = validStar(*this, factions[f].homeStar) ? factions[f].homeStar
+                                                                  : agents[size_t(std::max(0, playerAgent))].currentStar;
+        addCreditFloat(playerFaction, payout, origin);
+        if (validFaction(*this, int(f))) {
+            factions[f].treasury = std::max(0.0, factions[f].treasury - payout);
+        }
+    }
 }
 
 // --- Экзотическая материя (§31) ---------------------------------------------
