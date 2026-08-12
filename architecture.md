@@ -13,6 +13,7 @@ Core taste: physmath, data-driven, data-oriented, procedural, modular, elegant, 
 - `faction.*`: faction identity, color, strength, treasury, aggression, controlled star ids.
 - `colony.*`: colony state attached to stars and factions.
 - `market.*`: local supply, demand, production, consumption, prices.
+- `exotic.*`: the high-tech floor above the periodic table — antimatter, neutronium, coherent condensate. Pure functions of the star (where each is born, who spends it, what it costs); the depletion of a market is the only state, and it is stored sparsely and relaxed lazily.
 - `ship.*`: physical ship state, 3D position/velocity, max speed, acceleration, cargo.
 - `agent.*`: simulation actors: player, traders, military fleets, colonizers.
 - `game.*`: simulation composition and systems update order.
@@ -182,6 +183,21 @@ There is no global market. Every star has a local market:
 Prices emerge from local supply/demand and role needs. Trade emerges from price spreads, distance, travel time, tariffs, ownership, risk, and agent cargo capacity.
 
 Resources are data definitions. Elements, weights, demand categories, and role effects belong in data-like modules, not in renderer or input code.
+
+There is a **second floor** above this one (`exotic.*`). It is deliberately not
+the same model: the ordinary market is a living substitution system ticking over
+all 8192 stars because hundreds of agents walk it, while exotic matter is touched
+by exactly one ship. Its target stock is a pure function of the star, deviation
+from that target relaxes lazily on access, and only the stars the player actually
+traded at reach the save file. The same reasoning applies to a power's book
+(`publishFactionBook`): walking every controlled system costs a pass over their
+markets, so one power is republished per faction tick — and the resulting lag is
+not a compromise but the mechanic, since knowing before the exchange does is what
+makes shares a game.
+
+**Do not put whole-cluster work on a per-frame or per-tick path.** If a new
+quantity needs every star, it belongs in generation, in a cursor that amortises
+over ticks, or in a lazy function of state.
 
 ## Visibility And Signals
 
@@ -359,7 +375,19 @@ Rules:
   bonuses are baked into hull fields (CHROMOCORE rule) and the module list is not
   re-applied on load, so an unsaved field silently disappears. The same field must
   also be cleared in `shipApplyClass`, or the bonus survives a hull swap and the
-  loss of the ship.
+  loss of the ship;
+- the same rule in the other direction: anything baked into hull fields and
+  stored *elsewhere* must be re-baked wherever `shipApplyClass` runs. Chromocores
+  were not, so three of the seven progression branches died on the first hull
+  purchase while still reading `>1.00` on screen;
+- a **new field goes into its own block or behind a new version number**. It must
+  never be appended to, or substituted inside, an existing tag's line: the loader
+  reads a fixed count of tokens and will swallow the next tag instead. Both
+  mistakes were made and caught in the 2026-08-12 session;
+- **state that is not saved must be rebuilt on load.** The market's demand model
+  is a pure function of the star and was neither saved nor re-seeded, so the
+  first tick after loading filled it with zeros and killed the cluster's economy
+  for the rest of the game.
 
 This keeps save/load small and aligned with the real architecture instead of
 turning prototype history into permanent API surface.

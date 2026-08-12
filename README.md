@@ -90,6 +90,12 @@ The current executable prototype contains:
 - buying whole systems outright, colony vaults, and a free market at home;
 - faction relation drift, strategic orders, budgets, and influence overlay;
 - a trading licence with a millennial turnover quota (see below);
+- a high-tech second floor of trade - antimatter, neutronium and coherent
+  condensate, each born at its own rare kind of star - with a containment bay,
+  neutronium hull plating and a forge that grants the chromocore you pick;
+- shares in the powers, priced on their published books and paying dividends
+  into the light-speed account;
+- an autopilot for any hull of your fleet that is docked alongside;
 - a first-person local flight mode inside any star system (`L`);
 - save/load to the OS user data directory;
 - SDL2 map rendering, HUD panels, draggable system/trade/contract windows, and
@@ -180,28 +186,36 @@ steps, the asset-extraction layer, and the list of keys the IME cannot produce.
 - `Space`: pause or resume.
 - `1`, `2`, `3`, `4`: set simulation speed to `1x`, `2x`, `5x`, `10x`.
 - `F1`: open or close the controls card (also shown once before the game starts).
-- `Esc`: quit.
+- `Esc`: close the top window; with nothing open, press it twice to save and quit.
 
 ### Player Ship And Map
 
 - `Tab`: select next visible agent.
 - `P`: select and follow the player ship.
 - `F`: follow selected agent.
-- `I`: toggle faction influence overlay.
+- `I`: open the transaction journal (it opens with a net-worth summary).
 - `G`: route the player ship to the selected star.
+- `X`: stop the ship. `N`: switch to another hull of your fleet.
 - `L`: enter or leave local flight mode (first-person flight inside the system).
-- `E`: open the brokerage (route board and trading licences).
+- `E`: open the brokerage (route board, trading licences, faction shares).
 - `[` / `]`: change selected element.
 
 ### Trade, Contracts, Colonies
 
-- `B`: buy selected element at the player ship's current system.
-- `V`: sell current cargo.
+- `B`: buy the selected element at the player ship's current system. It respects
+  the `AMOUNT` field and keeps back enough credits to fuel the next leg.
+- `Q`: sell current cargo. (`V` used to do this; `V` is now Timertia's advisor,
+  which burns reactor fuel to re-run the market model.)
 - `T`: run auto-trade for the player ship.
+- `O`: open the `HOLD / TANKS` window. `U`: open the shipyard.
 - `C`: open the ownership window for the current system (price breakdown and
   `BUY SYSTEM`, or the colony vault once it is yours).
+- `Y`: open the high-tech exchange, where exotic matter is traded and chromocores
+  are forged. Only systems that actually have such a market respond.
 - `M`: mine ore at the current system.
 - `J`: repair hull. `K`: scan a local anomaly.
+- `R`: rob the selected agent. Two presses: the first one reports your odds,
+  because on the starting hull they are about one in seven.
 - `F2`: buy back a revoked trading licence.
 - `F5`: save. `F9`: load.
 
@@ -410,6 +424,75 @@ and is meant to be a goal measured in hundreds of runs. Buying
 an additional ship requires a free licence. The quota's remainder can also be settled directly
 in cash at a premium, for players who would rather pay than wait for tariffs to accumulate.
 
+### Exotic Matter
+
+The periodic table ends where chemistry ends: the binding curve caps what a
+nucleus can give at about 8 MeV per nucleon. Everything the late game runs on
+lies past that line, and it is not "rare goods" but three states of matter, each
+born at its own rare kind of star:
+
+| | What it is | Where it is born | Share of systems |
+| --- | --- | --- | --- |
+| `ANTIMATTER` | antihydrogen, 1863 MeV per nucleon pair | manufactured: a plant plus a bright star | market 8.9%, sources 275 of 8192 |
+| `NEUTRONIUM` | degenerate matter | scooped from a neutron star's crust or a black hole's disc | market 3.6%, sources 37 |
+| `CONDENSATE` | coherent substrate | only a system around a *dead* star (white dwarf) | market 4.9%, sources 28 |
+
+Sources have to be found, which is what finally gives exploration a late-game
+purpose. Prices come from the same two quantities as any other market - how much
+of the stuff appears here and how much is spent here - with a spread of up to
+8.6x between a pure source and a pure consumer. Stock is computed lazily and
+recovers over 260 years, so a source you strip does not run out, it gets
+expensive.
+
+Each substance closes its own loop:
+
+- **Antimatter rides in the bunker with the fuel** and joins the mixture. No new
+  physics: the mixture is already mass-weighted, this component simply carries
+  1863 MeV per nucleon instead of 1-8. A thousandth by mass triples the energy of
+  the blend and burns off with the trip.
+- **Neutronium is welded onto the hull** in layers: +120 armour and +900 hull per
+  layer, but also +60 dry mass, because one unit of it outweighs any element in
+  the table. Adding another layer is always a trade between staying alive and
+  accelerating.
+- **Condensate is the body of a chromocore.** The forge grants a core of the stat
+  *you pick*, unlike the lottery that research rolls. What pays for it is not the
+  purse but the trip to a dead star.
+
+A containment bay is the entry ticket: without it there is nothing to carry
+exotic matter in. Neither the bay nor the plating occupies a module slot, and
+both live on the hull, so they survive switching captains but not losing the ship.
+
+### Faction Shares
+
+Buying a system is possible but it is a billion credits and it is a *place*: the
+vault has to be flown to. A share in a power has no geography and sells at any
+moment; it pays distinctly worse, because an owner takes the whole duty on the
+turnover while a shareholder only takes the quarter that the power distributes
+rather than spending on fleets and wars. A system pays back in about half a
+century, a share in 279 years by measurement.
+
+A share is a claim on future payouts, so its price is the capitalised income:
+`(treasury + income * 50) / 1e6` per share. Payback is therefore fixed by
+construction rather than tuned.
+
+The books are *published*, not computed live: one power per faction tick, in
+turn. The quote lags reality by a few years, and whoever has been there knows
+about a lost system before the exchange does - which is the whole game in shares.
+Standing as a carrier (job tier 0.55 and up) keeps a power's report fresh for you.
+Dividends land on the faction account and therefore obey the light-speed
+settlement like every other credit.
+
+### Fleet And Autopilot
+
+A hull bought against a second licence used to be furniture: the agent update
+skipped every player ship, so it sat in port until you switched to it by hand.
+Any hull docked alongside can now be put on autopilot from the `HOLD` window; it
+trades on your faction's knowledge (the fleet is no smarter than its captain),
+keeps out of contract cargo, refuels itself, and pays the licence tariff into
+your quota. It is deliberately a narrow copy of the NPC trader rather than a call
+into it: the NPC path takes contracts on its own and draws from the global RNG,
+and one raised flag would have shifted the whole world.
+
 ### Price Slippage
 
 Trades execute at the **average price across the trade**, not at the pre-trade
@@ -598,6 +681,7 @@ the active code path draws text with its own bitmap glyphs and links only SDL2.
 | `market.h`, `market.cpp` | Local supply/demand/production/pricing. |
 | `ship.h`, `ship.cpp` | Ship mass, cargo, fuel and propellant mixtures, Tsiolkovsky route costs, ash. |
 | `drive.h`, `drive.cpp` | Drive families, exhaust velocity ceilings, ignition fraction. |
+| `exotic.h`, `exotic.cpp` | The high-tech floor: antimatter, neutronium, condensate. Where each is born, who spends it, what it costs. Pure functions of the star plus a lazily relaxing stock. |
 | `agent.h`, `agent.cpp` | Agent state and role-profile weights. |
 | `faction.h`, `faction.cpp` | Faction identity, budgets, relations, strategic fields and orders. |
 | `colony.h`, `colony.cpp` | Colony state, construction effects, damage, shipyard capacity. |
@@ -632,21 +716,30 @@ back to the working directory so older saves still open.
 The file is text and begins with:
 
 ```text
-STARCLUSTER_SAVE 14
+STARCLUSTER_SAVE 17
 ```
 
 The save stores the world seed, RNG state, time, stars, markets, factions,
 relations, colonies, contracts, agents, faction knowledge, player knowledge,
-pending signals, signal memory, and trading licence state. `F9` loads the same
-file and rebuilds runtime caches. Only version 14 loads: the ship record still changes with the
-simulation (v13 added the hull's upgrade-slot count and v14 the drilling rig, both
-of which used to be lost on load), so older saves are rejected with a clear
-message rather than opening corrupt.
+pending signals, signal memory, trading licence state, journal and reputation,
+what has already been claimed in local flight, exotic-market depletion, hull
+refits, and the share portfolio with the published faction books. `F9` loads the
+same file and rebuilds runtime caches. Versions 14 through 17 load; anything
+older is rejected with a clear message rather than opening corrupt.
+
+⚠️ The market record is only the *moving parts* - stock, prices, rates. The
+demand model itself is a pure function of the star and is re-seeded on load. It
+used to be neither saved nor rebuilt, so `Market::update` filled `needs` with
+zeros on the first tick and the whole cluster's economy died: demand 81M -> 0,
+system turnover down 16x, the millennial audit frozen. A game after its first
+load was a different game, and nothing on screen said so.
 
 Any ship field a module writes into has to be saved explicitly: modules bake their
 bonuses into the hull's fields and the module list is *not* re-applied on load.
 The same field also has to be cleared in `shipApplyClass`, or the bonus survives
-both a hull swap and the loss of the ship.
+both a hull swap and the loss of the ship. Chromocores had exactly this bug in
+the other direction - baked in, never re-applied - so three of the seven
+progression branches died silently on the first hull purchase.
 
 ## Design Constraints
 
@@ -688,6 +781,21 @@ baked-in bonus.
 `make uiclick` additionally pins the HOLD window transfer-arrow geometry, because
 that interface silently failed twice.
 
+⚠️ **The most expensive finding of all was invisible to every one of those
+checks.** They measure *mechanisms* one at a time; none of them played the game.
+Each mechanism was healthy on its own while together they locked the run shut: a
+"fill up" button that cost ten times a run's profit (the propellant tank holds a
+hundred trips), a "buy max" that left nothing for fuel, a hold that was not a
+ceiling on purchases, and an advisor that went silent on dry tanks without saying
+why - and that also failed to subtract the road from the profit it promised. A
+sane play-through on three seeds gave the same thing every time: two to four
+trades and a permanent 10,000 credits.
+
+`testAdvisorRunsCompound` now plays the game instead: ten runs in a row the way a
+player would, with no knowledge a player does not have, and it fails if any of
+those four pits comes back. If you add a mechanic, the question is not "does it
+work" but "does it lock the player in *together with* the others".
+
 ## Known Gaps
 
 - Full ship modules, weapons, armor, sensors, and upgrade UI are still planned.
@@ -697,17 +805,24 @@ that interface silently failed twice.
 - Non-player faction memory overlays are not exposed through a debug selector.
 - The active build is POSIX/SDL2 via `sdl2-config`; the old platform makefiles
   are not synchronized with the current source list.
-- Startup generates 10,000 systems and takes several seconds with no loading
+- Startup generates 8,192 systems and takes several seconds with no loading
   screen.
-- A game-year of simulation costs about 160 ms at 10,000 systems and roughly a
+- A game-year of simulation costs about 160 ms at 8,192 systems and roughly a
   thousand agents. That is 16% of a second at 1 year/second and fine, but it
   cannot sustain the higher speed multipliers: the loop caps its substeps and
   falls behind instead. Most of what remains is the market substitution model
   and the RNG, not routing.
-- Additional trading licences (each granting another ship and raising the quota)
-  are modelled in `Game::licenceCount` but cannot be purchased yet.
-- There is no arbitrage screen: the player must remember price spreads manually
-  even though market age and confidence are already tracked per faction.
+- Reputation still tops out at 1000 completed jobs with only two outlets: the
+  size of the jobs offered and a fresh copy of a power's books. Beyond that it
+  buys nothing.
+- The introductory novel ends at line 27 and only speaks about the high-tech
+  floor contextually, in the first port that actually has such a market. It says
+  nothing about shares or the fleet autopilot.
+- `addResearch` draws from the *global* RNG when it crosses a core threshold, and
+  local flight calls it. That is a declared exception, but it does mean the local
+  layer can shift the macro stream.
+- A colony's own stockpile now speeds its construction, but the player still
+  cannot direct what a colony builds.
 - The propulsion model computes several quantities it does not yet spend:
   `handlingRisk` only trims jet efficiency when it could carry radiation,
   contraband status and hull wear; `nuclearStability` only picks the starting
