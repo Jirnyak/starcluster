@@ -2165,6 +2165,39 @@ void testInsightBurnsReactorFuel() {
           "просчёт по V стоит процент бака, на сухом молчит", buf);
 }
 
+// Отозванную лицензию можно ОТРАБОТАТЬ (§37.7).
+//
+// ⚠️ Раньше отзыв просто запирал продажу — включая продажу накопанного в поясе,
+// вопреки комментарию в updateLicence, обещавшему «есть чем откопаться».
+// Откопаться было нечем: копать можно, продать нельзя, награда за заказ в квоту
+// не идёт. Игрок без денег на выкуп оставался в этом состоянии навсегда.
+void testRevokedLicenceCanBeWorkedOff() {
+    Game g;
+    buildWorld(g, 4242, 30);
+    const int pa = g.playerAgent;
+    g.agents[pa].money = 0.0;
+    g.licenceRevoked = true;
+    g.licenceBuyback = 400.0;
+
+    // Трюм полон — как у того, кто только что вернулся с добычи.
+    g.agents[pa].ship.cargo.clear();
+    g.agents[pa].ship.cargo.emplace_back("Fe", 90.0);
+    const double debtBefore = g.licenceBuyback;
+
+    int lots = 0;
+    for (int i = 0; i < 12 && g.licenceRevoked; ++i) {
+        if (!g.agentSellCargoAmount(pa, 12.0, 25)) break;
+        ++lots;
+    }
+
+    char buf[220];
+    std::snprintf(buf, sizeof(buf),
+        "долг %.0f -> %.0f за %d партий; лицензия %s; кошелёк %.0f",
+        debtBefore, g.licenceBuyback, lots, g.licenceRevoked ? "всё ещё отозвана" : "восстановлена",
+        g.agents[pa].money);
+    check(lots > 0 && g.licenceBuyback < debtBefore, "отозванную лицензию можно отработать", buf);
+}
+
 // Корабль с сухими баками обязан быть СПАСЁН, а не заперт навсегда (§38).
 //
 // ⚠️ Это был единственный настоящий тупик игры. `X STOP` с пустыми баками:
@@ -2933,6 +2966,7 @@ int main() {
     testAntimatterBurnsWithTheFuel();
     testForgePicksTheStat();
     testRefitSurvivesHullAndSave();
+    testRevokedLicenceCanBeWorkedOff();
     testStrandedShipGetsTowed();
     testInsightIgnoresLotSplitting();
     testJobBondBurnsOnFailure();

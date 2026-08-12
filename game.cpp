@@ -2153,10 +2153,37 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
     const double licenceFee = agent.playerControlled && !game.licenceRevoked
                                   ? gross * game.licenceTariffRate
                                   : 0.0;
+    // (§37.7) ОТРАБОТКА ВЫКУПА. При отозванной лицензии выручка не идёт в
+    // карман — она гасит долг по выкупу, и когда долг закрыт, торговля
+    // размораживается сама.
+    //
+    // ⚠️ Раньше отзыв лицензии просто запирал продажу, включая продажу
+    // НАКОПАННОГО в поясе, — вопреки собственному комментарию в updateLicence,
+    // который обещал «есть чем откопаться». Откопаться было нечем: руду копать
+    // можно, продать нельзя, а награда за заказ в квоту не идёт. Теперь путь
+    // назад есть, и он честный: работать за долг.
+    double debtPaid = 0.0;
+    if (agent.playerControlled && game.licenceRevoked && gross > 0.0) {
+        debtPaid = std::min(game.licenceBuyback, gross - fee);
+        if (debtPaid > 0.0) {
+            game.licenceBuyback -= debtPaid;
+            if (validFaction(game, game.clearingFaction)) {
+                game.factions[size_t(game.clearingFaction)].treasury += debtPaid;
+            }
+            if (game.licenceBuyback <= 0.01) {
+                game.licenceBuyback = 0.0;
+                game.licenceRevoked = false;
+                game.licenceQuotaPaid = 0.0;
+                game.licencePeriodEnd = game.time + LICENCE_PERIOD_YEARS;
+                game.pushNews("Licence worked off. Trading resumed.", 4);
+                game.lastEvent = "licence worked off - trading resumed";
+            }
+        }
+    }
 
     market.applyTrade(resourceIndex, amount);
     market.demand[resourceIndex].amount = std::max(0.0, market.demand[resourceIndex].amount - amount);
-    agent.money += gross - fee - licenceFee;
+    agent.money += gross - fee - licenceFee - debtPaid;
     if (validFaction(game, owner)) {
         game.factions[owner].treasury += fee;
         if (fee > 0.01) game.queueSettlementSignal(owner, starIndex, fee);
@@ -5766,6 +5793,19 @@ bool Game::robAgent(int attackerIndex, int victimIndex) {
     }
 }
 
+double Game::robOdds(int attackerIndex, int victimIndex) const {
+    if (attackerIndex < 0 || attackerIndex >= int(agents.size())) return 0.0;
+    if (victimIndex < 0 || victimIndex >= int(agents.size())) return 0.0;
+    const Agent& attacker = agents[size_t(attackerIndex)];
+    const Agent& victim = agents[size_t(victimIndex)];
+    // Тот же расклад сил, что и в `robAgent`, только без броска: доля исходов,
+    // в которых нападающий не проигрывает.
+    const double attackPower = combatPower(*this, attacker);
+    const double victimPower = combatPower(*this, victim);
+    const double ratio = attackPower / std::max(0.1, attackPower + victimPower);
+    return std::max(0.0, std::min(1.0, ratio * 0.5 + 0.15));
+}
+
 bool Game::buyShip(int agentIndex, int starIndex, int classId) {
     if (agentIndex < 0 || agentIndex >= int(agents.size()) || !validStar(*this, starIndex)) return false;
     Agent& agent = agents[agentIndex];
@@ -6363,7 +6403,14 @@ bool Game::agentSellCargo(int agentIndex) {
 bool Game::agentSellCargoAmount(int agentIndex, double amount, int elementIndex) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
     Agent& agent = agents[agentIndex];
-    if (agent.playerControlled && playerTradingBlocked()) return false;
+    // ⚠️ Продажа при отозванной лицензии РАЗРЕШЕНА — вся выручка уходит в
+    // погашение выкупа (см. sellCargo). Это единственный путь назад для того,
+    // у кого нет денег на выкуп: покупка по-прежнему заперта, значит новый
+    // груз не взять, и остаётся то, что уже в трюме, и то, что накопаешь.
+    if (agent.playerControlled && licenceRevoked && licenceBuyback <= 0.0) {
+        playerTradingBlocked();
+        return false;
+    }
     if (agent.ship.enRoute || !validStar(*this, agent.currentStar) || agent.ship.cargo.empty() || amount <= 0.0) return false;
     std::string elementSymbol = "";
     if (elementIndex >= 0 && elementIndex < int(elementCount())) {
@@ -6375,7 +6422,10 @@ bool Game::agentSellCargoAmount(int agentIndex, double amount, int elementIndex)
 int Game::agentSellAllCargo(int agentIndex) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0;
     Agent& agent = agents[agentIndex];
-    if (agent.playerControlled && playerTradingBlocked()) return 0;
+    if (agent.playerControlled && licenceRevoked && licenceBuyback <= 0.0) {
+        playerTradingBlocked();
+        return 0;
+    }
     if (agent.ship.enRoute || !validStar(*this, agent.currentStar)) return 0;
 
     // Партии сдаются по одной с головы вектора: sellCargo сам стирает опустевшую,
@@ -8143,8 +8193,8 @@ bool Game::markLocalBountyTarget(int agentIndex) {
 
 bool Game::playerTradingBlocked() {
     if (!licenceRevoked) return false;
-    lastEvent = "trading frozen: licence revoked (buy back for " +
-                std::to_string(int(std::ceil(licenceBuyback))) + " Cr)";
+    lastEvent = "trading frozen: sell cargo to work off " +
+                std::to_string(int(std::ceil(licenceBuyback))) + " Cr, or pay it (F2)";
     return true;
 }
 

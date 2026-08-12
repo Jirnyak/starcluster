@@ -828,6 +828,11 @@ public:
     bool agentCompleteContract(int agentIndex, int contractId);
     int agentCompleteContracts(int agentIndex);
     bool robAgent(int attackerIndex, int victimIndex);
+    // Шансы ограбления ДО нажатия, 0..1. Нужны интерфейсу: на стартовом корпусе
+    // (ноль тяжёлого оружия) нападение кончается потерей собственного корабля
+    // примерно в семи случаях из десяти, а карточка F1 предлагала «R ROB» без
+    // единого слова об этом.
+    double robOdds(int attackerIndex, int victimIndex) const;
     // Заново запечь хромокоры в корпус игрока. Зовётся везде, где корабль
     // игрока ПЕРЕСОБИРАЕТСЯ из таблицы классов: покупка корпуса, спасательная
     // капсула после гибели. Без этого три ветки прокачки из семи (материалы,

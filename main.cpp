@@ -620,6 +620,12 @@ int main(int argc, char** argv) {
     SDL_GetWindowSize(window, &winW, &winH);
 
     bool quit = false;
+    // Секунды, в течение которых повторный ESC означает «да, выйти».
+    double quitArmed = 0.0;
+    // Взведённое нападение (клавиша R) и его цель: второе нажатие в эти секунды
+    // означает «да, атакую».
+    double robArmed = 0.0;
+    int robTarget = -1;
     // Партия начинается на паузе: игрок сперва читает обстановку, а мир не
     // тикает у него за спиной. В smoke этого делать нельзя — 12 кадров должны
     // реально прогнать симуляцию.
@@ -735,8 +741,8 @@ int main(int argc, char** argv) {
                 game.agents[game.playerAgent].ship.targetStar == -2;
             specs.push_back(Spec{ACT_STOP, braking ? "X BRAKING" : "X STOP",
                                  braking ? UI::P.red : UI::P.amber, enRoute && !braking, false});
-            specs.push_back(Spec{ACT_TRADE, "T TRADE", UI::P.cyan, anchorStar() >= 0, false});
-            specs.push_back(Spec{ACT_SHIPFIT, "U FIT", UI::P.cyan, game.playerAgent >= 0, false});
+            specs.push_back(Spec{ACT_TRADE, "TRADE", UI::P.cyan, anchorStar() >= 0, false});
+            specs.push_back(Spec{ACT_SHIPFIT, "FIT", UI::P.cyan, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_SWITCH, "N SWITCH", UI::P.amber, game.playerAgent >= 0, false});
             specs.push_back(Spec{ACT_REPAIR, "J REPAIR", UI::P.green, docked && hullHurt, false});
             // Витрина цены системы открывается всегда; сама сделка внутри уже
@@ -891,6 +897,10 @@ int main(int argc, char** argv) {
         double realDt = double(frameStart - lastCounter) / double(perfFrequency);
         lastCounter = frameStart;
         realDt = std::min(realDt, MAX_REAL_DT_SECONDS);
+        // Подтверждение выхода живо несколько секунд: случайный ESC не должен
+        // остаться взведённым до следующего часа игры.
+        if (quitArmed > 0.0) quitArmed = std::max(0.0, quitArmed - realDt);
+        if (robArmed > 0.0) robArmed = std::max(0.0, robArmed - realDt);
 
         Shell::pumpMusic(music, playlist, soundOn);
         while (SDL_PollEvent(&e)) {
@@ -1103,7 +1113,29 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 if (e.key.keysym.sym == SDLK_SPACE) paused = !paused;
-                if (e.key.keysym.sym == SDLK_ESCAPE) quit = true;
+                // ⚠️ ESC больше не убивает партию с первого нажатия.
+                //
+                // Карточка F1 сама учит, что ESC «закрывает» — и была права
+                // ровно наполовину: карточку он закрывал, а окна нет, зато
+                // выходил из игры мгновенно и без сохранения. Игрок выучивал
+                // жест на карточке и через минуту им же терял партию.
+                //
+                // Теперь ESC работает сверху вниз: закрыть верхнее окно, потом
+                // спросить, потом выйти — и перед выходом СОХРАНИТЬ.
+                if (e.key.keysym.sym == SDLK_ESCAPE) {
+                    if (!ui.windows.empty()) {
+                        UI::closeWindow(ui, ui.windows.back().id);
+                        quitArmed = 0.0;
+                    } else if (quitArmed <= 0.0) {
+                        quitArmed = 3.0;
+                        game.lastEvent = "press ESC again to save and quit";
+                    } else {
+                        game.saveToFile(savePath());
+                        quit = true;
+                    }
+                    titleTick = 11;
+                    continue;
+                }
                 if (e.key.keysym.sym == SDLK_1) simSpeed = 1.0;
                 if (e.key.keysym.sym == SDLK_2) simSpeed = 2.0;
                 if (e.key.keysym.sym == SDLK_3) simSpeed = 5.0;
@@ -1112,8 +1144,28 @@ int main(int argc, char** argv) {
                     selectedAgent = nextVisibleAgent(game, selectedAgent);
                 }
                 if (e.key.keysym.sym == SDLK_f) followAgent = selectedAgent >= 0;
+                // ⚠️ Нападение — В ДВА НАЖАТИЯ, и первое называет шансы.
+                //
+                // На стартовом корпусе тяжёлого оружия нет вовсе, а у типового
+                // NPC-торговца оно есть по умолчанию: расклад сил выходит
+                // нулевым, и примерно в семи случаях из десяти нападающий сам
+                // становится спасательной капсулой. Плюс минус двадцать пять к
+                // отношениям сразу с двумя фракциями, то есть по тиру заказов.
+                // Карточка F1 предлагала «R ROB» без единого слова об этом.
                 if (e.key.keysym.sym == SDLK_r && selectedAgent >= 0 && selectedAgent != game.playerAgent) {
-                    if (game.robAgent(game.playerAgent, selectedAgent)) followAgent = true;
+                    if (robArmed > 0.0 && robTarget == selectedAgent) {
+                        robArmed = 0.0;
+                        if (game.robAgent(game.playerAgent, selectedAgent)) followAgent = true;
+                    } else {
+                        robArmed = 4.0;
+                        robTarget = selectedAgent;
+                        char warn[128];
+                        std::snprintf(warn, sizeof(warn),
+                                      "rob: %d%% odds, press R again to attack",
+                                      int(game.robOdds(game.playerAgent, selectedAgent) * 100.0 + 0.5));
+                        game.lastEvent = warn;
+                    }
+                    titleTick = 11;
                 }
                 if (e.key.keysym.sym == SDLK_RETURN) {
                     if (UI::advanceVisualNovel(ui, game, winW, winH)) {
@@ -1135,7 +1187,13 @@ int main(int argc, char** argv) {
                     selectedAgent = game.playerAgent;
                     followAgent = true;
                 }
-                if (e.key.keysym.sym == SDLK_b && game.agentBuyElement(game.playerAgent, selectedElement)) {
+                // ⚠️ `B` уважает поле ОБЪЁМ, как и кнопка BUY в окне торговли.
+                // Раньше клавиша звала `agentBuyElement`, то есть «на все
+                // деньги», и панель целей учила именно ей: новичок нажимал `B` и
+                // разом вкладывал всё в железо, выбранное по умолчанию.
+                if (e.key.keysym.sym == SDLK_b &&
+                    game.agentBuyElementAmount(game.playerAgent, selectedElement,
+                                               UI::requestedAmount(ui)) ) {
                     selectedAgent = game.playerAgent;
                 }
                 // ⚠️ Продажа висит на `Q`, а не на `V`.

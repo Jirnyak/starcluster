@@ -126,6 +126,11 @@ void drawWindows(SDL_Renderer* renderer, const Game& game, int screenW, int scre
 void drawStarPanel(SDL_Renderer* renderer, const Game& game, int starIndex, int elementIndex, int x, int y, int w);
 void drawAgentPanel(SDL_Renderer* renderer, const Game& game, int agentIndex, int x, int y, int w);
 void drawFactionPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w);
+// Высота панели фракций. Наружу вынесена, потому что под ней стоит панель
+// целей: `drawHud` считал её высоту СВОЕЙ формулой (44 + rows*19 против
+// настоящих 44 + rows*30), промахивался на 66 пикселей при шести фракциях, и
+// последняя строка репутации вместе со шкалой тира оказывалась перекрыта.
+int factionPanelHeight(const Game& game);
 // Карточка управления по центру экрана: F1 в игре и финальный экран оболочки.
 void drawControlsCard(SDL_Renderer* renderer, int screenW, int screenH);
 // Перенос по словам. Наружу вынесен ради скриншот-харнеса: он меряет, во
@@ -136,6 +141,10 @@ std::string wrapText(const std::string& text, int maxChars);
 // просчёт по V, хайтек-лента §37.2) иначе никак не измерить — они включаются
 // обстановкой, а не порядком нажатий.
 std::string tutorialLine(const Game& game, int step);
+// Число из поля ОБЪЁМ (пусто = «сколько влезет»). Наружу вынесено, чтобы
+// клавиша `B` покупала ровно столько же, сколько кнопка BUY: до этого клавиша
+// звала «на все деньги», а панель целей учила именно ей.
+double requestedAmount(const WindowState& state);
 // Клавиша V: гасит коробку, а если она погашена — ПЕРЕСЧИТЫВАЕТ сводку по
 // нынешней обстановке и жжёт на это топливо реактора (§28). Во время обучения
 // остаётся простым выключателем.

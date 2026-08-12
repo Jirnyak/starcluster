@@ -730,10 +730,14 @@ void drawAgentPanel(SDL_Renderer* renderer, const Game& game, int agentIndex, in
 // каждой записи отдана репутации, потому что именно она решает, какую работу
 // здесь дадут, — а карта владений без этого не подсказывала игроку ничего о
 // том, куда лететь работать.
+int factionPanelHeight(const Game& game) {
+    return 44 + std::min(6, int(game.factions.size())) * 30;
+}
+
 void drawFactionPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w) {
     const int rows = std::min(6, int(game.factions.size()));
     const std::vector<KnownFactionSummary>& summaries = knownFactionSummaries(game);
-    const int h = 44 + rows * 30;
+    const int h = factionPanelHeight(game);
     panel(renderer, x, y, w, h);
     header(renderer, x + 10, y + 9, "FACTIONS");
     drawText(renderer, x + 10, y + 30, "STANDING AND KNOWN OWNER REPORTS", P.dim, 1);
@@ -776,16 +780,22 @@ void drawControlsCard(SDL_Renderer* renderer, int screenW, int screenH) {
                       "F    FOLLOW SHIP", "TAB  NEXT AGENT", "ENTER OPEN SYSTEM",
                       "SPACE PAUSE", "1-4  SIM SPEED", NULL, NULL } },
         { "TRADE",  { "T    AUTO TRADE", "B    BUY", "Q    SELL", "E    BROKERAGE",
-                      "O    CARGO", "I    TRANSACTION LOG", "V    ADVISOR",
-                      "F2   BUY BACK LICENCE", "[ ]  CYCLE ELEMENT", NULL } },
+                      "O    CARGO", "U    SHIPYARD", "I    TRANSACTION LOG",
+                      "V    ADVISOR", "F2   BUY BACK LICENCE", "[ ]  CYCLE ELEMENT" } },
         { "SHIP",   { "U    SHIPYARD / FIT", "M    MINE ORE", "J    REPAIR HULL",
                       "K    SCAN ANOMALY", "C    COLONY / BUY SYSTEM", "N    SWITCH SHIP",
                       "Y    EXOTICS / FORGE", "R    ROB", NULL, NULL } },
         { "VIEW",   { "LMB  SELECT", "RMB  SET ROUTE", "WHEEL ZOOM", "MMB  DRAG PAN",
                       "ARROWS PAN", "WASD ROTATE", "P    PLAYER SHIP", "0    RESET VIEW",
                       NULL, NULL } },
-        { "GAME",   { "F5   SAVE", "F9   LOAD", "F1   THIS CARD", NULL, NULL,
-                      NULL, NULL, NULL, NULL, NULL } }
+        { "GAME",   { "F5   SAVE", "F9   LOAD", "F1   THIS CARD",
+                      "ESC  CLOSE / QUIT", NULL, NULL, NULL, NULL, NULL, NULL } },
+        // ⚠️ Внутри системы (`L`) те же буквы значат ДРУГОЕ, и до этой группы
+        // единственным источником правды была одна строка внизу экрана. Игрок,
+        // выучивший карточку, в кокпите нажимал «продать» и получал крен.
+        { "IN SYSTEM", { "W A S D  FLY", "Q E   ROLL", "R F   PITCH", "SPACE FIRE",
+                         "SHIFT WARP", "M     MINE", "K     DOCK", "TAB   TARGET",
+                         "C     MAP VIEW", "ESC   LEAVE" } }
     };
     const int groupCount = int(sizeof(groups) / sizeof(groups[0]));
 
@@ -937,6 +947,31 @@ std::string focusList(const std::vector<int>& focus, int maxItems) {
         out += elementDefinitions()[idx].symbol;
     }
     return out.empty() ? "-" : out;
+}
+
+// Закрыть окно по id. Была ОБЪЯВЛЕНА в ui.h с самого начала и ни разу не
+// определена: окна закрывались только крестиком, прямо в обработчике клика.
+// Понадобилась, когда ESC научился закрывать верхнее окно вместо выхода из
+// игры (§37.6).
+double requestedAmount(const WindowState& state) {
+    return tradeRequestedAmount(state);
+}
+
+void closeWindow(WindowState& state, int id) {
+    const int index = findWindowIndex(state, id);
+    if (index < 0) return;
+    state.windows.erase(state.windows.begin() + index);
+    state.activeId = state.windows.empty() ? -1 : state.windows.back().id;
+    // Поля ввода принадлежали закрытому окну — гасим, иначе клавиатура
+    // осталась бы захваченной невидимым полем.
+    if (state.tradeAmountEditing) {
+        state.tradeAmountEditing = false;
+        SDL_StopTextInput();
+    }
+    if (state.renameStar >= 0) {
+        state.renameStar = -1;
+        SDL_StopTextInput();
+    }
 }
 
 void openSystemWindow(WindowState& state, int starIndex, int screenW, int screenH) {
@@ -3607,15 +3642,19 @@ static void drawShipTechPanel(SDL_Renderer* renderer, const Game& game, int x, i
     drawText(renderer, x + 92, y + 40, "RSCH", P.dim, 1);
     bar(renderer, x + 128, y + 39, w - 138, 7, rprog, P.cyan);
 
-    const char* codes[7] = {"IN", "CH", "MA", "TA", "KI", "SE", "LU"};
+    // ⚠️ Имена, а не коды. Раньше здесь висело «IN1.00 CH1.00 MA1.00 ...», и
+    // расшифровки этих семи пар не было НИГДЕ — ни в карточке F1, ни в новелле,
+    // ни в подсказке. Слово влезает в ту же колонку (12 знаков на 78 пикселях)
+    // и переводится словарём §14 само.
+    const char* codes[7] = {"MIND", "CHARM", "MATTER", "TACTICS", "SPEED", "SENSOR", "LUCK"};
     const double vals[7] = {game.tech.intellect, game.tech.charisma, game.tech.materials,
         game.tech.tactics, game.tech.kinematics, game.tech.sensors, game.tech.luck};
     for (int i = 0; i < 7; ++i) {
         const int col = i % 4, rowi = i / 4;
         char cell[24];
-        std::snprintf(cell, sizeof(cell), "%s%.2F", codes[i], vals[i]);
+        std::snprintf(cell, sizeof(cell), "%s %.2F", codes[i], vals[i]);
         const SDL_Color cc = vals[i] > 1.0001 ? P.green : P.dim;
-        drawText(renderer, x + 10 + col * 78, y + 58 + rowi * 12, cell, cc, 1);
+        drawText(renderer, x + 10 + col * 80, y + 56 + rowi * 12, cell, cc, 1);
     }
 }
 
@@ -3642,8 +3681,8 @@ static void drawObjectivesPanel(SDL_Renderer* renderer, const Game& game, int x,
     objs.push_back({"SURVEY 10 MARKETS", game.playerSurveyedMarketCount() >= 10});
     objs.push_back({"TAKE A JOB: JOBS BOARD", repTotal > 0.0});
     objs.push_back({"RESEARCH A CHROMOCORE", game.tech.cores > 0});
-    objs.push_back({"MEET THE LICENCE QUOTA", game.licencePeriodsMet > 0});
-    objs.push_back({"BUY A SECOND HULL (E)", game.playerShipCount() > 1});
+    objs.push_back({"MEET THE QUOTA - OR SETTLE IT IN CASH (E)", game.licencePeriodsMet > 0});
+    objs.push_back({"BUY A LICENCE (E), THEN A HULL (U)", game.playerShipCount() > 1});
     objs.push_back({"BUY A SYSTEM (C)", game.boughtSystems > 0});
     objs.push_back({"FIT A CONTAINMENT BAY (Y)", game.playerRefitLevel(false) > 0});
     objs.push_back({"RUN EXOTIC MATTER (Y)", !game.exoticStocks.empty()});
@@ -3782,8 +3821,7 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
 
     drawFactionPanel(renderer, game, screenW - 260, 12, 248);
     {
-        const int facH = 44 + std::min(6, int(game.factions.size())) * 19;
-        drawObjectivesPanel(renderer, game, screenW - 260, 12 + facH + 10, 248);
+        drawObjectivesPanel(renderer, game, screenW - 260, 12 + factionPanelHeight(game) + 10, 248);
     }
     {
         const int newsLines = screenH < 780 ? 8 : 14;
