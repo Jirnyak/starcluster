@@ -396,6 +396,31 @@ const double SYSTEM_PRICE_SHIPYARD_W = 0.30;    // вклад каждого у�
 // Суверенная надбавка: чужая фракция расстаётся с территорией неохотно, и чем
 // она сильнее, тем дороже её уговорить. Ничейный камень надбавки не несёт.
 const double SYSTEM_PRICE_FOREIGN_W = 0.55;
+// (§47) Предел УПРАВЛЯЕМОСТИ для ИИ: держава покупает систему, только пока
+// может её держать — своими бортами. Без предела симметрия обернулась бы
+// издевательством: казна державы порядка 1e22 против 1.5e8 у игрока за 20 000
+// лет торговли (§46.12), то есть ИИ скупил бы скопление целиком, пока капитан
+// копит на одну систему. Заодно это ГРАНИЦА ЦЕНЫ ТАКТА: цикл границ в
+// `updateFactions` квадратичен по числу систем у державы.
+const int SYSTEM_ADMIN_BASE = 8;         // сколько систем держава ведёт и без флота
+const int SYSTEM_ADMIN_PER_HULL = 3;     // и сколько добавляет каждый её борт
+// ⚠️ ТЕМП, а не только потолок (решение пользователя). Предел управляемости
+// говорит СКОЛЬКО держава потянет, а это — КАК ЧАСТО она вообще решается.
+// Смена суверенитета — событие масштаба тысячелетия, а не покупка в порту:
+// без выдержки державы брали по системе за ~78 лет и за две тысячи лет
+// перекраивали скопление (64 -> 448 систем). Реже — можно и нужно: выдержка
+// лишь нижняя граница, сверху ещё стоят казна, предел управляемости и то,
+// нашлось ли что путное в окне обзора.
+const double SYSTEM_BUY_INTERVAL_YEARS = 1000.0;
+// (§47) Борт — событие меньшее, чем смена суверенитета, но тоже не покупка в
+// порту: держава пополняет флот раз в четверть тысячелетия. Без этого флоты
+// держав только УБЫВАЛИ — корабли гибли, а строить их было некому, и к концу
+// длинной партии скопление пустело.
+const double FLEET_BUY_INTERVAL_YEARS = 250.0;
+// Потолок населения скопления: державы не строят сверх того, на что мир
+// рассчитан (`AGENT_TARGET_FULL`). Цена такта растёт с числом агентов, и
+// «симметричная» стройка без потолка утопила бы симуляцию.
+const double FLEET_POPULATION_HEADROOM = 1.25;
 
 // Разбор цены по множителям — чтобы окно колонии показывало не голое число,
 // а ИЗ ЧЕГО оно собрано. Ровно те же поля, по которым считается price.
@@ -524,6 +549,19 @@ enum class JournalKind {
     JobAccepted,    // заказ взят: что и куда
     JobCompleted,   // заказ сдан: сколько заплатили
     JobFailed       // заказ провален
+};
+
+// (§47) Лицензионная книга ОДНОЙ фракции. Поля — ровно те, что до §47 лежали в
+// партии единственным экземпляром и назывались «лицензия игрока».
+struct FactionLicence {
+    double quotaPaid = 0.0;                   // уплачено тарифов в текущем периоде
+    double quotaBase = LICENCE_QUOTA_BASE;    // планка на одну лицензию, растёт на 1% за период
+    double periodEnd = LICENCE_PERIOD_YEARS;  // game.time окончания периода
+    double tariffRate = LICENCE_TARIFF_BASE;  // ставка, медленно плывёт от оборота скопления
+    double buyback = 0.0;                     // цена выкупа после отзыва
+    int count = 1;                            // сколько лицензий у фракции
+    bool revoked = false;                     // торговля заморожена
+    int periodsMet = 0;                       // сколько периодов закрыто успешно
 };
 
 struct Transaction {
@@ -692,14 +730,18 @@ public:
     std::string lastEvent;
     
     // --- Лицензионная квота оборота (см. константы LICENCE_* выше) ---
-    double licenceQuotaPaid = 0.0;                   // уплачено тарифов в текущем периоде
-    double licenceQuotaBase = LICENCE_QUOTA_BASE;    // планка на одну лицензию, растёт на 1% за период
-    double licencePeriodEnd = LICENCE_PERIOD_YEARS;  // game.time окончания периода
-    double licenceTariffRate = LICENCE_TARIFF_BASE;  // ставка, медленно плывёт от оборота скопления
-    double licenceBuyback = 0.0;                     // цена выкупа после отзыва
-    int licenceCount = 1;                            // сколько лицензий у игрока
-    bool licenceRevoked = false;                     // торговля заморожена
-    int licencePeriodsMet = 0;                       // сколько периодов закрыто успешно
+    // (§47) ЛИЦЕНЗИОННАЯ КНИГА — ОДНА НА ВСЕХ. Раньше эти восемь чисел лежали
+    // прямо в партии и означали «лицензия ИГРОКА»: квоту платил он один, отзыв
+    // грозил ему одному, а пятнадцать держав торговали в скоплении беспошлинно.
+    // Теперь книга заведена на КАЖДУЮ фракцию, а игрок — просто строка
+    // `playerFaction` в ней. Хранилище одно, правило одно: расходиться правилам
+    // игрока и ИИ больше негде (§44 — «половина пары молча отсутствует»).
+    std::vector<FactionLicence> factionLicence;
+    FactionLicence& licence();               // строка ИГРОКА
+    const FactionLicence& licence() const;
+    FactionLicence& licenceOf(int factionIndex);
+    const FactionLicence& licenceOf(int factionIndex) const;
+    void resizeFactionLicence();
     // Денежный уровень скопления: во сколько раз услуга стоит дороже базовой
     // (`ECON_CREDITS_PER_SERVICE`). Входит в ценовой дрейф КАЖДОГО рынка и
     // держит ставку лицензионного тарифа.
@@ -775,8 +817,15 @@ public:
     std::vector<double> factionIncome;    // годовой доход по той же публикации
     std::vector<double> factionBookAt;    // когда публиковали (game.time)
     std::vector<double> playerShares;     // акций на руках у игрока
+    // (§47) Кто чем владеет СРЕДИ ДЕРЖАВ: матрица держатель x эмитент.
+    std::vector<double> factionShares;
+    // (§47) Не раньше какого года держава снова возьмётся покупать систему.
+    std::vector<double> factionNextSystemBuy;
+    // (§47) То же для пополнения флота: лицензия, затем борт под неё.
+    std::vector<double> factionNextFleetBuy;
     std::vector<double> shareCostBasis;   // сколько за них заплачено (для «прибыли» в окне)
     int factionBookCursor = 0;            // чья книга обновляется на следующем такте
+    int factionExpansionCursor = 0;       // окно обзора для покупки систем ИИ (§47)
     // Щит локального боя. Раньше он был полем СЦЕНЫ, а сцена собирается заново
     // при каждом входе, — то есть `L`, `L` посреди проигранной перестрелки
     // возвращали полный щит бесплатно. Теперь он живёт в партии и регенерирует
@@ -1009,6 +1058,15 @@ public:
     // Один источник и для цены системы, и для дохода её владельца.
     double systemTurnover(int starIndex) const;
     double licenceQuotaTarget() const;   // сколько тарифов нужно за период
+    double licenceQuotaTargetOf(int factionIndex) const;  // то же для любой из 16 (§47)
+    void closeFactionLicencePeriod(int factionIndex);     // конец периода у державы (§47)
+    void factionTryBuySystem(int factionIndex);          // держава покупает систему у центра (§47)
+    void factionTryBuyShares(int factionIndex);          // держава покупает долю в соседе (§47)
+    void factionTryGrowFleet(int factionIndex);          // держава берёт лицензию и строит борт (§47)
+    double licencePriceOf(int factionIndex) const;       // цена следующей лицензии для любой из 16
+    int factionFreeLicences(int factionIndex) const;
+    double& factionShareHolding(int holderFaction, int issuerFaction);
+    double factionShareHoldingOf(int holderFaction, int issuerFaction) const;
     void updateLicence(double dt);       // начисление ставки и смена периода
     // Медиана стоимости единицы услуги по всем рынкам скопления «сейчас».
     double measureClusterServiceCost() const;

@@ -2057,22 +2057,22 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
 
     // --- Шапка: состояние лицензии. Это и есть причина, по которой сюда заходят.
     const double target = game.licenceQuotaTarget();
-    const double remaining = std::max(0.0, target - game.licenceQuotaPaid);
-    const double yearsLeft = std::max(0.0, game.licencePeriodEnd - game.time);
+    const double remaining = std::max(0.0, target - game.licence().quotaPaid);
+    const double yearsLeft = std::max(0.0, game.licence().periodEnd - game.time);
     char head[160];
-    if (game.licenceRevoked) {
+    if (game.licence().revoked) {
         std::snprintf(head, sizeof(head), "LICENCE REVOKED - BUY BACK %d CR (F2)",
-                      int(std::ceil(game.licenceBuyback)));
+                      int(std::ceil(game.licence().buyback)));
         drawText(renderer, x, y, head, P.red, 1);
     } else {
         std::snprintf(head, sizeof(head), "QUOTA %d/%d CR   %dY LEFT   TARIFF %.0F%%",
-                      int(game.licenceQuotaPaid), int(target), int(std::ceil(yearsLeft)),
-                      game.licenceTariffRate * 100.0);
+                      int(game.licence().quotaPaid), int(target), int(std::ceil(yearsLeft)),
+                      game.licence().tariffRate * 100.0);
         drawText(renderer, x, y, head, remaining <= 0.0 ? P.green : P.amber, 1);
     }
     y += 14;
     std::snprintf(head, sizeof(head), "LICENCES %d   HULLS %d   FREE %d",
-                  game.licenceCount, game.playerShipCount(), game.playerFreeLicences());
+                  game.licence().count, game.playerShipCount(), game.playerFreeLicences());
     drawText(renderer, x, y, head, game.playerFreeLicences() > 0 ? P.green : P.dim, 1);
     y += 14;
 
@@ -2249,7 +2249,7 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
                         game.agents[game.playerAgent].money >= licPrice;
     // При отозванной лицензии кнопка гаснет: погашение квоты торговлю не
     // размораживает, а деньги забирает (см. playerSettleQuota).
-    const bool canSettle = remaining > 0.0 && !game.licenceRevoked && game.playerAgent >= 0 &&
+    const bool canSettle = remaining > 0.0 && !game.licence().revoked && game.playerAgent >= 0 &&
                            game.playerAgent < int(game.agents.size()) &&
                            game.agents[game.playerAgent].money >= settleCost;
     char btn[96];
@@ -2636,7 +2636,10 @@ void drawColonyWindow(SDL_Renderer* renderer, const Game& game, const Window& wi
             std::snprintf(buf, sizeof(buf), "NONE");
         }
         drawPriceFactor(renderer, x, y, columnW, "BUILT", buf, price.development); y += 14;
-        const int owner = star->ownerFaction;
+        // (§47) Ничейных систем в скоплении нет: если державы-владельца у звезды
+        // нет, ею распоряжается центр — и именно ему уходят деньги покупателя.
+        // Строка «UNCLAIMED» осталась бы прямой ложью о том, кому платишь.
+        const int owner = star->ownerFaction >= 0 ? star->ownerFaction : game.clearingFaction;
         const std::string ownerName = (owner >= 0 && owner < int(game.factions.size()))
                                           ? game.factions[owner].name : std::string("UNCLAIMED");
         drawPriceFactor(renderer, x, y, columnW, "OWNER", ownerName, price.sovereignty); y += 20;
@@ -3825,7 +3828,7 @@ std::vector<ObjectiveStep> objectiveLadder(const Game& game) {
     objs.push_back({"SURVEY 10 MARKETS", game.playerSurveyedMarketCount() >= 10, false});
     objs.push_back({"TAKE A JOB: JOBS BOARD", repTotal > 0.0, false});
     objs.push_back({"RESEARCH A CHROMOCORE", game.tech.cores > 0, false});
-    objs.push_back({"MEET THE QUOTA - OR SETTLE IT (E)", game.licencePeriodsMet > 0, false});
+    objs.push_back({"MEET THE QUOTA - OR SETTLE IT (E)", game.licence().periodsMet > 0, false});
     objs.push_back({"BUY A LICENCE (E), THEN A HULL (U)", game.playerShipCount() > 1, false});
     objs.push_back({"BUY A SYSTEM (C)", game.boughtSystems > 0, false});
     objs.push_back({"FIT A CONTAINMENT BAY (Y)", game.playerRefitLevel(false) > 0, false});
@@ -3946,21 +3949,21 @@ void drawHud(SDL_Renderer* renderer, const Game& game, int screenW, int screenH,
         // и всегда на виду. Цвет = насколько всё плохо: зелёный (норма выполнена),
         // янтарный (успеваешь), красный (не успеваешь или лицензия отозвана).
         char quota[96];
-        if (game.licenceRevoked) {
+        if (game.licence().revoked) {
             std::snprintf(quota, sizeof(quota), "LICENCE REVOKED - BUY BACK %d CR (F2)",
-                          int(std::ceil(game.licenceBuyback)));
+                          int(std::ceil(game.licence().buyback)));
             drawText(renderer, 22, y + 45, quota, P.red, 1);
         } else {
             const double target = game.licenceQuotaTarget();
-            const double left = std::max(0.0, game.licencePeriodEnd - game.time);
-            const bool met = game.licenceQuotaPaid + 1e-6 >= target;
+            const double left = std::max(0.0, game.licence().periodEnd - game.time);
+            const bool met = game.licence().quotaPaid + 1e-6 >= target;
             // «Успеваю ли» = хватит ли оставшихся лет при текущем темпе уплаты.
             const double elapsed = std::max(1.0, LICENCE_PERIOD_YEARS - left);
-            const double pace = game.licenceQuotaPaid / elapsed;
+            const double pace = game.licence().quotaPaid / elapsed;
             const bool onTrack = met || pace * LICENCE_PERIOD_YEARS >= target;
             std::snprintf(quota, sizeof(quota), "QUOTA %d/%d CR  %dY LEFT  TARIFF %.0F%%",
-                          int(game.licenceQuotaPaid), int(target), int(std::ceil(left)),
-                          game.licenceTariffRate * 100.0);
+                          int(game.licence().quotaPaid), int(target), int(std::ceil(left)),
+                          game.licence().tariffRate * 100.0);
             drawText(renderer, 22, y + 45, quota, met ? P.green : (onTrack ? P.amber : P.red), 1);
         }
         y += 72;

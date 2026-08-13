@@ -814,22 +814,32 @@ work" but "does it lock the player in *together with* the others".
   and the RNG, not routing.
 - Reputation still tops out at 1000 completed jobs with only two outlets: the
   size of the jobs offered and a fresh copy of a power's books. Beyond that it
-  buys nothing - and reaching the cap with one faction takes about 817,000 game
-  years at the measured grind rate of 240 years per delivery.
+  buys nothing. The old figure of 817,000 game years to cap one faction was
+  measured when only 1.65% of stars had an owner; powers now buy systems from the
+  centre and their holdings grow, so the grind is shorter - but it has not been
+  measured again.
 - The introductory novel ends at line 27 and only speaks about the high-tech
   floor contextually, in the first port that actually has such a market. It says
   nothing about shares or the fleet autopilot.
-- Two thirds of the jobs board grants no reputation at all: `issuerFaction` falls
-  back to the owner of the target star, and only 1.65% of stars have an owner, so
-  46-64% of live contracts have no issuer. Completing one gives no reputation, no
-  tier and no bond, and the offer stays a 60-tonne run for 400 Cr forever.
-- The median job reward does not grow with reputation: 400 Cr at zero jobs done
-  and 400 Cr at a thousand. Only the tail grows, and the tail does not fit in any
-  hull.
 - Measured per credit of flight-year, the high-tech floor equals ordinary trade
   and is ten times worse on a long leg: the rarity of the sources is paid for in
   travel time, exactly enough to eat the premium. The containment bay caps at 360
   units, so income per run does not grow with capital.
+- Powers now buy trading licences and commission hulls from their treasuries, so their
+  fleets no longer only shrink. Growth is capped at 1.25x the world's designed ship
+  population (`AGENT_TARGET_FULL`), because the cost of a simulated year scales with the
+  number of agents. Measured at full scale: 1,005 agents at seed and 125 ms per game
+  year on 8,192 systems.
+- Stranded ships are still handled by the tug (a flat 35% of the wallet and half the
+  cargo, applied automatically). A real rescue mechanic - distress signal, guaranteed
+  pickup, and a state-paid bounty of a full tank plus about 10% of the saved hull's
+  value for whoever tows it in - is designed but not built. See master_prompt section
+  47.12.
+- Faction treasuries run away: a power holds on the order of 1e22 credits by year
+  2400, while 20,000 years of optimal player trade yield 1.5e8. AI money and player
+  money live in different universes. This predates the sixteen-player rework and is
+  unchanged by it; the AI's appetite for systems is capped by administrative reach
+  rather than by its wallet, precisely because its wallet is no limit at all.
 - Late game is a plateau by design (see master_prompt section 18): 20,000 years of
   optimal trade yield 1.47e8 Cr while the cheapest system costs 1.37e8 and pays
   back in 114,777 years. The 8,192-star empire is out of reach on purpose.

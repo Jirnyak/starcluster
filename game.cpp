@@ -68,6 +68,25 @@ bool validFaction(const Game& game, int factionIndex) {
     return factionIndex >= 0 && factionIndex < int(game.factions.size());
 }
 
+// (§47) ВЛАСТЬ НАД СИСТЕМОЙ. Ничейных систем в скоплении нет: у звезды либо
+// есть держава-владелец, либо она ГОСУДАРСТВЕННАЯ — под прямым управлением
+// центра, клиринговой палаты, которая живёт с квот и тарифов (§18) и уже
+// субсидирует колонии.
+//
+// ⚠️ Это единственный смысл, в котором звёзды «государственные»: поле
+// `ownerFaction` у них остаётся −1 (решение пользователя). Владение НЕ
+// прописывается, потому что тогда `controlledStars` палаты разрослась бы до
+// восьми тысяч, а колонизация («ищу ничейную звезду») перестала бы находить
+// хоть что-нибудь. Спрашивать «чья это система» надо ЗДЕСЬ, а не читать
+// `ownerFaction` напрямую, иначе центр снова окажется невидимым.
+int starAuthority(const Game& game, int starIndex) {
+    if (validStar(game, starIndex)) {
+        const int owner = game.cluster.stars[starIndex].ownerFaction;
+        if (validFaction(game, owner)) return owner;
+    }
+    return validFaction(game, game.clearingFaction) ? game.clearingFaction : -1;
+}
+
 size_t factionKnowledgeIndex(const Game& game, int factionIndex, int starIndex) {
     return size_t(factionIndex) * game.cluster.stars.size() + size_t(starIndex);
 }
@@ -1514,8 +1533,7 @@ bool tryCreateDeliveryContract(Game& game, int originStar) {
     // разъехалось бы насмерть: тир открывала бы одна фракция, а росла
     // репутация у другой. Теперь тир, оплата и репутация — про одну и ту же
     // фракцию, и остальные шесть типов заказа давно делают именно так.
-    const int issuer = validFaction(game, game.cluster.stars[originStar].ownerFaction) ?
-        game.cluster.stars[originStar].ownerFaction : -1;
+    const int issuer = starAuthority(game, originStar);
     const double tier = rollContractTier(game, issuer);
     const int targetStar = pickNeedyTarget(game, originStar, contractRangeShare(tier));
     if (!validStar(game, targetStar)) return false;
@@ -1555,7 +1573,7 @@ bool tryCreateDeliveryContract(Game& game, int originStar) {
     contract.postedTime = game.time;
     contract.deadline = contractDeadlineFor(game, originStar, targetStar);
     contract.risk = std::min(1.0, distance / 95.0);
-    contract.issuerFaction = validFaction(game, issuer) ? issuer : game.cluster.stars[targetStar].ownerFaction;
+    contract.issuerFaction = validFaction(game, issuer) ? issuer : starAuthority(game, targetStar);
     contract.risk = std::min(1.0, contract.risk + game.factionRouteThreatRisk(contract.issuerFaction, originStar, targetStar) * 0.12);
     return finishContract(game, contract);
 }
@@ -1600,7 +1618,7 @@ bool tryCreateCourierContract(Game& game, int originStar) {
     contract.postedTime = game.time;
     contract.deadline = contractDeadlineFor(game, originStar, best);
     contract.risk = std::min(1.0, distance / 120.0);
-    contract.issuerFaction = game.cluster.stars[originStar].ownerFaction;
+    contract.issuerFaction = starAuthority(game, originStar);
     contract.risk = std::min(1.0, contract.risk + game.factionRouteThreatRisk(contract.issuerFaction, originStar, best) * 0.10);
     return finishContract(game, contract);
 }
@@ -1609,7 +1627,7 @@ bool tryCreateScoutContract(Game& game, int originStar) {
     if (!validStar(game, originStar)) return false;
     if (activeContractsAtOrigin(game, originStar) >= CONTRACTS_PER_SYSTEM) return false;
 
-    const int issuer = game.cluster.stars[originStar].ownerFaction;
+    const int issuer = starAuthority(game, originStar);
     if (!validFaction(game, issuer)) return false;
     const double tier = rollContractTier(game, issuer);
 
@@ -1669,8 +1687,7 @@ bool tryCreateColonySupplyContract(Game& game, int originStar) {
     // Отличие снабжения — цель обязана быть КОЛОНИЕЙ, поэтому дальность здесь
     // не «пояс», а фильтр: колоний в скоплении немного, и требовать от них ещё
     // и попадания в радиус тира значило бы вовсе не выдавать этот тип.
-    const int issuer = validFaction(game, game.cluster.stars[originStar].ownerFaction) ?
-        game.cluster.stars[originStar].ownerFaction : -1;
+    const int issuer = starAuthority(game, originStar);
     const double tier = rollContractTier(game, issuer);
     const double wantedMass = rollContractCargoMass(tier);
 
@@ -1710,7 +1727,7 @@ bool tryCreateColonySupplyContract(Game& game, int originStar) {
     contract.id = game.nextContractId++;
     contract.type = ContractType::ColonySupply;
     contract.tier = tier;
-    contract.issuerFaction = validFaction(game, issuer) ? issuer : game.cluster.stars[best].ownerFaction;
+    contract.issuerFaction = validFaction(game, issuer) ? issuer : starAuthority(game, best);
     contract.originStar = originStar;
     contract.targetStar = best;
     contract.resource = resourceIndex;
@@ -1729,10 +1746,14 @@ bool tryCreateColonySupplyContract(Game& game, int originStar) {
 bool tryCreateBountyContract(Game& game, int originStar) {
     if (!validStar(game, originStar)) return false;
     if (activeContractsAtOrigin(game, originStar) >= CONTRACTS_PER_SYSTEM) return false;
-    const int issuer = game.cluster.stars[originStar].ownerFaction;
+    const int issuer = starAuthority(game, originStar);
     if (!validFaction(game, issuer)) return false;
     const double tier = rollContractTier(game, issuer);
 
+    // ⚠️ Отчёт об угрозе берётся из ПАМЯТИ заказчика, а не из мира: центр
+    // выставит награду только за то, что видел сам. Государственная система на
+    // отшибе, куда палата не заглядывала, охоты не породит — и это замысел,
+    // а не недоделка (§16: никто не знает мир целиком).
     const ThreatCandidate report = bestThreatReportAt(game, issuer, originStar, true);
     if (!report.valid) return false;
 
@@ -1758,6 +1779,10 @@ bool tryCreateBountyContract(Game& game, int originStar) {
 bool tryCreateRaidContract(Game& game, int originStar) {
     if (!validStar(game, originStar)) return false;
     if (activeContractsAtOrigin(game, originStar) >= CONTRACTS_PER_SYSTEM) return false;
+    // ⚠️ ЕДИНСТВЕННЫЙ тип заказа БЕЗ государственного заказчика (§47). Налёт —
+    // это «ударь по державе-сопернику», а у центра соперников нет: он банк и
+    // арбитр, он финансирует патрули, а не рейды. Государственная система даёт
+    // возить, разведывать, снабжать и охотиться за головами — но не грабить.
     const int issuer = game.cluster.stars[originStar].ownerFaction;
     if (!validFaction(game, issuer)) return false;
     const double tier = rollContractTier(game, issuer);
@@ -1822,7 +1847,7 @@ bool tryCreateRaidContract(Game& game, int originStar) {
 bool tryCreateEscortContract(Game& game, int originStar) {
     if (!validStar(game, originStar)) return false;
     if (activeContractsAtOrigin(game, originStar) >= CONTRACTS_PER_SYSTEM) return false;
-    const int issuer = game.cluster.stars[originStar].ownerFaction;
+    const int issuer = starAuthority(game, originStar);
     if (!validFaction(game, issuer)) return false;
     const double tier = rollContractTier(game, issuer);
     const double threatRisk = localEscortRisk(game, issuer, originStar);
@@ -2294,11 +2319,17 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
     const int owner = game.cluster.stars[starIndex].ownerFaction;
     const double costShare = agent.cargoCost * (amount / std::max(0.001, cargoAmount));
 
-    // Лицензионный тариф: удерживается ТОЛЬКО с игрока и только с продажи —
-    // это и есть то, что зачитывается в квоту периода. NPC живут по прежним
-    // правилам (их баланс не трогаем), поэтому для них ставка нулевая.
-    const double licenceFee = agent.playerControlled && !game.licenceRevoked
-                                  ? gross * game.licenceTariffRate
+    // (§47) Лицензионный тариф удерживается СО ВСЕХ ШЕСТНАДЦАТИ, а не с одного
+    // игрока. До §47 державы торговали в скоплении беспошлинно, и «центр,
+    // живущий с квот и тарифов» кормился одним капитаном: квота была не
+    // правилом скопления, а личным налогом на игрока.
+    //
+    // ⚠️ Палата себе не платит: она и есть получатель. Иначе тариф ходил бы по
+    // кругу и раздувал её же казну из ничего.
+    const int licencePayer = agent.ship.ownerFaction;
+    const bool licensable = validFaction(game, licencePayer) && licencePayer != game.clearingFaction;
+    const double licenceFee = licensable && !game.licenceOf(licencePayer).revoked
+                                  ? gross * game.licenceOf(licencePayer).tariffRate
                                   : 0.0;
     // (§37.7) ОТРАБОТКА ВЫКУПА. При отозванной лицензии выручка не идёт в
     // карман — она гасит долг по выкупу, и когда долг закрыт, торговля
@@ -2321,7 +2352,7 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
         if (fee > 0.01) game.queueSettlementSignal(owner, starIndex, fee);
     }
     if (licenceFee > 0.0) {
-        game.licenceQuotaPaid += licenceFee;
+        game.licenceOf(licencePayer).quotaPaid += licenceFee;
         // Лицензиями и квотами ведает КЛИРИНГОВАЯ ПАЛАТА, а не своя же фракция.
         // Иначе игрок платил тариф сам себе, а после §16 (доступ к казне) ещё и
         // снимал его обратно — квота не стоила ничего (замер: удержано 33.6 Cr,
@@ -3030,7 +3061,9 @@ void updateFleetTrader(Game& game, int agentIndex, Agent& agent, double dt) {
     // Отозванная лицензия морозит торговлю. `playerTradingBlocked()` звать
     // нельзя: он не const и пишет в `lastEvent` — строка состояния мигала бы
     // каждый такт.
-    if (game.licenceRevoked) { agent.missionCooldown = 1.0; return; }
+    // (§47) Морозит СВОЯ лицензия, а не игроцкая: до §47 отзыв у капитана
+    // останавливал заодно и торговцев всех пятнадцати держав.
+    if (game.licenceOf(agent.ship.ownerFaction).revoked) { agent.missionCooldown = 1.0; return; }
     if (!validStar(game, agent.currentStar)) return;
     // В собственной системе всё даром (§13), а `findBestTrade` считает по
     // рыночным ценам и потому оценивает такой рейс неверно — насос из
@@ -3383,7 +3416,7 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 18 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 19 " << cluster.stars.size() << '\n';
     out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
@@ -3393,9 +3426,9 @@ bool Game::saveToFile(const std::string& path) {
     // До версии 13 он жил в файловом глобале `market.cpp` и в сейв не попадал
     // вовсе, поэтому ставка тарифа зависела от того, сколько времени прожил
     // ПРОЦЕСС, а не партия.
-    out << "LICENCE " << licenceQuotaPaid << ' ' << licencePeriodEnd << ' ' << licenceTariffRate << ' '
-        << licenceBuyback << ' ' << licenceCount << ' ' << (licenceRevoked ? 1 : 0) << ' '
-        << licencePeriodsMet << ' ' << licenceQuotaBase << ' '
+    out << "LICENCE " << licence().quotaPaid << ' ' << licence().periodEnd << ' ' << licence().tariffRate << ' '
+        << licence().buyback << ' ' << licence().count << ' ' << (licence().revoked ? 1 : 0) << ' '
+        << licence().periodsMet << ' ' << licence().quotaBase << ' '
         << clusterPriceLevel << ' ' << clusterPriceBase << ' ' << clearingFaction << '\n';
 
     out << "STARS " << cluster.stars.size() << '\n';
@@ -3694,6 +3727,32 @@ bool Game::saveToFile(const std::string& path) {
             << (f < shareCostBasis.size() ? shareCostBasis[f] : 0.0) << '\n';
     }
 
+    // (§47) Книги лицензий ВСЕХ шестнадцати и доли держав друг в друге. Без
+    // этого блока загрузка молча теряла бы половину скопления: у держав
+    // обнулялись квоты и портфели, то есть сохранённый мир возвращался другим.
+    out << "LICENCEBOOK " << factions.size() << '\n';
+    for (size_t f = 0; f < factions.size(); ++f) {
+        const FactionLicence& book = licenceOf(int(f));
+        out << "LB " << book.quotaPaid << ' ' << book.quotaBase << ' ' << book.periodEnd << ' '
+            << book.tariffRate << ' ' << book.buyback << ' ' << book.count << ' '
+            << (book.revoked ? 1 : 0) << ' ' << book.periodsMet << '\n';
+    }
+    out << "BUYCLOCK " << factionNextSystemBuy.size() << ' ' << factionNextFleetBuy.size() << '\n';
+    for (size_t f = 0; f < factionNextSystemBuy.size(); ++f) {
+        out << factionNextSystemBuy[f] << (((f + 1) % 16 == 0) ? '\n' : ' ');
+    }
+    if (!factionNextSystemBuy.empty() && factionNextSystemBuy.size() % 16 != 0) out << '\n';
+    for (size_t f = 0; f < factionNextFleetBuy.size(); ++f) {
+        out << factionNextFleetBuy[f] << (((f + 1) % 16 == 0) ? '\n' : ' ');
+    }
+    if (!factionNextFleetBuy.empty() && factionNextFleetBuy.size() % 16 != 0) out << '\n';
+
+    out << "FACTIONSHARES " << factionShares.size() << ' ' << factionExpansionCursor << '\n';
+    for (size_t i = 0; i < factionShares.size(); ++i) {
+        out << factionShares[i] << (((i + 1) % 16 == 0) ? '\n' : ' ');
+    }
+    if (!factionShares.empty() && factionShares.size() % 16 != 0) out << '\n';
+
     out << "EXOTIC " << exoticStocks.size() << ' ' << coresForged << '\n';
     for (const ExoticStock& e : exoticStocks) {
         out << "EX " << e.starIndex << ' ' << e.updatedAt;
@@ -3746,7 +3805,7 @@ bool Game::loadFromFile(const std::string& path) {
     // писались и читались в игре, но в сейв не попадали. Блок отдельный, значит
     // старые сейвы читаются прежним путём.
     if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" ||
-        version < 14 || version > 18) {
+        version < 14 || version > 19) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -3781,19 +3840,25 @@ bool Game::loadFromFile(const std::string& path) {
     loaded.lastEvent = loadToken(eventToken);
     if (loaded.nextSignalEventId == 0) loaded.nextSignalEventId = 1;
 
+    // ⚠️ Читаем во ВРЕМЕННУЮ строку, а не сразу в книгу (§47). Фракции грузятся
+    // НИЖЕ, и до них `licence()` не к чему обратиться: игрока в книге ещё нет,
+    // и всё прочитанное ушло бы в запасную строку — то есть в никуда. Молча:
+    // лицензия загружалась бы девственно чистой, а игрок получал бы назад
+    // отозванную лицензию как новенькую.
+    FactionLicence loadedLicence;
     if (version >= 8) {
         int revoked = 0;
         if (!expectTag(in, "LICENCE") ||
-            !(in >> loaded.licenceQuotaPaid >> loaded.licencePeriodEnd >> loaded.licenceTariffRate >>
-                loaded.licenceBuyback >> loaded.licenceCount >> revoked >> loaded.licencePeriodsMet >>
-                loaded.licenceQuotaBase >> loaded.clusterPriceLevel >> loaded.clusterPriceBase >> loaded.clearingFaction)) {
+            !(in >> loadedLicence.quotaPaid >> loadedLicence.periodEnd >> loadedLicence.tariffRate >>
+                loadedLicence.buyback >> loadedLicence.count >> revoked >> loadedLicence.periodsMet >>
+                loadedLicence.quotaBase >> loaded.clusterPriceLevel >> loaded.clusterPriceBase >> loaded.clearingFaction)) {
             lastEvent = "load failed: licence";
             return false;
         }
-        loaded.licenceRevoked = revoked != 0;
+        loadedLicence.revoked = revoked != 0;
     } else {
         // Сейв до введения квоты: начинаем новый отчётный период с текущего момента.
-        loaded.licencePeriodEnd = loaded.time + LICENCE_PERIOD_YEARS;
+        loadedLicence.periodEnd = loaded.time + LICENCE_PERIOD_YEARS;
     }
 
     size_t count = 0;
@@ -3906,6 +3971,9 @@ bool Game::loadFromFile(const std::string& path) {
         }
         loaded.factions.push_back(faction);
     }
+    // Фракции есть — только теперь книге лицензий есть куда лечь (§47).
+    loaded.resizeFactionLicence();
+    loaded.licence() = loadedLicence;
 
     size_t relationCount = 0;
     if (!expectTag(in, "RELATIONS") || !(in >> relationCount)) {
@@ -4496,7 +4564,61 @@ bool Game::loadFromFile(const std::string& path) {
         // единственный, который правило «новое поле отдельным блоком или новой
         // версией» не покрывает. Без этой развилки сейв 16 с непустым списком
         // рынков экзотики не грузился вовсе.
-        if (!expectTag(in, "EXOTIC") || !(in >> count)) {
+        // (§47) Блок появился в версии 19. Старый сейв читается как раньше: книги
+    // держав остаются по умолчанию, а игрок свою уже получил из блока LICENCE.
+    if (version >= 19) {
+        size_t bookCount = 0;
+        if (!expectTag(in, "LICENCEBOOK") || !(in >> bookCount)) {
+            lastEvent = "load failed: licence book";
+            return false;
+        }
+        loaded.resizeFactionLicence();
+        for (size_t f = 0; f < bookCount; ++f) {
+            FactionLicence book;
+            int revoked = 0;
+            if (!expectTag(in, "LB") ||
+                !(in >> book.quotaPaid >> book.quotaBase >> book.periodEnd >> book.tariffRate >>
+                    book.buyback >> book.count >> revoked >> book.periodsMet)) {
+                lastEvent = "load failed: licence row";
+                return false;
+            }
+            book.revoked = revoked != 0;
+            if (f < loaded.factionLicence.size()) loaded.factionLicence[f] = book;
+        }
+        size_t clockCount = 0, fleetClockCount = 0;
+        if (!expectTag(in, "BUYCLOCK") || !(in >> clockCount >> fleetClockCount)) {
+            lastEvent = "load failed: buy clock";
+            return false;
+        }
+        loaded.factionNextSystemBuy.assign(clockCount, 0.0);
+        for (size_t f = 0; f < clockCount; ++f) {
+            if (!(in >> loaded.factionNextSystemBuy[f])) {
+                lastEvent = "load failed: buy clock row";
+                return false;
+            }
+        }
+        loaded.factionNextFleetBuy.assign(fleetClockCount, 0.0);
+        for (size_t f = 0; f < fleetClockCount; ++f) {
+            if (!(in >> loaded.factionNextFleetBuy[f])) {
+                lastEvent = "load failed: fleet clock row";
+                return false;
+            }
+        }
+        size_t shareCells = 0;
+        if (!expectTag(in, "FACTIONSHARES") || !(in >> shareCells >> loaded.factionExpansionCursor)) {
+            lastEvent = "load failed: faction shares";
+            return false;
+        }
+        loaded.factionShares.assign(shareCells, 0.0);
+        for (size_t i = 0; i < shareCells; ++i) {
+            if (!(in >> loaded.factionShares[i])) {
+                lastEvent = "load failed: faction share";
+                return false;
+            }
+        }
+    }
+
+    if (!expectTag(in, "EXOTIC") || !(in >> count)) {
             lastEvent = "load failed: exotics";
             return false;
         }
@@ -4812,14 +4934,11 @@ void Game::init(size_t num_stars) {
     // загрузки, а балансовый стенд строит миры десятками подряд. Без сброса
     // новая партия наследовала бы чужую репутацию, замороженную лицензию,
     // чужие деньги «в пути» и чужой журнал.
-    licenceQuotaPaid = 0.0;
-    licenceQuotaBase = LICENCE_QUOTA_BASE;
-    licencePeriodEnd = LICENCE_PERIOD_YEARS;
-    licenceTariffRate = LICENCE_TARIFF_BASE;
-    licenceBuyback = 0.0;
-    licenceCount = 1;
-    licenceRevoked = false;
-    licencePeriodsMet = 0;
+    // ⚠️ Книга ОЧИЩАЕТСЯ, а не переписывается по полям: фракций на этот момент
+    // ещё нет, и присваивание ушло бы в запасную строку, а настоящие строки
+    // достались бы новому миру от предыдущего. Ровно тот класс, на котором
+    // проект уже обжигался (уровень цен, наследованный между мирами).
+    factionLicence.clear();
     clusterPriceLevel = 1.0;
     clusterPriceBase = 1.0;
     creditFloat.clear();
@@ -4840,7 +4959,14 @@ void Game::init(size_t num_stars) {
     factionBookAt.clear();
     playerShares.clear();
     shareCostBasis.clear();
+    factionShares.clear();
+    factionNextSystemBuy.clear();
+    factionNextFleetBuy.clear();
     factionBookCursor = 0;
+    // ⚠️ Курсор — тоже состояние мира: не сброшенный, он делает второй мир в
+    // процессе не таким, как первый при том же seed (см. §47 и историю с
+    // уровнем цен, наследованным между партиями).
+    factionExpansionCursor = 0;
     lastEvent = "cluster seeded";
     if (num_stars == 0) return;
 
@@ -4851,15 +4977,36 @@ void Game::init(size_t num_stars) {
     marketUpdatedAt.assign(num_stars, time - MARKET_UPDATE_INTERVAL_YEARS);
     rebuildRouteCache();
 
+    // --- Державы скопления (§47) ---------------------------------------------
+    // Пятнадцать держав плюс игрок = шестнадцать «игроков», из которых пятнадцать
+    // ведёт ИИ. Цвета разведены по кругу тона и разведены с уже занятыми: бледная
+    // палата (210,214,236), жёлтый игрок (255,232,120) и кабинные cue микромира
+    // (золото розыска 255,205,60, SOS 238,88,82, зелень эскорта 90,220,130,
+    // синь подмоги 120,180,255). Агрессия рассыпана по всей шкале — иначе
+    // пятнадцать держав ведут себя как одна.
     const FactionSeed seeds[] = {
         {"Aster Compact", 230, 76, 82, 0.68},
         {"Helion League", 244, 178, 70, 0.42},
         {"Cobalt Mandate", 80, 156, 255, 0.58},
         {"Green Arcology", 95, 210, 128, 0.34},
         {"Violet Synod", 190, 112, 240, 0.72},
-        {"White Foundry", 220, 226, 214, 0.50}
+        {"White Foundry", 220, 226, 214, 0.50},
+        {"Teal Concord", 56, 204, 192, 0.30},
+        {"Ember Dominion", 238, 104, 40, 0.80},
+        {"Indigo Chorus", 112, 102, 236, 0.46},
+        {"Rose Directorate", 242, 118, 170, 0.62},
+        {"Lime Enclave", 178, 216, 72, 0.26},
+        {"Slate Hegemony", 126, 148, 172, 0.66},
+        {"Bronze Guild", 182, 126, 66, 0.38},
+        {"Mint Covenant", 132, 232, 176, 0.54},
+        {"Garnet Accord", 158, 44, 72, 0.76}
     };
-    const int factionCount = std::min<int>(6, std::max<int>(2, int(num_stars / 180)));
+    // ⚠️ Делитель 80, а не 180: при 180 полный состав требовал 2 700 звёзд, и
+    // балансовые харнесы (миры по 1 200) катались на шести державах — то есть
+    // проверяли НЕ ту конфигурацию, в которую играют. Потолок держав — размер
+    // `seeds`, а не отдельное число, которое можно забыть обновить.
+    const int factionSeedCount = int(sizeof(seeds) / sizeof(seeds[0]));
+    const int factionCount = std::min<int>(factionSeedCount, std::max<int>(2, int(num_stars / 80)));
     std::vector<int> homes;
     homes.reserve(factionCount);
     for (int i = 0; i < factionCount; ++i) {
@@ -4879,6 +5026,16 @@ void Game::init(size_t num_stars) {
         faction.tradeBias = 0.65 - seeds[i].aggression * 0.18;
         faction.expansionBias = 0.36 + cluster.stars[home].habitability * 0.32;
         faction.defenseBias = 0.38 + cluster.stars[home].defense * 0.025;
+        // ⚠️ СТОЛИЦА ЗАНИМАЕТСЯ СРАЗУ, а не внутри `claimInitialHoldings`.
+        // Иначе соседей разбирают раньше, чем державы сели по домам: первая
+        // держава берёт три ближайшие «ничейные» звезды, среди которых лежит
+        // ЧУЖАЯ БУДУЩАЯ СТОЛИЦА, а потом `setStarOwner` молча отбирает её
+        // обратно (§47). При шести державах дома стояли редко и это почти не
+        // случалось; при пятнадцати Aster Compact оставался с ОДНОЙ звездой,
+        // стартовая система выбиралась из неё одной и попадала в пустоту —
+        // ближайший сосед 17.5 ly вместо 8, ровно тот отказ, от которого уже
+        // защищались при посадке клиринговой палаты.
+        setStarOwner(*this, home, int(factions.size()) - 1);
     }
     for (size_t i = 0; i < factions.size(); ++i) {
         claimInitialHoldings(*this, int(i));
@@ -4942,6 +5099,7 @@ void Game::init(size_t num_stars) {
     factions.back().defenseBias = 0.30;
     resizeFactionRelations();
     resizeFactionReputation();
+    resizeFactionLicence();
     for (size_t a = 0; a < factions.size(); ++a) {
         for (size_t b = 0; b < factions.size(); ++b) {
             if (a == b) {
@@ -5059,6 +5217,11 @@ void Game::init(size_t num_stars) {
     }
 
     for (int f = 0; f < npcFactionCount; ++f) {
+        // ⚠️ Без владений индексировать `controlledStars` нечем. Держава без
+        // звёзд возможна (палате может не достаться свободного дома), и все
+        // четыре цикла ниже читали бы `[i % 0]`. Раньше это держалось на том,
+        // что фракций было шесть и звёзд всем хватало.
+        if (factions[f].controlledStars.empty()) continue;
         for (int i = 0; i < perFactionPatrol; ++i) {
             const int start = factions[f].controlledStars[i % int(factions[f].controlledStars.size())];
             const ClusterStar& star = cluster.stars[start];
@@ -5157,6 +5320,16 @@ void Game::init(size_t num_stars) {
         agents.push_back(agent);
         registerFactionAgent(*this, int(agents.size()) - 1);
     }
+    // (§47) Флот, с которым держава рождается, УЖЕ лицензирован: иначе она
+    // стартует с одной лицензией на десяток бортов и первые тысячелетия только
+    // догоняет саму себя, а её квота (считается от числа лицензий) оказывается
+    // вдесятеро меньше настоящей. Покупкой растёт то, что СВЕРХ рождения.
+    resizeFactionLicence();
+    for (size_t f = 0; f < factions.size(); ++f) {
+        if (int(f) == playerFaction || int(f) == clearingFaction) continue;
+        licenceOf(int(f)).count = std::max(1, int(factions[f].fleetAgents.size()));
+    }
+
     // Стартовая доска заданий масштабируется вместе с миром: 24 контракта на
     // 10 000 систем игрок не встречал нигде, кроме родной системы.
     const int seedContracts = std::max<int>(8,
@@ -5172,7 +5345,7 @@ void Game::init(size_t num_stars) {
     clusterPriceLevel = measureClusterPriceLevel();
     clusterPriceBase = clusterPriceLevel;
     marketSetClusterLevel(clusterPriceLevel);
-    licenceTariffRate = LICENCE_TARIFF_BASE;
+    licence().tariffRate = LICENCE_TARIFF_BASE;
 }
 
 void Game::update(double dt) {
@@ -5504,6 +5677,70 @@ void Game::updateContracts(double dt) {
     }
 }
 
+// (§47) Держава ПОКУПАЕТ систему у центра — тем же прайсом (`systemPrice`) и с
+// той же кассой, что и игрок (§13). Это и делает шестнадцать симметричными:
+// раньше расширяться покупкой умел один капитан, а ИИ — только колонизацией.
+//
+// ⚠️ Ни одного обращения к ГПСЧ: выбор строго детерминирован (§2.3), иначе
+// ветка двигала бы поток мира и «включённый ИИ» расходился бы с выключенным.
+// Обзор ОГРАНИЧЕН окном в 64 звезды со скользящего курсора: проход по восьми
+// тысячам звёзд на каждую державу каждый такт — это обход скопления на кадр.
+void Game::factionTryBuySystem(int factionIndex) {
+    if (!validFaction(*this, factionIndex)) return;
+    if (factionIndex == playerFaction || factionIndex == clearingFaction) return;
+    Faction& power = factions[size_t(factionIndex)];
+    // Отозванная лицензия не покупает империю: сначала расплатись (§47).
+    if (licenceOf(factionIndex).revoked) return;
+    // Тратится ТОЛЬКО колониальный бюджет, и не весь: держава не спускает казну
+    // на одну звезду. Тот же принцип, что у потолка награды за заказ (§24).
+    const double purse = std::min(power.treasury, power.colonyBudget);
+    if (!(purse > 0.0) || cluster.stars.empty()) return;
+    // Предел управляемости (см. SYSTEM_ADMIN_*): деньги — не единственное, чем
+    // покупается суверенитет. Колонизацию это НЕ трогает: там держава растит
+    // владения своими руками, а не покупает готовое.
+    const int adminCap = SYSTEM_ADMIN_BASE +
+        SYSTEM_ADMIN_PER_HULL * int(power.fleetAgents.size());
+    if (int(power.controlledStars.size()) >= adminCap) return;
+    // Выдержка (см. SYSTEM_BUY_INTERVAL_YEARS): не чаще раза в тысячу лет.
+    resizeShareBooks();
+    if (size_t(factionIndex) < factionNextSystemBuy.size() &&
+        time < factionNextSystemBuy[size_t(factionIndex)]) return;
+
+    const size_t starCount = cluster.stars.size();
+    const size_t window = std::min<size_t>(64, starCount);
+    int best = -1;
+    double bestScore = 0.0;
+    double bestCost = 0.0;
+    for (size_t k = 0; k < window; ++k) {
+        const size_t i = (size_t(factionExpansionCursor) + k) % starCount;
+        const ClusterStar& star = cluster.stars[i];
+        if (star.ownerFaction >= 0) continue;          // покупаем только у центра
+        const double cost = systemPrice(int(i)).total;
+        if (!(cost > 0.0) || cost > purse) continue;
+        // Ценность на кредит, со скидкой за расстояние от дома: держава берёт
+        // то, что может держать, а не то, что дальше всех.
+        double reach = 1.0;
+        if (validStar(*this, power.homeStar)) {
+            reach = 1.0 + distanceBetween(cluster.stars[size_t(power.homeStar)], star) * 0.05;
+        }
+        const double worth = (starPopulationWeight(star) * 3.0 + star.industry * 4.0 +
+                              star.habitability * 5.0) / (cost * reach);
+        if (worth > bestScore) { bestScore = worth; best = int(i); bestCost = cost; }
+    }
+    factionExpansionCursor = int((size_t(factionExpansionCursor) + window) % starCount);
+    if (best < 0) return;
+
+    power.treasury -= bestCost;
+    // Выручка идёт центру: он и был продавцом (§47).
+    if (validFaction(*this, clearingFaction)) factions[size_t(clearingFaction)].treasury += bestCost;
+    setStarOwner(*this, best, factionIndex);
+    transferColonies(*this, best, factionIndex);
+    if (colonyIndexAt(*this, best) < 0) addColony(*this, best, factionIndex, false);
+    if (size_t(factionIndex) < factionNextSystemBuy.size()) {
+        factionNextSystemBuy[size_t(factionIndex)] = time + SYSTEM_BUY_INTERVAL_YEARS;
+    }
+}
+
 void Game::updateFactions(double dt) {
     factionUpdateTimer -= dt;
     if (factionUpdateTimer > 0.0) return;
@@ -5520,6 +5757,10 @@ void Game::updateFactions(double dt) {
         const int published = factionBookCursor;
         publishFactionBook(published);
         factionBookCursor = (factionBookCursor + 1) % int(factions.size());
+        // По одной державе за такт — тем же кругом, что и публикация книги.
+        factionTryBuySystem(published);
+        factionTryBuyShares(published);
+        factionTryGrowFleet(published);
         // (§37.1) РЕПУТАЦИЯ ОТКРЫВАЕТ КНИГИ. У доверенного возчика отчёт всегда
         // свежий: он и есть тот, кто возит их грузы и видит их склады изнутри.
         //
@@ -6814,7 +7055,7 @@ bool Game::agentSellCargoAmount(int agentIndex, double amount, int elementIndex)
     // погашение выкупа (см. sellCargo). Это единственный путь назад для того,
     // у кого нет денег на выкуп: покупка по-прежнему заперта, значит новый
     // груз не взять, и остаётся то, что уже в трюме, и то, что накопаешь.
-    if (agent.playerControlled && licenceRevoked && licenceBuyback <= 0.0) {
+    if (agent.playerControlled && licence().revoked && licence().buyback <= 0.0) {
         playerTradingBlocked();
         return false;
     }
@@ -6829,7 +7070,7 @@ bool Game::agentSellCargoAmount(int agentIndex, double amount, int elementIndex)
 int Game::agentSellAllCargo(int agentIndex) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return 0;
     Agent& agent = agents[agentIndex];
-    if (agent.playerControlled && licenceRevoked && licenceBuyback <= 0.0) {
+    if (agent.playerControlled && licence().revoked && licence().buyback <= 0.0) {
         playerTradingBlocked();
         return 0;
     }
@@ -7402,7 +7643,12 @@ bool Game::playerBuySystem() {
         return false;
     }
 
-    const int seller = star.ownerFaction;
+    // (§47) Продавец — ВЛАСТЬ над системой: держава-владелец или центр. Раньше
+    // здесь стоял сырой `star.ownerFaction`, и покупка ничейной звезды —
+    // а таких 98% — списывала деньги в НИКУДА: комментарий строкой ниже обещал
+    // «деньги не исчезают из мира», и ровно в самом частом случае обещание не
+    // выполнялось.
+    const int seller = starAuthority(*this, starIndex);
     player.money -= cost;
     // Деньги не исчезают из мира: прежний владелец получает всё и пустит их на
     // свою экспансию и флот — ты буквально финансируешь соседа, у которого купил.
@@ -7657,10 +7903,17 @@ double Game::playerColonyWithdraw(double amount) {
 // поднимать себе ставку.
 //
 // Ставка ЛИНЕЙНА: одна лицензия — одна квота. При `LICENCE_QUOTA_PER_EXTRA = 1`
-// формула сводится к `licenceQuotaBase * licenceCount`, и планка считается в
+// формула сводится к `licence().quotaBase * licence().count`, и планка считается в
 // уме — три борта, тридцать тысяч (§21: читаемость шкалы важнее точности).
 double Game::licenceQuotaTarget() const {
-    return licenceQuotaBase * (1.0 + LICENCE_QUOTA_PER_EXTRA * double(std::max(0, licenceCount - 1)));
+    return licenceQuotaTargetOf(playerFaction);
+}
+
+// (§47) Та же планка для ЛЮБОЙ фракции. Правило одно на всех: одна лицензия —
+// одна квота, лицензий столько же, сколько бортов.
+double Game::licenceQuotaTargetOf(int factionIndex) const {
+    const FactionLicence& book = licenceOf(factionIndex);
+    return book.quotaBase * (1.0 + LICENCE_QUOTA_PER_EXTRA * double(std::max(0, book.count - 1)));
 }
 
 // Медиана стоимости единицы услуги по скоплению. Медиана, а не среднее: рынки
@@ -7706,10 +7959,14 @@ void Game::updateLicence(double dt) {
     // вечного пола. Между сверками величина КОНСТАНТА, поэтому строка
     // идемпотентна и сама ставит ставку на место после загрузки сейва.
     const double drift = clusterPriceBase > 0.0 ? clusterPriceLevel / clusterPriceBase : 1.0;
-    licenceTariffRate = std::max(LICENCE_TARIFF_MIN,
-                                 std::min(LICENCE_TARIFF_MAX, LICENCE_TARIFF_BASE * drift));
+    // (§47) Ставка — свойство СКОПЛЕНИЯ, а не капитана: она одна для всех
+    // шестнадцати книг. Хранится по строкам, потому что строка и есть лицензия.
+    resizeFactionLicence();
+    const double clusterRate = std::max(LICENCE_TARIFF_MIN,
+                                        std::min(LICENCE_TARIFF_MAX, LICENCE_TARIFF_BASE * drift));
+    for (size_t f = 0; f < factionLicence.size(); ++f) factionLicence[f].tariffRate = clusterRate;
 
-    if (time < licencePeriodEnd) return;
+    if (time < licence().periodEnd) return;
 
     const double target = licenceQuotaTarget();
     // Тысячелетний рубеж: свет доходит от края скопления до края за век с лишним,
@@ -7726,51 +7983,96 @@ void Game::updateLicence(double dt) {
     clusterPriceLevel += (measureClusterPriceLevel() - clusterPriceLevel) * 0.5;
     marketSetClusterLevel(clusterPriceLevel);
     const double reconciledDrift = clusterPriceBase > 0.0 ? clusterPriceLevel / clusterPriceBase : 1.0;
-    licenceTariffRate = std::max(LICENCE_TARIFF_MIN,
-                                 std::min(LICENCE_TARIFF_MAX, LICENCE_TARIFF_BASE * reconciledDrift));
+    const double reconciledRate = std::max(LICENCE_TARIFF_MIN,
+                                           std::min(LICENCE_TARIFF_MAX, LICENCE_TARIFF_BASE * reconciledDrift));
+    for (size_t f = 0; f < factionLicence.size(); ++f) factionLicence[f].tariffRate = reconciledRate;
     pushNews("Millennial relativistic market correction: cluster prices at " +
              std::to_string(int(reconciledDrift * 100.0 + 0.5)) + "% of founding, tariff now " +
-             std::to_string(int(licenceTariffRate * 1000.0 + 0.5)) + " per mille.", 1);
-    if (licenceQuotaPaid + 1e-6 >= target) {
-        licencePeriodsMet += 1;
-        pushNews("Licence renewed: quota met (" + std::to_string(int(licenceQuotaPaid)) +
+             std::to_string(int(licence().tariffRate * 1000.0 + 0.5)) + " per mille.", 1);
+    if (licence().quotaPaid + 1e-6 >= target) {
+        licence().periodsMet += 1;
+        pushNews("Licence renewed: quota met (" + std::to_string(int(licence().quotaPaid)) +
                  "/" + std::to_string(int(target)) + " Cr).", 4);
         lastEvent = "licence renewed";
-    } else if (!licenceRevoked) {
+    } else if (!licence().revoked) {
         // Отзыв: торговля замерзает, пока игрок не выкупит лицензию. Добыча (M),
         // контракты и локальный полёт продолжают работать — есть чем откопаться.
-        const double shortfall = target - licenceQuotaPaid;
-        licenceRevoked = true;
-        licenceBuyback = std::max(LICENCE_BUYBACK_MIN, shortfall * LICENCE_BUYBACK_K);
+        const double shortfall = target - licence().quotaPaid;
+        licence().revoked = true;
+        licence().buyback = std::max(LICENCE_BUYBACK_MIN, shortfall * LICENCE_BUYBACK_K);
         pushNews("LICENCE REVOKED: quota short by " + std::to_string(int(std::ceil(shortfall))) +
-                 " Cr. Trading frozen until bought back (" + std::to_string(int(licenceBuyback)) + " Cr).", 2);
+                 " Cr. Trading frozen until bought back (" + std::to_string(int(licence().buyback)) + " Cr).", 2);
         lastEvent = "licence revoked - trading frozen";
     }
     // Планка ползёт вверх независимо от исхода: скопление богатеет, и вечно жить
     // на одном отработанном маршруте не выйдет — геймплей обязан двигаться.
-    licenceQuotaBase *= LICENCE_QUOTA_GROWTH;
-    licenceQuotaPaid = 0.0;
-    licencePeriodEnd = time + LICENCE_PERIOD_YEARS;
+    licence().quotaBase *= LICENCE_QUOTA_GROWTH;
+    licence().quotaPaid = 0.0;
+    licence().periodEnd = time + LICENCE_PERIOD_YEARS;
+
+    // (§47) Тот же рубеж закрывает период и пятнадцати державам. Сверка одна на
+    // скопление (уровень цен пересчитан выше ОДИН раз), а книги — у каждого свои.
+    for (size_t f = 0; f < factions.size(); ++f) {
+        if (int(f) == playerFaction || int(f) == clearingFaction) continue;
+        closeFactionLicencePeriod(int(f));
+    }
+}
+
+// Конец отчётного периода державы. Правило то же, что у игрока, и отличается
+// ровно одним: у ИИ нет кнопки, поэтому выкуп он платит из казны сам и сразу,
+// как только она это тянет.
+//
+// ⚠️ Держава, которая не может выкупиться, ОСТАЁТСЯ отозванной, и её торговцы
+// стоят. Это не тупик, а давление: казна продолжает капать с колоний, и рано
+// или поздно выкуп становится по карману. Автоматическое прощение долга здесь
+// сделало бы отзыв бессмысленным для пятнадцати из шестнадцати.
+void Game::closeFactionLicencePeriod(int factionIndex) {
+    if (!validFaction(*this, factionIndex)) return;
+    FactionLicence& book = licenceOf(factionIndex);
+    // ⚠️ Здесь `count` БОЛЬШЕ НЕ ВЫВОДИТСЯ из размера флота. Выводить значило бы
+    // выдавать лицензии даром: у игрока каждая покупается за деньги
+    // (`playerBuyLicence`), и держава, получающая их бесплатно, — не «такой же
+    // игрок». Лицензии растут только через `factionTryGrowFleet`.
+    const double target = licenceQuotaTargetOf(factionIndex);
+    if (book.quotaPaid + 1e-6 >= target) {
+        book.periodsMet += 1;
+    } else if (!book.revoked) {
+        const double shortfall = target - book.quotaPaid;
+        book.revoked = true;
+        book.buyback = std::max(LICENCE_BUYBACK_MIN, shortfall * LICENCE_BUYBACK_K);
+    }
+    if (book.revoked && book.buyback > 0.0) {
+        Faction& power = factions[size_t(factionIndex)];
+        if (power.treasury >= book.buyback) {
+            power.treasury -= book.buyback;
+            if (validFaction(*this, clearingFaction)) factions[size_t(clearingFaction)].treasury += book.buyback;
+            book.revoked = false;
+            book.buyback = 0.0;
+        }
+    }
+    book.quotaBase *= LICENCE_QUOTA_GROWTH;
+    book.quotaPaid = 0.0;
+    book.periodEnd = time + LICENCE_PERIOD_YEARS;
 }
 
 bool Game::playerBuybackLicence() {
-    if (!licenceRevoked) {
+    if (!licence().revoked) {
         lastEvent = "licence is valid";
         return false;
     }
     if (playerAgent < 0 || playerAgent >= int(agents.size())) return false;
     Agent& player = agents[playerAgent];
-    if (player.money < licenceBuyback) {
-        lastEvent = "buyback needs " + std::to_string(int(std::ceil(licenceBuyback))) + " Cr";
+    if (player.money < licence().buyback) {
+        lastEvent = "buyback needs " + std::to_string(int(std::ceil(licence().buyback))) + " Cr";
         return false;
     }
-    player.money -= licenceBuyback;
+    player.money -= licence().buyback;
     // Выкуп идёт в казну лицензиара — деньги не исчезают из экономики.
-    if (validFaction(*this, clearingFaction)) factions[clearingFaction].treasury += licenceBuyback;
-    licenceRevoked = false;
-    licenceBuyback = 0.0;
-    licenceQuotaPaid = 0.0;
-    licencePeriodEnd = time + LICENCE_PERIOD_YEARS;
+    if (validFaction(*this, clearingFaction)) factions[clearingFaction].treasury += licence().buyback;
+    licence().revoked = false;
+    licence().buyback = 0.0;
+    licence().quotaPaid = 0.0;
+    licence().periodEnd = time + LICENCE_PERIOD_YEARS;
     pushNews("Licence bought back. Trading resumed.", 4);
     lastEvent = "licence bought back";
     return true;
@@ -7823,7 +8125,7 @@ std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDea
     const double freeMass = std::max(0.0, player.ship.cargoCapacity - shipCargoMass(player.ship));
     if (freeMass <= 0.0 || player.money <= 0.0) return deals;
 
-    const double sellTariff = licenceTariffRate;    // лицензионный тариф удержат с продажи
+    const double sellTariff = licence().tariffRate;    // лицензионный тариф удержат с продажи
     const int elems = std::min(int(elementCount()), int(home.prices.size()));
     // При фильтре по одному элементу список короткий по построению (не больше числа
     // разведанных систем), поэтому режем его гораздо мягче — иначе фильтр «покажи всё
@@ -7988,7 +8290,7 @@ TradeRun Game::playerBestRun(int originStar, int nearestSystems, bool knownOnly)
     const double freeMass = std::max(0.0, player.ship.cargoCapacity - shipCargoMass(player.ship));
     if (freeMass <= 0.0 || player.money <= 0.0) return best;
 
-    const double sellTariff = licenceTariffRate;
+    const double sellTariff = licence().tariffRate;
     const int elems = std::min(int(elementCount()), int(home.prices.size()));
 
     // Что и сколько отсюда вообще можно увезти — считается один раз на элемент,
@@ -8163,11 +8465,26 @@ TradeRun Game::playerBestRun(int originStar, int nearestSystems, bool knownOnly)
 }
 
 double Game::licencePrice() const {
-    return licenceQuotaBase * LICENCE_PRICE_K * double(std::max(1, licenceCount));
+    return licence().quotaBase * LICENCE_PRICE_K * double(std::max(1, licence().count));
+}
+
+// (§47) Цена следующей лицензии для ЛЮБОЙ из шестнадцати — та же формула, что и
+// у игрока: чем больше уже держишь, тем дороже следующая.
+double Game::licencePriceOf(int factionIndex) const {
+    const FactionLicence& book = licenceOf(factionIndex);
+    return book.quotaBase * LICENCE_PRICE_K * double(std::max(1, book.count));
+}
+
+// Сколько у державы лицензий БЕЗ борта. Зеркало `playerFreeLicences()`:
+// у игрока борта считаются по `playerControlled`, у державы — по её флоту.
+int Game::factionFreeLicences(int factionIndex) const {
+    if (!validFaction(*this, factionIndex)) return 0;
+    const int hulls = int(factions[size_t(factionIndex)].fleetAgents.size());
+    return std::max(0, licenceOf(factionIndex).count - std::max(1, hulls));
 }
 
 double Game::licenceSettleCost() const {
-    const double remaining = std::max(0.0, licenceQuotaTarget() - licenceQuotaPaid);
+    const double remaining = std::max(0.0, licenceQuotaTarget() - licence().quotaPaid);
     return remaining * LICENCE_SETTLE_K;
 }
 
@@ -8180,7 +8497,7 @@ int Game::playerShipCount() const {
 }
 
 int Game::playerFreeLicences() const {
-    return std::max(0, licenceCount - playerShipCount());
+    return std::max(0, licence().count - playerShipCount());
 }
 
 bool Game::playerBuyLicence() {
@@ -8193,8 +8510,8 @@ bool Game::playerBuyLicence() {
     }
     player.money -= price;
     if (validFaction(*this, clearingFaction)) factions[clearingFaction].treasury += price;
-    licenceCount += 1;
-    pushNews("Trading licence #" + std::to_string(licenceCount) + " acquired. Quota is now " +
+    licence().count += 1;
+    pushNews("Trading licence #" + std::to_string(licence().count) + " acquired. Quota is now " +
              std::to_string(int(licenceQuotaTarget())) + " Cr per period.", 4);
     lastEvent = "licence acquired - one more hull permitted";
     return true;
@@ -8206,11 +8523,11 @@ bool Game::playerSettleQuota() {
     // только выкуп (`playerBuybackLicence`), а квота отозванной лицензии ни на
     // что не влияет. Раньше кнопка работала и в этом состоянии — игрок платил
     // полторы цены остатка и не получал ровно ничего.
-    if (licenceRevoked) {
+    if (licence().revoked) {
         lastEvent = "licence revoked: buy it back first (F2)";
         return false;
     }
-    const double remaining = std::max(0.0, licenceQuotaTarget() - licenceQuotaPaid);
+    const double remaining = std::max(0.0, licenceQuotaTarget() - licence().quotaPaid);
     if (remaining <= 0.0) {
         lastEvent = "quota already met";
         return false;
@@ -8223,7 +8540,7 @@ bool Game::playerSettleQuota() {
     }
     player.money -= cost;
     if (validFaction(*this, clearingFaction)) factions[clearingFaction].treasury += cost;
-    licenceQuotaPaid += remaining;
+    licence().quotaPaid += remaining;
     pushNews("Quota settled in cash for " + std::to_string(int(std::ceil(cost))) + " Cr.", 4);
     lastEvent = "quota settled";
     return true;
@@ -8233,6 +8550,31 @@ bool Game::playerSettleQuota() {
 
 void Game::resizeShareBooks() {
     const size_t n = factions.size();
+    if (factionShares.size() != n * n) factionShares.assign(n * n, 0.0);
+    // Выдержки РАЗВЕДЕНЫ по фазе: иначе все пятнадцать держав покупают в один
+    // год, потом тысячу лет молчат — пульс вместо истории.
+    if (factionNextSystemBuy.size() != n) {
+        // ⚠️ Фазы раздаются ТОЛЬКО при первом заведении. Пройтись по всему
+        // вектору при любом изменении размера значило бы сбрасывать уже идущие
+        // выдержки — держава, только что купившая систему, получила бы право
+        // купить снова.
+        const bool fresh = factionNextSystemBuy.empty();
+        factionNextSystemBuy.resize(n, 0.0);
+        if (fresh) {
+            for (size_t f = 0; f < n; ++f) {
+                factionNextSystemBuy[f] = SYSTEM_BUY_INTERVAL_YEARS * double(f) / double(n > 0 ? n : 1);
+            }
+        }
+    }
+    if (factionNextFleetBuy.size() != n) {
+        const bool fresh = factionNextFleetBuy.empty();
+        factionNextFleetBuy.resize(n, 0.0);
+        if (fresh) {
+            for (size_t f = 0; f < n; ++f) {
+                factionNextFleetBuy[f] = FLEET_BUY_INTERVAL_YEARS * double(f) / double(n > 0 ? n : 1);
+            }
+        }
+    }
     if (factionBook.size() != n) factionBook.assign(n, 0.0);
     if (factionIncome.size() != n) factionIncome.assign(n, 0.0);
     if (factionBookAt.size() != n) factionBookAt.assign(n, -1.0e18);
@@ -8409,9 +8751,165 @@ double Game::playerSellShares(int factionIndex, double shares) {
     return amount;
 }
 
+// (§47) Держава ПОКУПАЕТ ДОЛЮ в соседе — из торгового бюджета и по той же
+// котировке `factionSharePrice`, что видит игрок. Держава без своих денег в
+// чужой книге была последним местом, где «шестнадцать игроков» оставались
+// декорацией: биржа существовала ради одного капитана.
+//
+// ⚠️ Ни одного обращения к ГПСЧ (§2.3): выбор — максимум доходности по книге.
+void Game::factionTryBuyShares(int factionIndex) {
+    if (!validFaction(*this, factionIndex)) return;
+    if (factionIndex == playerFaction || factionIndex == clearingFaction) return;
+    resizeShareBooks();
+    Faction& holder = factions[size_t(factionIndex)];
+    if (licenceOf(factionIndex).revoked) return;
+    const double purse = std::min(holder.treasury, holder.tradeBudget);
+    if (!(purse > 0.0)) return;
+
+    int best = -1;
+    double bestYield = 0.0;
+    double bestPrice = 0.0;
+    for (size_t f = 0; f < factions.size(); ++f) {
+        if (int(f) == factionIndex || int(f) == playerFaction || int(f) == clearingFaction) continue;
+        const double price = factionSharePrice(int(f));
+        if (!(price > 0.0)) continue;
+        const double yield = factionShareDividend(int(f)) / price;
+        if (yield > bestYield) { bestYield = yield; best = int(f); bestPrice = price; }
+    }
+    if (best < 0) return;
+
+    // Тот же потолок доли, что и у игрока: больше четверти державы не продадут
+    // никому. Считается по ЭТОМУ держателю — доли держав друг в друге не
+    // складываются в один лимит.
+    double& held = factionShareHolding(factionIndex, best);
+    const double room = std::max(0.0, SHARE_FLOAT * SHARE_MAX_STAKE - held);
+    if (room <= 1e-6) return;
+    const double amount = std::min(room, purse / bestPrice);
+    if (amount <= 1e-6) return;
+    const double cost = amount * bestPrice;
+    holder.treasury -= cost;
+    held += amount;
+}
+
+// (§47) Держава БЕРЁТ ЛИЦЕНЗИЮ И СТРОИТ БОРТ — по правилу игрока: каждый борт
+// летает по отдельной лицензии, лицензия покупается заранее и деньги за неё
+// идут центру. До этого флоты держав были заданы при рождении мира и только
+// убывали: корабли гибли, строить их было некому, и длинная партия вымирала.
+//
+// ⚠️ Ни одного обращения к ГПСЧ (§2.3). За один заход делается ОДНА покупка:
+// сначала лицензия, в следующий раз — борт под неё.
+void Game::factionTryGrowFleet(int factionIndex) {
+    if (!validFaction(*this, factionIndex)) return;
+    if (factionIndex == playerFaction || factionIndex == clearingFaction) return;
+    if (licenceOf(factionIndex).revoked) return;
+    Faction& power = factions[size_t(factionIndex)];
+    if (power.controlledStars.empty()) return;
+    resizeShareBooks();
+    if (size_t(factionIndex) < factionNextFleetBuy.size() &&
+        time < factionNextFleetBuy[size_t(factionIndex)]) return;
+
+    // Потолок населения: мир рассчитан на `AGENT_TARGET_FULL` бортов на полное
+    // скопление, и строить сверх этого — топить симуляцию ради симметрии.
+    const size_t starCount = std::max<size_t>(1, cluster.stars.size());
+    const double targetAgents = std::max(48.0,
+        double(AGENT_TARGET_FULL) * double(starCount) / double(STAR_COUNT));
+    if (double(agents.size()) >= targetAgents * FLEET_POPULATION_HEADROOM) return;
+
+    const double purse = std::min(power.treasury, power.militaryBudget + power.tradeBudget);
+    if (!(purse > 0.0)) return;
+
+    // Шаг 1: нет свободной лицензии — покупаем её, и на этом ход окончен.
+    if (factionFreeLicences(factionIndex) <= 0) {
+        const double price = licencePriceOf(factionIndex);
+        if (!(price > 0.0) || price > purse) return;
+        power.treasury -= price;
+        if (validFaction(*this, clearingFaction)) factions[size_t(clearingFaction)].treasury += price;
+        licenceOf(factionIndex).count += 1;
+        factionNextFleetBuy[size_t(factionIndex)] = time + FLEET_BUY_INTERVAL_YEARS;
+        return;
+    }
+
+    // Шаг 2: лицензия есть — под неё строится борт. Класс выбирается ПО КАРМАНУ:
+    // самый дорогой, который держава тянет, — она строит лучшее, что может.
+    const std::vector<ShipClass>& classes = shipClasses();
+    int pick = -1;
+    double pickPrice = 0.0;
+    for (size_t c = 0; c < classes.size(); ++c) {
+        const double price = classes[c].price;
+        if (price > 0.0 && price <= purse && price > pickPrice) { pickPrice = price; pick = int(c); }
+    }
+    if (pick < 0) return;
+
+    // Роль — та, которой держава недобирает против собственного уклона: возчик
+    // при торговом смещении, военный при боевом. Без RNG и без таблиц.
+    int traders = 0, hulls = 0;
+    for (size_t k = 0; k < power.fleetAgents.size(); ++k) {
+        const int ai = power.fleetAgents[k];
+        if (ai < 0 || ai >= int(agents.size())) continue;
+        ++hulls;
+        if (agents[size_t(ai)].type == "trader") ++traders;
+    }
+    const double tradeShare = hulls > 0 ? double(traders) / double(hulls) : 0.0;
+    const bool wantTrader = tradeShare < std::max(0.0, std::min(1.0, power.tradeBias));
+
+    const int berth = power.controlledStars[size_t(factionExpansionCursor) % power.controlledStars.size()];
+    if (!validStar(*this, berth)) return;
+    const ClusterStar& star = cluster.stars[size_t(berth)];
+
+    power.treasury -= pickPrice;
+    Ship hull(power.name + (wantTrader ? "_Hauler_" : "_Guard_") +
+              std::to_string(licenceOf(factionIndex).count),
+              star.x, star.y, star.z, 0.12, factionIndex);
+    shipApplyClass(hull, classes[size_t(pick)]);
+    shipAutofit(hull);
+
+    Agent built(wantTrader ? "trader" : "military", hull);
+    built.currentStar = berth;
+    built.homeStar = power.homeStar;
+    built.destStar = berth;
+    built.money = 0.0;
+    built.tradeBias = power.tradeBias;
+    built.riskTolerance = power.riskTolerance;
+    built.lastAction = "commissioned";
+    agents.push_back(built);
+    registerFactionAgent(*this, int(agents.size()) - 1);
+    factionNextFleetBuy[size_t(factionIndex)] = time + FLEET_BUY_INTERVAL_YEARS;
+}
+
+double& Game::factionShareHolding(int holderFaction, int issuerFaction) {
+    resizeShareBooks();
+    static double orphan = 0.0;
+    orphan = 0.0;
+    if (!validFaction(*this, holderFaction) || !validFaction(*this, issuerFaction)) return orphan;
+    const size_t index = size_t(holderFaction) * factions.size() + size_t(issuerFaction);
+    if (index >= factionShares.size()) return orphan;
+    return factionShares[index];
+}
+
+double Game::factionShareHoldingOf(int holderFaction, int issuerFaction) const {
+    if (!validFaction(*this, holderFaction) || !validFaction(*this, issuerFaction)) return 0.0;
+    const size_t index = size_t(holderFaction) * factions.size() + size_t(issuerFaction);
+    return index < factionShares.size() ? factionShares[index] : 0.0;
+}
+
 void Game::payShareDividends(double years) {
     if (!(years > 0.0) || playerFaction < 0) return;
     resizeShareBooks();
+    // Сначала дивиденды ДЕРЖАВАМ-акционерам: та же проводка, что и игроку, но
+    // без светового ожидания — держава считает деньги в своей же столице.
+    for (size_t h = 0; h < factions.size(); ++h) {
+        if (int(h) == playerFaction || int(h) == clearingFaction) continue;
+        for (size_t f = 0; f < factions.size(); ++f) {
+            if (f == h) continue;
+            const double stake = factionShareHoldingOf(int(h), int(f));
+            if (stake <= 0.0) continue;
+            double payout = stake * factionShareDividend(int(f)) * years;
+            payout = std::min(payout, std::max(0.0, factions[f].treasury));
+            if (payout <= 0.0) continue;
+            factions[f].treasury = std::max(0.0, factions[f].treasury - payout);
+            factions[h].treasury += payout;
+        }
+    }
     for (size_t f = 0; f < playerShares.size(); ++f) {
         if (playerShares[f] <= 0.0) continue;
         // Держава платит из СВОЕЙ казны и не больше, чем в ней есть. Раньше
@@ -8594,7 +9092,7 @@ double Game::playerSellExotic(int kind, double units) {
     // Лицензионный тариф с экзотики удерживается ТОЧНО ТАК ЖЕ, как с руды, и в
     // ту же квоту. Это и делает хайтек-этаж выходом из квотной ловушки поздней
     // игры: один рейс с конденсатом закрывает тысячелетнюю квоту целиком.
-    const double licenceFee = licenceRevoked ? 0.0 : gross * licenceTariffRate;
+    const double licenceFee = licence().revoked ? 0.0 : gross * licence().tariffRate;
     const double debtPaid = applyLicenceBuyback(gross - fee);
     player.money += gross - fee - licenceFee - debtPaid;
     const int owner = star.ownerFaction;
@@ -8604,7 +9102,7 @@ double Game::playerSellExotic(int kind, double units) {
     // расходилась с тем, что игрок реально заплатил.
     if (fee > 0.01 && validFaction(*this, owner)) queueSettlementSignal(owner, starIndex, fee);
     if (licenceFee > 0.0) {
-        licenceQuotaPaid += licenceFee;
+        licence().quotaPaid += licenceFee;
         if (validFaction(*this, clearingFaction)) factions[size_t(clearingFaction)].treasury += licenceFee;
     }
     player.trades += 1;
@@ -8862,7 +9360,7 @@ bool Game::markLocalBountyTarget(int agentIndex) {
 }
 
 bool Game::playerTradingBlocked() {
-    if (!licenceRevoked) return false;
+    if (!licence().revoked) return false;
     // ⚠️ «Sell cargo» здесь было ВРАНЬЁМ для половины игры: у возчика экзотики
     // трюм пуст по определению, всё его состояние лежит в ячейке удержания и в
     // портфеле. Формулировка называет все три источника, а `applyLicenceBuyback`
@@ -8874,29 +9372,29 @@ bool Game::playerTradingBlocked() {
     // словесное собрано в ОДИН оборот без скобок и запятых на концах, а сумма
     // приписана после него.
     lastEvent = "trading frozen - pay it with F2 or sell cargo, exotics or shares to work off " +
-                std::to_string(int(std::ceil(licenceBuyback))) + " CR";
+                std::to_string(int(std::ceil(licence().buyback))) + " CR";
     return true;
 }
 
 double Game::applyLicenceBuyback(double available) {
-    if (!licenceRevoked) return 0.0;
+    if (!licence().revoked) return 0.0;
     // ⚠️ ОТОЗВАННАЯ ЛИЦЕНЗИЯ С НУЛЕВЫМ ДОЛГОМ — тупик без выхода: отработать
     // нечего, а торговля заперта, и сообщение предлагает «отработать 0 Cr».
     // Состояние не задумано никем (отзыв всегда ставит долг не меньше
     // `LICENCE_BUYBACK_MIN`), но достижимо арифметически. Лечим на месте.
-    if (licenceBuyback <= 0.0) { licenceRevoked = false; return 0.0; }
+    if (licence().buyback <= 0.0) { licence().revoked = false; return 0.0; }
     if (!(available > 0.0)) return 0.0;
-    const double paid = std::min(licenceBuyback, available);
+    const double paid = std::min(licence().buyback, available);
     if (!(paid > 0.0)) return 0.0;
-    licenceBuyback -= paid;
+    licence().buyback -= paid;
     if (validFaction(*this, clearingFaction)) {
         factions[size_t(clearingFaction)].treasury += paid;
     }
-    if (licenceBuyback <= 0.01) {
-        licenceBuyback = 0.0;
-        licenceRevoked = false;
-        licenceQuotaPaid = 0.0;
-        licencePeriodEnd = time + LICENCE_PERIOD_YEARS;
+    if (licence().buyback <= 0.01) {
+        licence().buyback = 0.0;
+        licence().revoked = false;
+        licence().quotaPaid = 0.0;
+        licence().periodEnd = time + LICENCE_PERIOD_YEARS;
         pushNews("Licence worked off. Trading resumed.", 4);
         lastEvent = "licence worked off - trading resumed";
     }
@@ -9332,6 +9830,36 @@ void Game::absorbLocalSignalsForFaction(int factionIndex, int observerStar, bool
 // дальность, множитель платы, звание — чистые функции от неё, и живут здесь
 // же, чтобы генератор, интерфейс и регрессии считали ОДНУ кривую, а не три
 // похожие.
+// (§47) Книга заводится на каждую фракцию; строка игрока — `playerFaction`.
+void Game::resizeFactionLicence() {
+    if (factionLicence.size() != factions.size()) {
+        factionLicence.resize(factions.size(), FactionLicence());
+    }
+}
+
+// ⚠️ Запасная строка — не «на всякий случай», а требование безопасности: книгу
+// спрашивают из интерфейса и из харнесов до того, как мир засеян (фракций ещё
+// нет), и вернуть ссылку в пустой вектор нельзя. Писать в неё бессмысленно, но
+// не смертельно: это заведомо ничья лицензия.
+static FactionLicence& fallbackLicence() {
+    static FactionLicence orphan;
+    return orphan;
+}
+
+FactionLicence& Game::licenceOf(int factionIndex) {
+    resizeFactionLicence();
+    if (factionIndex < 0 || factionIndex >= int(factionLicence.size())) return fallbackLicence();
+    return factionLicence[size_t(factionIndex)];
+}
+
+const FactionLicence& Game::licenceOf(int factionIndex) const {
+    if (factionIndex < 0 || factionIndex >= int(factionLicence.size())) return fallbackLicence();
+    return factionLicence[size_t(factionIndex)];
+}
+
+FactionLicence& Game::licence() { return licenceOf(playerFaction); }
+const FactionLicence& Game::licence() const { return licenceOf(playerFaction); }
+
 void Game::resizeFactionReputation() {
     if (factionReputation.size() != factions.size()) {
         factionReputation.resize(factions.size(), 0.0);
