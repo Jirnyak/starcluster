@@ -213,7 +213,12 @@ void testBoardHonest() {
         const double actual = executeTopDeal(g, d, ok);
         if (!ok || d.profit <= 0.0 || d.confidence < 0.5) continue;   // спрашиваем только со свежих данных
         ++checked;
-        const double err = std::fabs(actual - d.profit) / d.profit;
+        // ⚠️ Сравниваем ТОРГОВУЮ часть с торговой. `executeTopDeal` не летит, а
+        // телепортирует борт, и топлива не жжёт вовсе; сводка же с §46 вычитает
+        // дорогу (`fuelCost`). Без этого слагаемого проверка меряла бы не
+        // расхождение прогноза с исполнением, а цену перелёта — 542% «ошибки».
+        const double forecast = d.profit + d.fuelCost;
+        const double err = std::fabs(actual - forecast) / forecast;
         if (err > worstErr) { worstErr = err; worstSeed = seed; }
     }
     char buf[160];
@@ -2165,6 +2170,347 @@ void testInsightBurnsReactorFuel() {
           "просчёт по V стоит процент бака, на сухом молчит", buf);
 }
 
+// Сводка по прибытии обязана ВЫХОДИТЬ, а оплаченный просчёт — ДОЖИВАТЬ до
+// экрана (§46). Обе половины ломались одним и тем же `if (!vn.active) return;`
+// в начале `updateVisualNovel`: после вступления коробка закрывается навсегда,
+// значит ветка «новая система» не исполнялась НИ РАЗУ за партию, а если игрок
+// открывал коробку клавишей V, та же ветка перебивала свежекупленный за топливо
+// глубокий просчёт обычной сводкой кадром позже.
+void testArrivalReportReachesTheScreen() {
+    Game g; buildWorld(g, 42, 0);
+    UI::WindowState ui;
+    ui.vnState.tutorialCompleted = true;
+    ui.vnState.active = false;
+    // Дом вступление уже показало — считаем его увиденным, как это делает
+    // завершение новеллы.
+    const int home = g.agents[g.playerAgent].currentStar;
+    ui.vnState.visitedSystems.insert(home);
+
+    // Перевозим борт в другую систему: это «прибытие», и Тимертия обязана
+    // заговорить сама, при закрытой коробке.
+    int other = -1;
+    for (size_t s = 0; s < g.cluster.stars.size() && other < 0; ++s)
+        if (int(s) != home) other = int(s);
+    g.agents[g.playerAgent].currentStar = other;
+    UI::updateVisualNovel(ui, g, 0.05, 1440, 900);
+    const bool spokeOnArrival = ui.vnState.active && ui.vnState.tutorialStep == 100;
+
+    // Прибытие во ВТОРУЮ новую систему при закрытой коробке: игрок мог убрать
+    // её с экрана, и это не должно затыкать Тимертию навсегда.
+    ui.vnState.active = false;
+    int third = -1;
+    for (size_t s = 0; s < g.cluster.stars.size() && third < 0; ++s)
+        if (int(s) != home && int(s) != other) third = int(s);
+    g.agents[g.playerAgent].currentStar = third;
+    UI::updateVisualNovel(ui, g, 0.05, 1440, 900);
+    const bool spokeAgain = ui.vnState.active && ui.vnState.tutorialStep == 100;
+
+    // Оплаченный топливом просчёт по V в ещё не виденной системе: сводка не
+    // смеет его перебить. Игрок платит процентом бункера (§28) — за глубокую
+    // модель, а не за то же самое сообщение.
+    int fourth = -1;
+    for (size_t s = 0; s < g.cluster.stars.size() && fourth < 0; ++s)
+        if (int(s) != home && int(s) != other && int(s) != third) fourth = int(s);
+    g.agents[g.playerAgent].currentStar = fourth;
+    ui.vnState.active = false;
+    UI::toggleVisualNovel(ui, g);
+    const int paidStep = ui.vnState.tutorialStep;
+    const std::string paidText = ui.vnState.targetText;
+    UI::updateVisualNovel(ui, g, 0.05, 1440, 900);
+    const int afterStep = ui.vnState.tutorialStep;
+    const bool paidSurvives = (afterStep == paidStep) && (ui.vnState.targetText == paidText);
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "прибытие: шаг %d (активна %s); второе прибытие %s; за V заплачено шагом %d, кадром позже шаг %d",
+        ui.vnState.tutorialStep, spokeOnArrival ? "да" : "НЕТ", spokeAgain ? "да" : "НЕТ",
+        paidStep, afterStep);
+    check(spokeOnArrival && spokeAgain && paidSurvives,
+          "сводка по прибытии выходит, оплаченный просчёт не затирается", buf);
+}
+
+// Заказчик оплачивает ДОРОГУ тому, кто привёз в срок (§46, решение пользователя).
+//
+// ⚠️ Ставка `CONTRACT_PAY_PER_YEAR` откалибрована (§23) против свободного рейса
+// НИЩЕГО игрока — 7.6…23 Cr/год со 100 Cr в кармане, — а сгорающее дорожает
+// вместе с корпусом. Замер по шести мирам: 45 строк из 48 (94%) убыточны по
+// ОДНОМУ топливу; типичная строка «награда 1 081 Cr, ETA 116 лет, сгорит на
+// 4 643». Надбавка не делает заказ выгоднее свободного рейса — она перестаёт
+// делать его заведомо убыточным. Просрочка съедает надбавку целиком.
+void testContractPaysForTheRoad() {
+    const bool lateRun[2] = {false, true};
+    double paid[2] = {0.0, 0.0};
+    double allowance[2] = {0.0, 0.0};
+    bool ok = true;
+    for (int r = 0; r < 2; ++r) {
+        Game g;
+        buildWorld(g, 31337, 40);
+        const int pa = g.playerAgent;
+        const int here = g.agents[pa].currentStar;
+        g.agents[pa].money = 1.0e9;
+
+        int taken = -1;
+        for (size_t i = 0; i < g.contracts.size() && taken < 0; ++i) {
+            const Contract& c = g.contracts[i];
+            if (c.completed || c.failed || c.acceptedByAgent >= 0) continue;
+            if (c.originStar != here || c.resource < 0) continue;
+            if (g.agentAcceptContract(pa, c.id)) taken = int(i);
+        }
+        if (taken < 0) { ok = false; break; }
+        allowance[r] = g.contracts[size_t(taken)].fuelAllowance;
+
+        // Телепортируем борт к цели: проверяем ПРОВОДКУ, а не полёт.
+        g.agents[pa].currentStar = g.contracts[size_t(taken)].targetStar;
+        g.agents[pa].ship.enRoute = false;
+        if (lateRun[r]) g.time = g.contracts[size_t(taken)].deadline + 1.0;
+
+        const double before = g.agents[pa].money;
+        g.agentCompleteContract(pa, g.contracts[size_t(taken)].id);
+        paid[r] = g.agents[pa].money - before;
+    }
+    if (!ok) { check(false, "заказчик оплачивает дорогу привёзшему в срок", "нет подходящего заказа"); return; }
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "надбавка %.0f Cr; в срок выплачено %.0f, с просрочкой %.0f (разница %.0f)",
+        allowance[0], paid[0], paid[1], paid[0] - paid[1]);
+    check(allowance[0] > 0.0 && paid[0] > paid[1] + allowance[0] * 0.5,
+          "заказчик оплачивает дорогу привёзшему в срок", buf);
+}
+
+// Заказ обязан сходиться ПО ОБЕИМ сторонам проводки (§46.11).
+//
+// ⚠️ Три находки адверсариальной проверки СВОЕГО ЖЕ свежего кода, и все три —
+// класс §44:
+//  1. надбавка на дорогу списывалась с казны ДВАЖДЫ (она уже внутри `payout`,
+//     а `payout` списывается отдельно): игроку +5607, из казны −9932;
+//  2. у 46–64% заказов заказчика НЕТ (`issuerFaction` берётся у владельца
+//     целевой звезды, а владельца имеют 1.65% звёзд), и награда прилетала из
+//     ниоткуда — надбавка увеличила эту печать восьмикратно;
+//  3. просрочка обязана съедать надбавку целиком.
+void testContractLedgerBalances() {
+    const bool cases[3] = {false, true, false};   // в срок / с просрочкой / без заказчика
+    double toPlayer[3] = {0, 0, 0}, fromTreasury[3] = {0, 0, 0}, allow[3] = {0, 0, 0};
+    bool ok = true;
+    for (int c = 0; c < 3 && ok; ++c) {
+        Game g;
+        buildWorld(g, 31337, 40);
+        const int pa = g.playerAgent;
+        const int here = g.agents[pa].currentStar;
+        g.agents[pa].money = 1.0e9;
+
+        int taken = -1;
+        for (size_t i = 0; i < g.contracts.size() && taken < 0; ++i) {
+            const Contract& ct = g.contracts[i];
+            if (ct.completed || ct.failed || ct.acceptedByAgent >= 0) continue;
+            if (ct.originStar != here || ct.resource < 0) continue;
+            if (g.agentAcceptContract(pa, ct.id)) taken = int(i);
+        }
+        if (taken < 0) { ok = false; break; }
+        if (c == 2) g.contracts[size_t(taken)].issuerFaction = -1;   // заказ без заказчика
+        allow[c] = g.contracts[size_t(taken)].fuelAllowance;
+
+        g.agents[pa].currentStar = g.contracts[size_t(taken)].targetStar;
+        g.agents[pa].ship.enRoute = false;
+        if (cases[c]) g.time = g.contracts[size_t(taken)].deadline + 1.0;
+
+        // Суммарная казна ВСЕХ фракций: заказ без заказчика платит через
+        // клиринговую палату, и деньги обязаны уйти из мира, а не появиться.
+        double treasuryBefore = 0.0;
+        for (size_t f = 0; f < g.factions.size(); ++f) treasuryBefore += g.factions[f].treasury;
+        const double moneyBefore = g.agents[pa].money;
+        g.agentCompleteContract(pa, g.contracts[size_t(taken)].id);
+        double treasuryAfter = 0.0;
+        for (size_t f = 0; f < g.factions.size(); ++f) treasuryAfter += g.factions[f].treasury;
+        toPlayer[c] = g.agents[pa].money - moneyBefore;
+        fromTreasury[c] = treasuryBefore - treasuryAfter;
+    }
+    if (!ok) { check(false, "заказ сходится по обеим сторонам проводки", "нет подходящего заказа"); return; }
+
+    // Выплачено игроку == списано с казны, во всех трёх случаях.
+    const double drift0 = std::fabs(toPlayer[0] - fromTreasury[0]);
+    const double drift1 = std::fabs(toPlayer[1] - fromTreasury[1]);
+    const double drift2 = std::fabs(toPlayer[2] - fromTreasury[2]);
+    const bool lateEatsAllowance = toPlayer[0] > toPlayer[1] + allow[0] * 0.5;
+
+    char buf[300];
+    std::snprintf(buf, sizeof(buf),
+        "в срок +%.0f/-%.0f (расх %.0f); просрочка +%.0f/-%.0f (расх %.0f); без заказчика +%.0f/-%.0f (расх %.0f); надбавка %.0f",
+        toPlayer[0], fromTreasury[0], drift0, toPlayer[1], fromTreasury[1], drift1,
+        toPlayer[2], fromTreasury[2], drift2, allow[0]);
+    check(drift0 < 0.5 && drift1 < 0.5 && drift2 < 0.5 && lateEatsAllowance,
+          "заказ сходится по обеим сторонам проводки", buf);
+}
+
+// Совет обязан вычитать дорогу И в запасном ответе (§46.11).
+//
+// ⚠️ `legRefill` считался по кораблю `shipAsItWillLeave`, у которого баки залиты
+// ПОД ПРОБКУ, — а `refillCost` меряет недостачу, то есть по такому кораблю она
+// тождественно ноль (замер: 0.000000 на всех 200 целях трёх миров при настоящей
+// недостаче 42 201 Cr). Запасной ответ из-за этого ранжировался ВАЛОВОЙ
+// прибылью без дороги, и 13 из 25 ответов обещали меньше, чем сожжёт тот же
+// рейс, худшее отношение 32x.
+void testAdviceSubtractsRoadWhenTanksAreDry() {
+    const unsigned seeds[3] = {7u, 31337u, 909091u};
+    int worthIt = 0, asked = 0;
+    char detail[240] = "";
+    for (int s = 0; s < 3; ++s) {
+        Game g; buildWorld(g, seeds[s], 20);
+        const int pa = g.playerAgent;
+        const int here = g.agents[pa].currentStar;
+        // Состояние после неудачного рейса: баки сухи, в кармане гроши.
+        g.agents[pa].ship.fuel.clear();
+        g.agents[pa].ship.propellant.clear();
+        g.agents[pa].ship.cargo.clear();
+        g.agents[pa].money = 500.0;
+        const TradeRun r = g.playerBestRun(here, 40, false);
+        if (!r.valid) continue;
+        ++asked;
+        // Дорога до цели по НАСТОЯЩЕМУ борту: обещанное не смеет быть меньше
+        // того, что придётся долить, чтобы этот рейс вообще состоялся.
+        // Назначаем цель — иначе `agentRefuelQuote` считает по типичному плечу.
+        g.setAgentDestination(pa, r.targetStar);
+        const double road = g.agentRefuelQuote(pa);
+        if (r.profit >= road) ++worthIt;
+        if (s == 0) {
+            std::snprintf(detail, sizeof(detail), "seed %u: обещано %.0f Cr за %.0f лет, залить дорогу %.0f Cr",
+                          seeds[s], r.profit, r.years, road);
+        }
+    }
+    char buf[300];
+    std::snprintf(buf, sizeof(buf), "%s; советов %d, из них окупают долив %d", detail, asked, worthIt);
+    check(asked == 0 || worthIt == asked, "совет на сухом баке окупает долив", buf);
+}
+
+// «Продать всё» не смеет продавать ГРУЗ ЗАКАЗА (§46).
+//
+// ⚠️ Груз заказа лежит в трюме обычной партией того же элемента, и `SELL ALL`
+// сдавал его вместе с остальным. Узнавал об этом игрок на другом конце
+// маршрута: заказ становился несдаваемым, репутация падала, а сделать было уже
+// нечего. Кнопка при этом стоит рядом с той, которой сдают рейс.
+void testSellAllKeepsContractCargo() {
+    Game g;
+    buildWorld(g, 31337, 40);
+    const int pa = g.playerAgent;
+    const int here = g.agents[pa].currentStar;
+
+    // Ищем заказ ОТСЮДА, который возит груз, и берём его.
+    int taken = -1;
+    for (size_t i = 0; i < g.contracts.size() && taken < 0; ++i) {
+        const Contract& c = g.contracts[i];
+        if (c.completed || c.failed || c.acceptedByAgent >= 0) continue;
+        if (c.originStar != here || c.resource < 0) continue;
+        g.agents[pa].money = 1.0e9;
+        if (g.agentAcceptContract(pa, c.id)) taken = int(i);
+    }
+    if (taken < 0) { check(false, "продать всё щадит груз заказа", "нет подходящего заказа"); return; }
+
+    const int res = g.contracts[size_t(taken)].resource;
+    const double owed = g.contracts[size_t(taken)].amount;
+    const std::string symbol = elementDefinitions()[size_t(res)].symbol;
+
+    // Кладём сверху столько же обычного груза того же элемента: проверка не в
+    // том, что кнопка ничего не делает, а в том, что она продаёт ТОЛЬКО лишнее.
+    for (size_t c = 0; c < g.agents[pa].ship.cargo.size(); ++c) {
+        if (g.agents[pa].ship.cargo[c].element == symbol) {
+            g.agents[pa].ship.cargo[c].amount += owed;
+            break;
+        }
+    }
+    double before = 0.0;
+    for (const Resource& r : g.agents[pa].ship.cargo) if (r.element == symbol) before = r.amount;
+
+    g.agentSellAllCargo(pa);
+
+    double after = 0.0;
+    for (const Resource& r : g.agents[pa].ship.cargo) if (r.element == symbol) after = r.amount;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "%s: было %.1f, заказу нужно %.1f, осталось %.1f",
+                  symbol.c_str(), before, owed, after);
+    check(after >= owed - 0.05 && after <= owed + 0.05, "продать всё щадит груз заказа", buf);
+}
+
+// Отозванная лицензия не смеет запирать хайтек-возчика (§46).
+//
+// ⚠️ Отработка долга была написана ТОЛЬКО для руды, а трюм у возчика экзотики
+// пуст по построению: всё его состояние лежит в ячейке удержания и в портфеле
+// акций. Замер до правки: 64 980 000 Cr в ячейке и 84 080 000 Cr в акциях
+// против долга в 50 000 — и ни один из них нельзя тронуть, причём игра
+// советовала «продайте груз».
+void testRevokedLicenceUnlocksExoticsAndShares() {
+    Game g;
+    buildWorld(g, 4242, 30);
+    const int pa = g.playerAgent;
+
+    // Ищем порт, где экзотику вообще покупают, и ставим туда борт с полной ячейкой.
+    int port = -1;
+    for (size_t s = 0; s < g.cluster.stars.size() && port < 0; ++s) {
+        if (g.exoticMarketAt(int(s))) port = int(s);
+    }
+    if (port < 0) { check(false, "отозванная лицензия не запирает экзотику", "нет рынка экзотики"); return; }
+    g.agents[pa].currentStar = port;
+    g.agents[pa].ship.enRoute = false;
+    g.agents[pa].ship.containmentLevel = 4;
+    g.rebakePlayerBakedBonuses();
+    g.agents[pa].ship.cargo.clear();
+    for (int k = 0; k < EX_COUNT; ++k) g.agents[pa].ship.exotic[k] = 0.0;
+
+    // Выбираем то вещество, которое здесь ПРИНИМАЮТ.
+    int kind = -1;
+    for (int k = 0; k < EX_COUNT && kind < 0; ++k) {
+        if (exoticTargetStock(g.cluster.stars[size_t(port)], k) > 0.0) kind = k;
+    }
+    if (kind < 0) { check(false, "отозванная лицензия не запирает экзотику", "порт ничего не принимает"); return; }
+    g.agents[pa].ship.exotic[kind] = g.agents[pa].ship.containment;
+
+    g.agents[pa].money = 0.0;
+    g.licenceRevoked = true;
+    g.licenceBuyback = 50000.0;
+    const double debtBefore = g.licenceBuyback;
+
+    double sold = 0.0;
+    for (int i = 0; i < 8 && g.licenceRevoked; ++i) {
+        const double got = g.playerSellExotic(kind, g.agents[pa].ship.exotic[kind]);
+        if (got <= 0.0) break;
+        sold += got;
+    }
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "продано %.1f ед экзотики, долг %.0f -> %.0f, лицензия %s, кошелёк %.0f",
+        sold, debtBefore, g.licenceBuyback, g.licenceRevoked ? "ОТОЗВАНА" : "работает",
+        g.agents[pa].money);
+    check(sold > 0.0 && !g.licenceRevoked && g.licenceBuyback <= 0.01,
+          "отозванная лицензия отрабатывается экзотикой", buf);
+}
+
+// Прогресс обязан ПЕРЕЖИВАТЬ сохранение (§46, сейв 18).
+//
+// ⚠️ Три поля писались и читались в игре, но в сейв не попадали, и каждая
+// загрузка откатывала их в ноль: лестница целей снова звала «летать в системе»
+// у игрока с кузницей, а прокачка от торговли (§34) не доживала до ежегодного
+// начисления вовсе — то есть у сохраняющегося игрока её не было никогда.
+void testProgressSurvivesSave() {
+    Game g;
+    buildWorld(g, 606, 12);
+    g.everEnteredLocal = true;
+    g.tradeInsightPending = 12345.0;
+    g.tradeInsightTimer = 0.37;
+
+    const std::string path = "/tmp/starcluster_progress_test.sav";
+    if (!g.saveToFile(path)) { check(false, "прогресс переживает сейв", "сохранение не удалось"); return; }
+    Game r;
+    if (!r.loadFromFile(path)) { check(false, "прогресс переживает сейв", "загрузка не удалась"); return; }
+
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "локал %d -> %d, прокачка %.0f -> %.0f, таймер %.2f -> %.2f",
+        1, r.everEnteredLocal ? 1 : 0, 12345.0, r.tradeInsightPending, 0.37, r.tradeInsightTimer);
+    check(r.everEnteredLocal && std::fabs(r.tradeInsightPending - 12345.0) < 1e-6 &&
+          std::fabs(r.tradeInsightTimer - 0.37) < 1e-9,
+          "прогресс переживает сейв", buf);
+}
+
 // Дивиденд обязан ДОХОДИТЬ до счёта, а не ломать его (§44).
 //
 // ⚠️ Самый тихий из всех найденных багов. Выплата вызывала только
@@ -2308,17 +2654,28 @@ void testAdvisorRunsCompound() {
         const int pa = g.playerAgent;
         const double start = g.playerNetWorth().total;
         int runs = 0;
-        for (int trip = 0; trip < 10; ++trip) {
+        // ⚠️ ДВАДЦАТЬ ПЯТЬ рейсов, а не десять. Первые десять росли и тогда,
+        // когда игра запиралась: заправка становится дороже рейса не сразу, а
+        // когда бак растёт вместе с корпусом. Замер стоянки — состояние на
+        // десятом рейсе против конечного.
+        double atTen = 0.0;
+        for (int trip = 0; trip < 25; ++trip) {
+            if (trip == 10) atTen = g.playerNetWorth().total;
             const int here = g.agents[pa].currentStar;
             if (here < 0) break;
             g.observeStar(here);
-            if (shipPropellantFill(g.agents[pa].ship) < 0.5 || shipFuelFill(g.agents[pa].ship) < 0.4) {
-                g.agentBuyFuel(pa);
-            }
+            // ⚠️ ПОРЯДОК ДЕЙСТВИЙ — ЧЕЛОВЕЧЕСКИЙ, и он часть проверки (§46).
+            // Раньше здесь заправлялись ДО вопроса совету, а потом ЕЩЁ РАЗ уже
+            // с назначенной целью — единственный порядок, при котором долив
+            // попадает в маршрутную ветку, а бак никогда не сух в момент
+            // вопроса. Живой игрок этого порядка не найдёт: новелла учит
+            // обратному (реплика 14 — «в порту короткий ответ — кнопка»,
+            // реплики 10-11 — «спроси совет»). Заправка стоит ЗДЕСЬ, до совета
+            // и до цели, и другого долива в рейсе нет.
+            g.agentBuyFuel(pa);
             const TradeRun r = g.playerBestRun(here, 40, false);
             if (!r.valid || r.element < 0 || r.targetStar < 0) break;
             g.setAgentDestination(pa, r.targetStar);
-            g.agentBuyFuel(pa);
             g.agentBuyElementAmount(pa, r.element, 1.0e12);
             if (!g.commandAgentToStar(pa, r.targetStar)) break;
             for (int t = 0; t < 800 && g.agents[pa].ship.enRoute; ++t) g.update(1.0);
@@ -2326,11 +2683,15 @@ void testAdvisorRunsCompound() {
             ++runs;
         }
         const double endWorth = g.playerNetWorth().total;
-        if (runs >= 8 && endWorth > start * 3.0) ++grew;
+        // Расти обязана и ВТОРАЯ половина партии, а не только разгон. Порог
+        // скромный (x1.5 за пятнадцать рейсов) — ловим стоянку, а не темп.
+        const bool keptGrowing = atTen > 0.0 && endWorth > atTen * 1.5;
+        if (runs >= 20 && endWorth > start * 3.0 && keptGrowing) ++grew;
         if (si == 0) {
             std::snprintf(detail, sizeof(detail),
-                "seed %u: %d рейсов, состояние %.4g -> %.4g (x%.1f)",
-                seeds[si], runs, start, endWorth, start > 0.0 ? endWorth / start : 0.0);
+                "seed %u: %d рейсов, состояние %.4g -> %.4g (x%.1f), после 10-го %.4g -> %.4g (x%.2f)",
+                seeds[si], runs, start, endWorth, start > 0.0 ? endWorth / start : 0.0,
+                atTen, endWorth, atTen > 0.0 ? endWorth / atTen : 0.0);
         }
     }
     char buf[300];
@@ -2674,6 +3035,63 @@ void testAutopilotOffChangesNothing() {
                   a.tech.cores, b.tech.cores, a.tech.research, b.tech.research);
     check(a.tech.cores == b.tech.cores && std::fabs(a.tech.research - b.tech.research) < 1e-9,
           "выключенный автопилот не меняет ничего", buf);
+}
+
+// ⚠️ ВКЛЮЧЁННЫЙ автопилот тоже не смеет двигать поток мира (§2.3, §46).
+//
+// §35 писался узкой копией `updateTrader` ровно затем, чтобы не дёргать
+// глобальный `rng`, — и обошёл ОДНО обращение, оставив 384 в год на борт внутри
+// `findBestTrade` (выборка направлений). Замер до правки: два одинаковых мира,
+// вся разница в поднятом флаге AUTO, через 60 лет следующее число `rng` разное.
+// Денег это не печатало, но делало соак-бейзлайны несравнимыми.
+//
+// Меряем сам поток: после прогона тянем из `rng` число и сравниваем. Рынки
+// расходиться ОБЯЗАНЫ — борт действительно торгует, — а поток нет.
+void testAutopilotOnKeepsTheRngStream() {
+    Game a, b;
+    buildWorld(a, 909091, 10);
+    buildWorld(b, 909091, 10);
+    a.agents[a.playerAgent].money = 3.0e6;
+    a.licenceCount = 2;
+    a.buyAdditionalShip(a.playerAgent, a.agents[a.playerAgent].currentStar, 1);
+    int fleet = -1;
+    for (size_t i = 0; i < a.agents.size(); ++i) {
+        if (a.agents[i].playerControlled && int(i) != a.playerAgent) fleet = int(i);
+    }
+    if (fleet < 0) { check(false, "включённый автопилот не двигает поток мира", "второй борт не купился"); return; }
+    a.agents[size_t(fleet)].autoTrade = true;
+    a.agents[size_t(fleet)].money = 2.0e5;   // без оборотных денег борт не торгует вовсе
+    // Разведываем окрестности В ОБОИХ мирах одинаково: без карты автопилоту
+    // некуда лететь, и проверка выродилась бы в «выключённая ветка ничего не
+    // двигает». Разведка идёт мимо `rng` — это запись наблюдений, а не розыгрыш.
+    for (int i = 0; i < 200 && i < int(a.cluster.stars.size()); ++i) {
+        a.observeStarForFaction(a.agents[size_t(fleet)].ship.ownerFaction, i);
+        b.observeStarForFaction(b.agents[size_t(b.playerAgent)].ship.ownerFaction, i);
+        a.observeMarketForFaction(a.agents[size_t(fleet)].ship.ownerFaction, i);
+        b.observeMarketForFaction(b.agents[size_t(b.playerAgent)].ship.ownerFaction, i);
+    }
+
+    // ⚠️ Прогоны должны идти по ОЧЕРЕДИ в один и тот же поток: `rng` глобален,
+    // и два мира подряд читали бы его последовательно. Меряем состояние потока
+    // ДО и ПОСЛЕ каждого прогона по отдельности.
+    rng.seed(909091u);
+    for (int y = 0; y < 120; ++y) a.update(1.0);
+    const unsigned int afterA = rng();
+    rng.seed(909091u);
+    for (int y = 0; y < 120; ++y) b.update(1.0);
+    const unsigned int afterB = rng();
+
+    // ⚠️ Проверка обязана доказать, что ветка автопилота ВООБЩЕ ИСПОЛНЯЛАСЬ:
+    // совпадение потоков у невыполнявшегося кода не значит ничего. Признак —
+    // `lastAction`, который ставит только `updateFleetTrader`.
+    const std::string act = a.agents[size_t(fleet)].lastAction;
+    const bool ran = act.compare(0, 6, "auto: ") == 0;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+                  "следующее число потока: с автопилотом %u, без него %u; ветка исполнялась %s (%s), сделок %d",
+                  afterA, afterB, ran ? "да" : "НЕТ", act.c_str(), a.agents[size_t(fleet)].trades);
+    check(afterA == afterB && ran, "включённый автопилот не двигает поток мира", buf);
 }
 
 // --- Биржа держав (§33) -----------------------------------------------------
@@ -3132,6 +3550,13 @@ int main() {
     testAdviceRespectsSurvey();
     testSameSeedSameWorld();
     testInsightBurnsReactorFuel();
+    testArrivalReportReachesTheScreen();
+    testContractPaysForTheRoad();
+    testContractLedgerBalances();
+    testAdviceSubtractsRoadWhenTanksAreDry();
+    testSellAllKeepsContractCargo();
+    testRevokedLicenceUnlocksExoticsAndShares();
+    testProgressSurvivesSave();
     testSaveKeepsTheMarketAlive();
     testChromocoresSurviveHullChange();
     testExoticMarketsAreRare();
@@ -3150,6 +3575,7 @@ int main() {
     testGrownColonyOutgrowsItsMarket();
     testFleetAutopilotEarnsAndKeepsDeterminism();
     testAutopilotOffChangesNothing();
+    testAutopilotOnKeepsTheRngStream();
     testSharesPayBackInCenturies();
     testSharesSurviveSave();
     testTranslationsKeepFormatOrder();

@@ -76,6 +76,21 @@ const int CONTRACT_ROW_H = 34;
 // от неё зависят СРАЗУ ТРИ места: строки, кнопки и число влезающих строк.
 const int CONTRACT_HEADER_H = 24;
 
+// Кредиты на шкале от сотни до триллиона в одну строку 5x7-шрифта: миллиард
+// цифрами читается как шум, а «1.84 B» — как цена. Стоит В НАЧАЛЕ файла:
+// печатать деньги приходится и в панелях HUD, и в окнах, а деление на «здесь
+// объявлено, там определено» уже однажды дало два разных `creditsLabel`.
+std::string creditsLabel(double value) {
+    char buf[32];
+    const double v = std::fabs(value);
+    if (v >= 1.0e12) std::snprintf(buf, sizeof(buf), "%.2F T", value / 1.0e12);
+    else if (v >= 1.0e9) std::snprintf(buf, sizeof(buf), "%.2F B", value / 1.0e9);
+    else if (v >= 1.0e6) std::snprintf(buf, sizeof(buf), "%.2F M", value / 1.0e6);
+    else if (v >= 1.0e3) std::snprintf(buf, sizeof(buf), "%.1F K", value / 1.0e3);
+    else std::snprintf(buf, sizeof(buf), "%.0F", value);
+    return std::string(buf);
+}
+
 bool contains(const SDL_Rect& rect, int x, int y) {
     return x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h;
 }
@@ -747,10 +762,17 @@ void drawFactionPanel(SDL_Renderer* renderer, const Game& game, int x, int y, in
         const int rowY = y + 46 + i * 30;
         fillRect(renderer, x + 10, rowY, 9, 9, factionColor(faction));
         drawText(renderer, x + 25, rowY, faction.name, P.text, 1);
-        bar(renderer, x + w - 96, rowY - 1, 28, 7, known.confidence, factionColor(faction));
         char count[40];
         std::snprintf(count, sizeof(count), "KNOWN %d", known.knownSystems);
-        drawText(renderer, x + w - 62, rowY, count, known.knownSystems > 0 ? P.dim : P.red, 1);
+        // ⚠️ Место под подпись МЕРИМ, а не угадываем. Зашитое `x + w - 62`
+        // рассчитано на английское «KNOWN 1» (42 px); русское «ИЗВЕСТНО 8192» —
+        // это 78 px, и при STAR_COUNT = 8192 подпись гарантированно вылезала за
+        // рамку панели. Шкала уверенности едет следом за подписью, а не стоит
+        // на своей константе, иначе они наезжают друг на друга.
+        const int countW = UI::textWidth(count, 1);
+        const int countX = x + w - 12 - countW;
+        drawText(renderer, countX, rowY, count, known.knownSystems > 0 ? P.dim : P.red, 1);
+        bar(renderer, countX - 34, rowY - 1, 28, 7, known.confidence, factionColor(faction));
 
         // Репутация: звание, шкала и «сколько заказов сдано». Число заказов
         // держим на виду — это единица шкалы, и по ней игрок сам считает, что
@@ -854,9 +876,11 @@ void drawLiveColonySummary(SDL_Renderer* renderer, const Game& game, int starInd
 
     char line[128];
     const bool owned = game.playerOwnsStar(starIndex);
-    std::snprintf(line, sizeof(line), "COLONY VAULT %.0F INCOME %.0F/Y%s",
-        colony->localLedger,
-        game.colonyIncomeAt(starIndex),
+    // Те же две величины окно колонии печатает через `creditsLabel` («7.19 M CR/Y»),
+    // а здесь они стояли голыми семизначными числами. Одно число — одна запись.
+    std::snprintf(line, sizeof(line), "COLONY VAULT %s CR INCOME %s CR/Y%s",
+        creditsLabel(colony->localLedger).c_str(),
+        creditsLabel(game.colonyIncomeAt(starIndex)).c_str(),
         owned ? " - YOURS" : "");
     drawText(renderer, x, y, line, owned ? P.green : P.dim, 1);
     y += 15;
@@ -923,22 +947,46 @@ void drawContractRouteLine(SDL_Renderer* renderer, const Game& game, const Contr
     if (contract.acceptedByAgent < 0 && contract.deposit > 0.0) {
         std::snprintf(depositNote, sizeof(depositNote), "  BOND %.0F", contract.deposit);
     }
+    // ⚠️ ДОРОГА В КРЕДИТАХ И ПЛАТА ЗА ГОД ПОЛЁТА (§46). «FUEL 4 OK» называло
+    // тонны, а слово OK означает «уже в баке» и читается как «бесплатно» —
+    // замер по шести мирам: 45 строк из 48 (94%) убыточны по одному топливу,
+    // типичная строка «награда 1 081 Cr, ETA 116 лет, сгорит на 4 643».
+    // Мерка — Cr за ГОД ПОЛЁТА (§23), та же, которой мерится свободный рейс.
+    // ⚠️ Дорога ОПЛАЧЕНА ЗАКАЗЧИКОМ при сдаче в срок (§46), поэтому строка
+    // называет и её цену, и то, что остаётся возчику. Считать «сгорит на 4643,
+    // награда 1081» и молчать о компенсации было бы враньём в другую сторону.
+    // Взятый заказ показывает СВОЮ зафиксированную надбавку, предложение —
+    // сегодняшнюю оценку дороги: платить будут по первой.
+    char payNote[96] = "";
+    if (!remoteOffer) {
+        const double road = contract.acceptedByAgent < 0
+            ? game.agentContractRoadCost(game.playerAgent, contract.id)
+            : contract.fuelAllowance;
+        if (road >= 0.0 && years > 0.0) {
+            std::snprintf(payNote, sizeof(payNote), "  ROAD %.0F CR PAID  NET %.0F CR/Y",
+                          road, contract.reward / years);
+        }
+    }
     if (fuelShort) {
-        std::snprintf(line, sizeof(line), "%s %.0FY  FUEL %.0F SHORT %.0F  RISK %.0F%%%s%s",
-            remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, shortfall, risk * 100.0, depositNote, fleetNote);
+        std::snprintf(line, sizeof(line), "%s %.0FY  FUEL %.0F T SHORT %.0F T  RISK %.0F%%%s%s%s",
+            remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, shortfall, risk * 100.0,
+            payNote, depositNote, fleetNote);
     } else {
-        std::snprintf(line, sizeof(line), "%s %.0FY  FUEL %.0F OK  RISK %.0F%%%s%s",
-            remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, risk * 100.0, depositNote, fleetNote);
+        std::snprintf(line, sizeof(line), "%s %.0FY  FUEL %.0F T%s  RISK %.0F%%%s%s",
+            remoteOffer ? "BOARD" : "ETA", years, fuelNeeded, payNote, risk * 100.0,
+            depositNote, fleetNote);
     }
     if (textWidth(line, 1) > maxW) {
         // Короткая форма. Нехватка флота остаётся и здесь: она важнее топлива,
         // потому что без неё кнопка серая и причина непонятна.
+        // Короткая форма ужимает всё, КРОМЕ платы за год полёта: без неё строка
+        // снова становится тем, чем была, — сроком и тоннами без цены.
         if (fuelShort) {
-            std::snprintf(line, sizeof(line), "%.0FY F%.0F S%.0F R%.0F%%%s",
-                years, fuelNeeded, shortfall, risk * 100.0, fleetNote);
+            std::snprintf(line, sizeof(line), "%.0FY F%.0FT S%.0FT R%.0F%%%s%s",
+                years, fuelNeeded, shortfall, risk * 100.0, payNote, fleetNote);
         } else {
-            std::snprintf(line, sizeof(line), "%.0FY F%.0F OK R%.0F%%%s",
-                years, fuelNeeded, risk * 100.0, fleetNote);
+            std::snprintf(line, sizeof(line), "%.0FY F%.0FT R%.0F%%%s%s",
+                years, fuelNeeded, risk * 100.0, payNote, fleetNote);
         }
     }
     drawText(renderer, x, y, line, c, 1);
@@ -1069,6 +1117,19 @@ SDL_Rect contractButtonRect(const Window& window, int row) {
 
 int contractMaxRows(const Window& window) {
     return std::max(1, (window.rect.h - TITLE_H - CONTRACT_HEADER_H - 64) / CONTRACT_ROW_H);
+}
+
+// Верфь: строка занимает три яруса (имя, характеристики, «против твоего») плюс
+// кнопки, отсюда высокий шаг. Число строк было ЗАШИТО числом 16 в двух местах —
+// в отрисовке и в маршрутизации кликов, — и при высоте окна 700 последние две
+// строки рисовались НИЖЕ рамки: характеристики, дельта и обе кнопки ложились
+// поверх того, что стояло за окном, а `NEED LICENCE` накрывала кнопку прокрутки
+// `DN`. Считаем от высоты окна тем же приёмом, что и доска заказов.
+const int SHIPYARD_ROW_H = 42;
+int shipyardMaxRows(const Window& window) {
+    // 96 = верхний отступ списка (30) + нижний ярус строки (36) + полоса под
+    // кнопкой прокрутки (30).
+    return std::max(1, 1 + (window.rect.h - TITLE_H - 96) / SHIPYARD_ROW_H);
 }
 
 bool handleContractsWindowMouseDown(Game& game, const Window& window, HudSelection& selection, int mouseX, int mouseY) {
@@ -1723,7 +1784,11 @@ void openShipyardWindow(WindowState& state, int starIndex, int screenW, int scre
     w.star = starIndex;
     int ww = 600;
     int wh = 700;
-    w.rect = {(screenW - ww) / 2, std::max(20, (screenH - wh) / 2), ww, wh};
+    // Единственный опенер, который не звал `clampRectToScreen`: на низком окне
+    // верфь вылезала за экран целиком. Число строк теперь считается от высоты
+    // (`shipyardMaxRows`), поэтому обрезанное окно просто покажет меньше строк.
+    w.rect = clampRectToScreen({(screenW - ww) / 2, std::max(20, (screenH - wh) / 2), ww, wh},
+                               screenW, screenH);
     state.windows.push_back(w);
     state.activeId = w.id;
 }
@@ -1980,7 +2045,6 @@ bool handleExchangeWindowMouseDown(WindowState& state, Game& game, const Window&
     return false;
 }
 
-std::string creditsLabel(double value);   // определена ниже, у окна колонии
 
 void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& window,
                         const WindowState& state, bool active) {
@@ -2137,7 +2201,13 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
     const std::vector<ArbitrageDeal>& deals = state.exchangeBoard;
     const int total = int(deals.size());
     int by = layout.board.y;
-    drawText(renderer, x, by, "ELEM  DESTINATION      UNITS   BUY  MODEL   PROFIT  LY  AGE CONF", P.cyan, 1);
+    // ⚠️ CR/Y И YRS — не украшение (§46). Сводка ранжируется абсолютной
+    // прибылью (это записанное решение: строка биржи и рейс мерятся РАЗНЫМ), но
+    // она молчала про дорогу, про срок и про достижимость — три ямы, которые
+    // §42 закрыл в совете и не закрыл здесь. Замер: верхняя строка сводки
+    // против совета в той же системе — 107 Cr/год против 3335, то есть рейс на
+    // 268 лет вместо рейса на 11. PROFIT теперь ЗА ВЫЧЕТОМ сгорающего.
+    drawText(renderer, x, by, "ELEM  DESTINATION      UNITS   BUY  MODEL   PROFIT     CR/Y   YRS  LY  AGE CONF", P.cyan, 1);
     by += layout.rowH;
 
     const int startIdx = std::min(std::max(0, window.scrollOffset), std::max(0, total - layout.rows));
@@ -2153,11 +2223,11 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
             const ArbitrageDeal& d = deals[size_t(i)];
             const ClusterStar* ts = starAt(game, d.targetStar);
             char row[192];
-            std::snprintf(row, sizeof(row), "%-5s %-15s %6.0F %5.1F %6.1F %8.0F %3.0F %4.0FY %3.0F%%",
+            std::snprintf(row, sizeof(row), "%-5s %-15s %6.0F %5.1F %6.1F %8.0F %8.0F %5.0F %3.0F %4.0FY %3.0F%%",
                           d.element >= 0 ? elementDefinitions()[d.element].symbol : "?",
                           ts ? ts->name.substr(0, 15).c_str() : "?",
-                          d.units, d.buyPrice, d.sellPrice, d.profit, d.distanceLy,
-                          d.ageYears >= 0.0 ? d.ageYears : 0.0, d.confidence * 100.0);
+                          d.units, d.buyPrice, d.sellPrice, d.profit, d.perYear, d.years,
+                          d.distanceLy, d.ageYears >= 0.0 ? d.ageYears : 0.0, d.confidence * 100.0);
             // Цвет строки — доверие к модели: свежая разведка зелёная, протухшая тусклая.
             // Убыточное направление (видно только под фильтром) всегда красное.
             const SDL_Color tone = d.profit <= 0.0 ? P.red
@@ -2183,10 +2253,12 @@ void drawExchangeWindow(SDL_Renderer* renderer, const Game& game, const Window& 
                            game.playerAgent < int(game.agents.size()) &&
                            game.agents[game.playerAgent].money >= settleCost;
     char btn[96];
-    std::snprintf(btn, sizeof(btn), "+LICENCE %d", int(std::ceil(licPrice)));
+    // Цена на кнопке — с единицей и в человеческой записи: «+ЛИЦЕНЗИЯ 1000000»
+    // читается хуже, чем «+ЛИЦЕНЗИЯ 1.00 M CR», а решение принимается по ней.
+    std::snprintf(btn, sizeof(btn), "+LICENCE %s CR", creditsLabel(licPrice).c_str());
     drawButton(renderer, layout.buyLicence, btn, P.amber, canBuy);
     if (remaining > 0.0) {
-        std::snprintf(btn, sizeof(btn), "SETTLE QUOTA %d", int(std::ceil(settleCost)));
+        std::snprintf(btn, sizeof(btn), "SETTLE QUOTA %s CR", creditsLabel(settleCost).c_str());
     } else {
         std::snprintf(btn, sizeof(btn), "QUOTA MET");
     }
@@ -2221,7 +2293,7 @@ bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window&
     const int nShips = int(shipClasses().size());
     const int nMods = int(moduleDefs().size());
     const int total = nShips + 1 + nMods;   // ships, divider, modules
-    const int maxRows = 16;
+    const int maxRows = shipyardMaxRows(window);
     const int startIdx = std::min(w->scrollOffset, std::max(0, total - maxRows));
     const int endIdx = std::min(total, startIdx + maxRows);
 
@@ -2256,8 +2328,8 @@ bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window&
     for (int i = startIdx; i < endIdx; ++i) {
         const int row = i - startIdx;
         const int rowY = listY + row * 42;
-        SDL_Rect upgradeBtn = {window.rect.x + window.rect.w - 200, rowY, 90, 24};
-        SDL_Rect buyNewBtn = {window.rect.x + window.rect.w - 105, rowY, 90, 24};
+        SDL_Rect upgradeBtn = {window.rect.x + window.rect.w - 215, rowY, 100, 24};
+        SDL_Rect buyNewBtn = {window.rect.x + window.rect.w - 110, rowY, 100, 24};
         
         if (i < nShips) {
             if (contains(upgradeBtn, mouseX, mouseY)) {
@@ -2269,7 +2341,7 @@ bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window&
                 return true;
             }
         } else if (i > nShips) {
-            SDL_Rect btn = {window.rect.x + window.rect.w - 105, rowY, 90, 24};
+            SDL_Rect btn = {window.rect.x + window.rect.w - 110, rowY, 100, 24};
             if (contains(btn, mouseX, mouseY)) {
                 game.buyModule(game.playerAgent, i - nShips - 1);
                 return true;
@@ -2277,19 +2349,6 @@ bool handleShipyardWindowMouseDown(WindowState& state, Game& game, const Window&
         }
     }
     return true;
-}
-
-// Кредиты на шкале от сотни до триллиона в одну строку 5x7-шрифта: миллиард
-// цифрами читается как шум, а «1.84 B» — как цена.
-std::string creditsLabel(double value) {
-    char buf[32];
-    const double v = std::fabs(value);
-    if (v >= 1.0e12) std::snprintf(buf, sizeof(buf), "%.2F T", value / 1.0e12);
-    else if (v >= 1.0e9) std::snprintf(buf, sizeof(buf), "%.2F B", value / 1.0e9);
-    else if (v >= 1.0e6) std::snprintf(buf, sizeof(buf), "%.2F M", value / 1.0e6);
-    else if (v >= 1.0e3) std::snprintf(buf, sizeof(buf), "%.1F K", value / 1.0e3);
-    else std::snprintf(buf, sizeof(buf), "%.0F", value);
-    return std::string(buf);
 }
 
 // Строка разбора цены: что за характеристика, чему она равна и во сколько раз
@@ -2342,17 +2401,10 @@ ExoticsLayout exoticsLayout(const Window& window) {
     return layout;
 }
 
-const char* exoticStatCode(int stat) {
-    switch (stat) {
-        case TECH_INTELLECT: return "INT";
-        case TECH_CHARISMA: return "CHA";
-        case TECH_MATERIALS: return "MAT";
-        case TECH_TACTICS: return "TAC";
-        case TECH_KINEMATICS: return "KIN";
-        case TECH_SENSORS: return "SEN";
-        default: return "LUK";
-    }
-}
+// Кнопка кузницы называет стат ТЕМ ЖЕ словом, что панель игрока и новость о
+// полученном ядре: см. `chromocoreStatLabel` в chromo.cpp. Своя таблица кодов
+// (`INT CHA MAT TAC KIN SEN LUK`) была здесь третьим по счёту словарём одного и
+// того же — и единственным, который нигде не расшифровывался.
 
 void drawExoticsWindow(SDL_Renderer* renderer, const Game& game, const Window& window,
                        const WindowState& state, bool active) {
@@ -2447,8 +2499,15 @@ void drawExoticsWindow(SDL_Renderer* renderer, const Game& game, const Window& w
     const bool canPlate = ship && onSite && shipyard >= 2 && platePrice > 0.0 &&
                           cash >= platePrice && ship->exotic[EX_NEUTRONIUM] >= PLATING_NEUTRONIUM_UNITS;
     if (platePrice > 0.0) {
-        std::snprintf(line, sizeof(line), "PLATE %d: %.0F NM", game.playerRefitLevel(true) + 1,
-                      PLATING_NEUTRONIUM_UNITS);
+        // ⚠️ Кнопка называла ТОЛЬКО нейтрониум («PLATE 1: 40 NM»), а списывала
+        // ещё и деньги — 900 000 Cr за первый слой, 1.8 млн за второй, 2.7 за
+        // третий. Мало того, `canPlate` гасит кнопку по нехватке кредитов,
+        // поэтому игрок видел серую кнопку и не видел причины. Соседняя кнопка
+        // ячейки цену печатает с самого начала. И `NM` читается как нанометры:
+        // это единицы нейтрониума.
+        std::snprintf(line, sizeof(line), "PLATE %d: %.0F U NM + %s CR",
+                      game.playerRefitLevel(true) + 1, PLATING_NEUTRONIUM_UNITS,
+                      creditsLabel(platePrice).c_str());
     } else {
         std::snprintf(line, sizeof(line), "PLATING MAXED");
     }
@@ -2458,7 +2517,7 @@ void drawExoticsWindow(SDL_Renderer* renderer, const Game& game, const Window& w
                           ship->exotic[EX_CONDENSATE] >= game.forgeCondensateCost() &&
                           cash >= game.forgeCreditCost();
     for (int i = 0; i < TECH_STAT_COUNT; ++i) {
-        drawButton(renderer, layout.forge[i], exoticStatCode(i), P.amber, canForge);
+        drawButton(renderer, layout.forge[i], chromocoreStatLabel(i), P.amber, canForge);
     }
 }
 
@@ -2713,7 +2772,7 @@ void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& 
     const int nShips = int(classes.size());
     const int nMods = int(mods.size());
     const int total = nShips + 1 + nMods;   // корабли, разделитель, модули
-    const int maxRows = 16;
+    const int maxRows = shipyardMaxRows(window);
     const int startIdx = std::min(window.scrollOffset, std::max(0, total - maxRows));
     const int endIdx = std::min(total, startIdx + maxRows);
 
@@ -2727,7 +2786,7 @@ void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& 
     for (int i = startIdx; i < endIdx; ++i) {
         const int row = i - startIdx;
         const int rowY = listY + row * 42;
-        SDL_Rect btn = {window.rect.x + window.rect.w - 105, rowY, 90, 24};
+        SDL_Rect btn = {window.rect.x + window.rect.w - 110, rowY, 100, 24};
         if (i < nShips) {
             const ShipClass& sc = classes[i];
             drawText(renderer, topX, rowY, sc.name.c_str(), P.cyan, 1);
@@ -2746,7 +2805,14 @@ void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& 
             const double buyNewPrice = sc.price;
             const int freeLic = game.playerFreeLicences();
 
-            std::snprintf(line, sizeof(line), "CR:%.0F | CG:%.0F HW:%.0F LW:%.0F AR:%.0F U:%.0F", sc.price, sc.cargoCapacity, sc.heavyWeapons, sc.lightWeapons, sc.armor, sc.utility);
+            // ⚠️ Шесть кодов подряд (`CR: CG: HW: LW: AR: U:`) не расшифровывались
+            // НИГДЕ — ни в карточке F1, ни в словаре, — и это самая дорогая
+            // покупка игры. Плюс `AR` совпадал с символом аргона. Теперь слова и
+            // единица у трюма; цена — через `creditsLabel`, потому что семь
+            // голых цифр не сравнить глазами.
+            std::snprintf(line, sizeof(line), "%s CR | HOLD %.0F T HEAVY %.0F LIGHT %.0F ARMOR %.0F SLOTS %.0F",
+                          creditsLabel(sc.price).c_str(), sc.cargoCapacity, sc.heavyWeapons,
+                          sc.lightWeapons, sc.armor, sc.utility);
             drawText(renderer, topX, rowY + 14, line, P.text, 1);
 
             // Разница с ТЕКУЩИМ корпусом. Не запрещаем невыгодную покупку — решает
@@ -2765,12 +2831,14 @@ void drawShipyardWindow(SDL_Renderer* renderer, const Game& game, const Window& 
                 }
             }
 
-            SDL_Rect upgradeBtn = {window.rect.x + window.rect.w - 200, rowY, 90, 24};
-            SDL_Rect buyNewBtn = {window.rect.x + window.rect.w - 105, rowY, 90, 24};
+            SDL_Rect upgradeBtn = {window.rect.x + window.rect.w - 215, rowY, 100, 24};
+            SDL_Rect buyNewBtn = {window.rect.x + window.rect.w - 110, rowY, 100, 24};
 
+            // Кнопка называет ЦЕНУ, а цена без единицы — это просто число.
+            // 90 px кнопки держат 15 знаков; `UPG 1.99 M CR` — тринадцать.
             char upgStr[32], newStr[32];
-            std::snprintf(upgStr, sizeof(upgStr), "UPG %.0F", upgradePrice);
-            if (freeLic > 0) std::snprintf(newStr, sizeof(newStr), "NEW %.0F", buyNewPrice);
+            std::snprintf(upgStr, sizeof(upgStr), "UPG %s CR", creditsLabel(upgradePrice).c_str());
+            if (freeLic > 0) std::snprintf(newStr, sizeof(newStr), "NEW %s CR", creditsLabel(buyNewPrice).c_str());
             else             std::snprintf(newStr, sizeof(newStr), "NEED LICENCE");
 
             drawButton(renderer, upgradeBtn, upgStr, P.green, cash >= upgradePrice);
@@ -3710,22 +3778,34 @@ static void drawShipTechPanel(SDL_Renderer* renderer, const Game& game, int x, i
     // расшифровки этих семи пар не было НИГДЕ — ни в карточке F1, ни в новелле,
     // ни в подсказке. Слово влезает в ту же колонку (12 знаков на 78 пикселях)
     // и переводится словарём §14 само.
-    const char* codes[7] = {"MIND", "CHARM", "FRAME", "TACTICS", "SPEED", "SENSOR", "LUCK"};
+    // Слова берём из ЕДИНОГО словаря статов (chromo.cpp): раньше своя копия
+    // была и здесь, и на кнопках кузницы, и в тексте новости — три разных.
     const double vals[7] = {game.tech.intellect, game.tech.charisma, game.tech.materials,
         game.tech.tactics, game.tech.kinematics, game.tech.sensors, game.tech.luck};
+    // ⚠️ Шаг колонки СЧИТАЕТСЯ от ширины панели, а не зашит числом 80. При
+    // четырёх колонках русское «СКОРОСТЬ 1.00» занимает ровно 78 px из 80 —
+    // строки читались слипшимися, — а на значении от 10.00 (это ~40 ядер в один
+    // стат) наезжали друг на друга. Три колонки по трети панели дают 103 px:
+    // запас есть на обоих языках и на двузначном множителе.
+    const int colW = std::max(60, (w - 20) / 3);
     for (int i = 0; i < 7; ++i) {
-        const int col = i % 4, rowi = i / 4;
+        const int col = i % 3, rowi = i / 3;
         char cell[24];
-        std::snprintf(cell, sizeof(cell), "%s %.2F", codes[i], vals[i]);
+        std::snprintf(cell, sizeof(cell), "%s %.2F", chromocoreStatLabel(i), vals[i]);
         const SDL_Color cc = vals[i] > 1.0001 ? P.green : P.dim;
-        drawText(renderer, x + 10 + col * 80, y + 56 + rowi * 12, cell, cc, 1);
+        drawText(renderer, x + 10 + col * colW, y + 56 + rowi * 12, cell, cc, 1);
     }
 }
 
-static void drawObjectivesPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w) {
-    struct Obj { const char* text; bool done; };
-    std::vector<Obj> objs;
-    if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) return;
+// ⚠️ ЛЕСТНИЦА ЖИВЁТ В ОДНОМ МЕСТЕ. Она объявлена свободной функцией не ради
+// красоты, а чтобы харнес мог ПРОМЕРИТЬ её ширину на обоих языках: две ступени
+// из четырнадцати вылезали за рамку панели (248 px, текст с +34, то есть бюджет
+// 208 px), и `make uishots` этого не ловил — на нулевом году эти ступени ещё за
+// окном лестницы. Список, скопированный в харнес, был бы ровно тем «списком,
+// который надо помнить», на котором проект уже обжёгся дважды (§30, §45).
+std::vector<ObjectiveStep> objectiveLadder(const Game& game) {
+    std::vector<ObjectiveStep> objs;
+    if (game.playerAgent < 0 || game.playerAgent >= int(game.agents.size())) return objs;
     const Agent& p = game.agents[game.playerAgent];
     const Ship& sh = p.ship;
 
@@ -3737,32 +3817,41 @@ static void drawObjectivesPanel(SDL_Renderer* renderer, const Game& game, int x,
     double repTotal = 0.0;
     for (size_t f = 0; f < game.factionReputation.size(); ++f) repTotal += game.factionReputation[f];
 
-    objs.push_back({"TRADE: BUY (B) / SELL (Q)", p.trades > 0});
+    objs.push_back({"TRADE: BUY (B) / SELL (Q)", p.trades > 0, false});
     // Локальный полёт — самая зрелищная часть игры и при этом дальше всего
     // от глаз новичка: без явной цели о клавише L никто не узнаёт.
-    objs.push_back({"FLY THE SYSTEM: PRESS L", game.everEnteredLocal});
-    objs.push_back({"UPGRADE: SHIPYARD (U)", !sh.modules.empty()});
-    objs.push_back({"SURVEY 10 MARKETS", game.playerSurveyedMarketCount() >= 10});
-    objs.push_back({"TAKE A JOB: JOBS BOARD", repTotal > 0.0});
-    objs.push_back({"RESEARCH A CHROMOCORE", game.tech.cores > 0});
-    objs.push_back({"MEET THE QUOTA - OR SETTLE IT IN CASH (E)", game.licencePeriodsMet > 0});
-    objs.push_back({"BUY A LICENCE (E), THEN A HULL (U)", game.playerShipCount() > 1});
-    objs.push_back({"BUY A SYSTEM (C)", game.boughtSystems > 0});
-    objs.push_back({"FIT A CONTAINMENT BAY (Y)", game.playerRefitLevel(false) > 0});
-    objs.push_back({"RUN EXOTIC MATTER (Y)", !game.exoticStocks.empty()});
-    objs.push_back({"FORGE A CORE YOU CHOSE (Y)", game.coresForged > 0});
-    objs.push_back({"BUY INTO A POWER (E)", game.playerShareValue() > 0.0});
-    objs.push_back({"PLATE THE HULL IN NEUTRONIUM", game.playerRefitLevel(true) > 0});
+    objs.push_back({"FLY THE SYSTEM: PRESS L", game.everEnteredLocal, false});
+    objs.push_back({"UPGRADE: SHIPYARD (U)", !sh.modules.empty(), false});
+    objs.push_back({"SURVEY 10 MARKETS", game.playerSurveyedMarketCount() >= 10, false});
+    objs.push_back({"TAKE A JOB: JOBS BOARD", repTotal > 0.0, false});
+    objs.push_back({"RESEARCH A CHROMOCORE", game.tech.cores > 0, false});
+    objs.push_back({"MEET THE QUOTA - OR SETTLE IT (E)", game.licencePeriodsMet > 0, false});
+    objs.push_back({"BUY A LICENCE (E), THEN A HULL (U)", game.playerShipCount() > 1, false});
+    objs.push_back({"BUY A SYSTEM (C)", game.boughtSystems > 0, false});
+    objs.push_back({"FIT A CONTAINMENT BAY (Y)", game.playerRefitLevel(false) > 0, false});
+    objs.push_back({"RUN EXOTIC MATTER (Y)", game.exoticUnitsSold > 0.0, false});
+    objs.push_back({"FORGE A CORE YOU CHOSE (Y)", game.coresForged > 0, false});
+    objs.push_back({"BUY INTO A POWER (E)", game.playerShareValue() > 0.0, false});
+    objs.push_back({"PLATE THE HULL IN NEUTRONIUM", game.playerRefitLevel(true) > 0, false});
 
-    // Срочное — поверх лестницы: это не прогресс, а «сделай сейчас».
-    std::vector<Obj> urgent;
+    // Срочное — поверх лестницы: это не прогресс, а «сделай сейчас». Оно тоже
+    // рисуется в этой панели, значит и мерить его ширину надо здесь же.
     for (size_t i = 0; i < game.anomalies.size(); ++i) {
         if (game.anomalies[i].discovered && !game.anomalies[i].resolved) {
-            urgent.push_back({"SCAN ANOMALY: PRESS K", false});
+            objs.push_back({"SCAN ANOMALY: PRESS K", false, true});
             break;
         }
     }
-    if (sh.hullHP < sh.maxHullHP - 0.5) urgent.push_back({"REPAIR HULL: DOCK + PRESS J", false});
+    if (sh.hullHP < sh.maxHullHP - 0.5) objs.push_back({"REPAIR HULL: DOCK + PRESS J", false, true});
+    return objs;
+}
+
+static void drawObjectivesPanel(SDL_Renderer* renderer, const Game& game, int x, int y, int w) {
+    typedef ObjectiveStep Obj;
+    const std::vector<Obj> all = objectiveLadder(game);
+    if (all.empty()) return;
+    std::vector<Obj> objs, urgent;
+    for (size_t i = 0; i < all.size(); ++i) (all[i].urgent ? urgent : objs).push_back(all[i]);
 
     // Окно лестницы: одна закрытая ступень позади (чтобы был виден прогресс)
     // и всё остальное — впереди.
@@ -4174,6 +4263,12 @@ bool advanceVisualNovel(WindowState& state, Game& game, int winW, int winH) {
             if (vn.tutorialStep > TUTORIAL_LAST_STEP) {
                 vn.tutorialCompleted = true;
                 vn.active = false;
+                // Про домашнюю систему вступление уже всё сказало (шаги 10–11
+                // назвали и товар, и цель первого рейса). Без этой пометки
+                // триггер прибытия заговорил бы 29-й репликой подряд, и притом
+                // беднее: разведан пока один рынок, сравнивать не с чем.
+                if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size())
+                    vn.visitedSystems.insert(game.agents[game.playerAgent].currentStar);
             } else {
                 TutorialCue cue;
                 vn.targetText = getTutorialText(game, vn.tutorialStep, cue, vn);
@@ -4261,6 +4356,11 @@ void toggleVisualNovel(WindowState& state, Game& game) {
 
     TutorialCue cue;
     vn.tutorialStep = got > 0.0 ? 101 : 102;
+    // Глубокий просчёт — это отчёт по ЭТОМУ порту, и притом лучший, чем сводка
+    // по прибытии: он смотрит вчетверо дальше и мимо разведки. Помечаем систему
+    // отчитанной, иначе триггер прибытия перебьёт кадром позже то, за что игрок
+    // только что заплатил бункером.
+    vn.visitedSystems.insert(game.agents[game.playerAgent].currentStar);
     vn.targetText = getTutorialText(game, vn.tutorialStep, cue, vn);
     vn.arrowTarget = cue.arrow;
     vn.textProgress = 0.0f;
@@ -4281,10 +4381,19 @@ void toggleVisualNovel(WindowState& state, Game& game) {
 
 void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, int screenH) {
     auto& vn = state.vnState;
-    if (!vn.active) return;
-    
+
+    // ⚠️ (§46) Ветка «Тимертия заговорила САМА» обязана исполняться при ЗАКРЫТОЙ
+    // коробке. Раньше здесь стоял ранний `if (!vn.active) return;`, а вступление
+    // на последнем шаге гасит коробку навсегда — значит сводка по прибытии не
+    // выходила НИ РАЗУ за партию: замер показывал шаг 100 сочинённым и коробку
+    // закрытой. Открывать её — работа именно этих триггеров; выключатель на V
+    // остаётся у игрока, и один раз показанная система в `visitedSystems` больше
+    // не повторяется, поэтому «само открылось» не станет назойливым.
     if (vn.tutorialCompleted) {
-        if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size()) {
+        // Оплаченный топливом просчёт (§28) держит экран за собой: перебить его
+        // обычной сводкой значило бы взять плату и показать не то, за что взяли.
+        const bool paidAnswerOnScreen = vn.active && vn.tutorialStep >= 101 && vn.tutorialStep <= 102;
+        if (game.playerAgent >= 0 && game.playerAgent < (int)game.agents.size() && !paidAnswerOnScreen) {
             int currentStar = game.agents[game.playerAgent].currentStar;
             // Хайтек-этаж перебивает обычную сводку: он важнее и говорится
             // ровно один раз за партию, в первом же порту, где он есть.
@@ -4301,7 +4410,12 @@ void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, i
                 vn.active = true;
                 return;
             }
-            if (currentStar >= 0 && vn.visitedSystems.find(currentStar) == vn.visitedSystems.end()) {
+            // `playerAtStar`, а не просто `currentStar`: на многоплечевом
+            // маршруте `currentStar` переходит на промежуточное плечо ещё В
+            // ПОЛЁТЕ, и сводка о порте выходила бы у борта, который мимо этого
+            // порта только пролетает.
+            if (currentStar >= 0 && game.playerAtStar(currentStar) &&
+                vn.visitedSystems.find(currentStar) == vn.visitedSystems.end()) {
                 vn.visitedSystems.insert(currentStar);
                 vn.tutorialStep = 100;
                 TutorialCue cue;
@@ -4312,14 +4426,17 @@ void updateVisualNovel(WindowState& state, Game& game, double dt, int screenW, i
                 vn.active = true;
             }
         }
-    } else {
+    } else if (vn.active) {
         if (vn.targetText.empty() && vn.tutorialStep == 0) {
             TutorialCue cue;
             vn.targetText = getTutorialText(game, vn.tutorialStep, cue, vn);
             vn.arrowTarget = cue.arrow;
         }
     }
-    
+
+    // Дальше — только машинка набора: она работает лишь при открытой коробке.
+    if (!vn.active) return;
+
     // Машинка считает СИМВОЛЫ, а не байты: русская реплика в UTF-8 двухбайтовая,
     // и обрезка по байту рвала бы букву пополам (на кадре появлялся бы «тофу»).
     if (vn.textProgress < UI::textLength(vn.targetText)) {

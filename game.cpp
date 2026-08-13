@@ -383,10 +383,22 @@ int sampledStarCount(const Game& game, int smallWorldLimit, int largeWorldSample
     return std::min(count, largeWorldSamples);
 }
 
-int sampledStarAt(const Game& game, int sampleIndex, int sampleCount) {
+// ⚠️ ГЕНЕРАТОР ПЕРЕДАЁТСЯ ЯВНО (§2.3, §46). Выборка направлений тянет числа
+// на каждой «мысли» планировщика, и для NPC это правильно — они и есть
+// симуляция. Но тот же `findBestTrade` зовёт АВТОПИЛОТ ФЛОТА игрока (§35), а
+// §35 писался узкой копией `updateTrader` ровно затем, чтобы не сдвигать
+// глобальный поток. Одно обращение обошли, а 384 в год на борт остались:
+// замер — два одинаковых мира, вся разница в поднятом флаге AUTO, через 60 лет
+// расхождение 3445 Cr и разное следующее число `rng`. Соак-бейзлайны от этого
+// становятся несравнимыми — ровно то, чего §35 боялся.
+int sampledStarAt(const Game& game, int sampleIndex, int sampleCount, std::mt19937& gen) {
     const int count = int(game.cluster.stars.size());
     if (count <= sampleCount) return sampleIndex;
-    return randomer(rng, count - 1);
+    return randomer(gen, count - 1);
+}
+
+int sampledStarAt(const Game& game, int sampleIndex, int sampleCount) {
+    return sampledStarAt(game, sampleIndex, sampleCount, rng);
 }
 
 bool routeHasEdge(const std::vector<RouteEdge>& edges, int star) {
@@ -564,6 +576,99 @@ double refillCost(const Game& game, const Ship& ship, int starIndex, const Route
     double cost = std::max(0.0, need.fuelMass - shipFuelMix(ship).mass) * fuelPrice;
     if (!driveUsesFuelAsPropellant(ship.driveIndex)) {
         cost += std::max(0.0, need.propellantMass - shipPropellantMix(ship).mass) * propellantPrice;
+    }
+    return cost * (1.0 + REFINERY_MARKUP);
+}
+
+// (§46) КОРАБЛЬ, КАКИМ ОН ВЫЙДЕТ ИЗ ПОРТА: трюм под завязку, баки залиты тем,
+// чем эта станция заправляет. Планировать надо по нему, а не по тому, что стоит
+// у причала, — и это одна и та же грабля с двух концов:
+//
+//  • расход растёт вместе с массой, а игрок заправляется ДО закупки и летит
+//    ПОСЛЕ неё. Расчёт по пустому корпусу съедал весь запас 1.5x ровно тем
+//    грузом, который игрок купит следующим действием: один отказ «propellant
+//    short» на десять рейсов, причём деньги за груз уже списаны;
+//  • проходимость маршрута зависит от СОСТАВА баков, а не только от их объёма.
+//    На пустом баке не проходима НИ ОДНА цель (замер: 0 из 40), и советчик
+//    молчал — а бак пуст после каждого рейса. Получался круг: совет требует
+//    топлива, топливо требует цели, цель даёт совет.
+//
+// Заливаем ёмкости целиком: это ВЕРХНЯЯ оценка массы, то есть ошибка в сторону
+// осторожности, и она одинакова для всех целей — значит порядок целей не врёт.
+// ⚠️ `fillHold` РАЗНЫЙ у двух потребителей, и это не небрежность.
+//   • Заправка (`refuelTargets`) считает по ПОЛНОМУ трюму: она случается до
+//     закупки, а лететь предстоит после неё — недолив дороже перелива.
+//   • Совет (`playerBestRun`) считает по трюму КАК ЕСТЬ: сколько игрок реально
+//     увезёт, решает его кошелёк, и у нищего это далеко не полный трюм.
+//     Полный трюм в совете загонял `k` за стену достижимости (§12), и советчик
+//     переставал находить хоть что-нибудь — замер: 0 рейсов из 25.
+// Заливка ёмкостей на цену дороги при этом НЕ влияет: в `shipRouteCost`
+// полезная нагрузка — это корпус и груз, а топливо решается из уравнения.
+// Заливка нужна только чтобы у смеси появились состав и удельная энергия.
+Ship shipAsItWillLeave(const Ship& ship, bool fillHold) {
+    Ship out = ship;
+    const double room = fillHold ? std::max(0.0, out.cargoCapacity - shipCargoMass(out)) : 0.0;
+    if (room > 1e-9 && elementCount() > 0) {
+        // Чем именно набит трюм, Циолковскому безразлично — важна масса.
+        const double unitMass = std::max(1e-9, resourceUnitMassByIndex(0));
+        out.cargo.push_back(Resource(elementDefinitions()[0].symbol, room / unitMass));
+    }
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool bunker = pass == 0;
+        if (!bunker && driveUsesFuelAsPropellant(out.driveIndex)) continue;
+        const int element = bunker ? shipDominantFuelElement(out) : shipDominantPropellantElement(out);
+        if (element < 0 || element >= int(elementCount())) continue;
+        const MixSummary mix = bunker ? shipFuelMix(out) : shipPropellantMix(out);
+        const double capacity = bunker ? shipFuelTankVolume(out) : out.propellantVolume;
+        const double units = std::max(0.0, capacity - mix.volume) /
+                             std::max(1e-9, elementUnitVolume(element));
+        if (units <= 1e-9) continue;
+        const std::string symbol = elementDefinitions()[size_t(element)].symbol;
+        std::vector<Resource>& dest = bunker ? out.fuel : out.propellant;
+        bool merged = false;
+        for (size_t i = 0; i < dest.size(); ++i) {
+            if (dest[i].element != symbol) continue;
+            dest[i].amount += units;
+            merged = true;
+            break;
+        }
+        if (!merged) dest.push_back(Resource(symbol, units));
+        out.cruiseExhaust = 0.0;   // состав сменился — рабочую точку подобрать заново
+    }
+    return out;
+}
+
+// Тот же корабль с ЗАДАННОЙ загрузкой трюма. Пишет в переданный буфер, чтобы
+// не копировать вектора на каждом шаге перебора объёма: перебор идёт
+// цели × элементы × 10 ступеней, и копия там стоила бы дороже самого счёта.
+const Ship& shipCarrying(const Ship& base, int elementIndex, double cargoMass, Ship& scratch) {
+    scratch = base;
+    scratch.cargo.clear();
+    if (cargoMass > 1e-9 && elementIndex >= 0 && elementIndex < int(elementCount())) {
+        const double unitMass = std::max(1e-9, resourceUnitMassByIndex(elementIndex));
+        scratch.cargo.push_back(Resource(elementDefinitions()[size_t(elementIndex)].symbol,
+                                         cargoMass / unitMass));
+    }
+    return scratch;
+}
+
+// ПОЛНАЯ цена дороги: то, что СГОРИТ, по станционной цене — а не недостача до
+// маршрута, как считает `refillCost`.
+//
+// ⚠️ Разница не косметическая. Игрок, нажавший рекомендованную новеллой кнопку
+// заправки ДО вопроса советчику (реплика 14 — «в порту короткий ответ — это
+// кнопка», реплики 10–11 — «спроси совет»), получал дорогу «за ноль»: недостача
+// уже покрыта, значит по `refillCost` рейс ничего не стоит. Совет выбирал рейсы,
+// которые сам же и делал убыточными: замер по 69 рейсам — расходники съедают
+// 16% валовой прибыли, три рейса в чистый минус, худший −15 154 Cr.
+double burnCost(const Game& game, const Ship& ship, int starIndex, const RouteCost& need) {
+    if (!need.feasible || !validStar(game, starIndex)) return 0.0;
+    double propellantPrice = 1.0;
+    double fuelPrice = 1.0;
+    routePrices(game, ship, starIndex, propellantPrice, fuelPrice);
+    double cost = need.fuelMass * fuelPrice;
+    if (!driveUsesFuelAsPropellant(ship.driveIndex)) {
+        cost += need.propellantMass * propellantPrice;
     }
     return cost * (1.0 + REFINERY_MARKUP);
 }
@@ -1079,8 +1184,24 @@ bool payContractReward(Game& game, Contract& contract, Agent& agent, bool emitSi
     const double lateFactor = late ? CONTRACT_LATE_FACTOR : 1.0;
     // Просрочка и досрочность взаимоисключающи — одно из двух всегда 0.
     const double earlyBonus = late ? 0.0 : contractEarlyBonus(game, contract);
-    const double payout = contract.reward * lateFactor * (1.0 + earlyBonus);
+    // (§46) ЗАКАЗЧИК ОПЛАЧИВАЕТ ДОРОГУ — но только привёзшему В СРОК. Ставка
+    // `CONTRACT_PAY_PER_YEAR` откалибрована (§23) против свободного рейса
+    // НИЩЕГО игрока, а сгорающее дорожает вместе с корпусом: замер по шести
+    // мирам — 45 строк из 48 (94%) убыточны по одному топливу, типичная
+    // «награда 1 081 Cr, сгорит на 4 643». Надбавка не делает заказ выгоднее
+    // свободного рейса — она перестаёт делать его заведомо убыточным.
+    //
+    // ⚠️ Просрочка съедает надбавку ЦЕЛИКОМ, а не режется `CONTRACT_LATE_FACTOR`:
+    // компенсация — это часть уговора «в срок», иначе опоздавший везёт даром, но
+    // хотя бы за счёт заказчика, и срок перестаёт что-либо значить.
+    const double fuelPaid = late ? 0.0 : std::max(0.0, contract.fuelAllowance);
+    const double payout = contract.reward * lateFactor * (1.0 + earlyBonus) + fuelPaid;
     agent.money += payout;
+    // ⚠️ Отдельного списания надбавки ЗДЕСЬ НЕТ И БЫТЬ НЕ ДОЛЖНО: она уже внутри
+    // `payout`, а `payout` списывается с казны плательщика в конце функции.
+    // Первая версия §46 списывала обе половины, и казна теряла ровно вдвое
+    // больше надбавки (замер: игроку +5607, из казны −9932 при надбавке 4325).
+    // Это ровно класс §44 — добавлена одна половина проводки, а вторая уже была.
     // (§37.3) Залог возвращается ЦЕЛИКОМ и при просрочке тоже: он платой за
     // опоздание не является — за опоздание режется награда (CONTRACT_LATE_FACTOR).
     const double refund = agent.playerControlled ? contract.deposit : 0.0;
@@ -1113,6 +1234,11 @@ bool payContractReward(Game& game, Contract& contract, Agent& agent, bool emitSi
             std::snprintf(early, sizeof(early), " EARLY +%.0F%%", earlyBonus * 100.0);
             mark = early;
         }
+        if (fuelPaid > 0.01) {
+            char fuelNote[40];
+            std::snprintf(fuelNote, sizeof(fuelNote), " FUEL +%.0F", fuelPaid);
+            mark += fuelNote;
+        }
         game.pushJournal(JournalKind::JobCompleted,
             game.contractJournalText(contract) + mark + paid, payout, agent.currentStar);
         game.journalExplained += payout;
@@ -1123,9 +1249,17 @@ bool payContractReward(Game& game, Contract& contract, Agent& agent, bool emitSi
     contract.completed = true;
     contract.reportSignalPending = false;
     contract.reportDelivered = contract.reportDelivered || contract.type == ContractType::Scout;
-    if (validFaction(game, contract.issuerFaction)) {
-        game.factions[contract.issuerFaction].treasury = std::max(0.0, game.factions[contract.issuerFaction].treasury - payout);
-        if (emitSignals) game.queueSettlementSignal(contract.issuerFaction, contract.targetStar, -payout);
+    // ⚠️ ПЛАТЕЛЬЩИК ЕСТЬ ВСЕГДА. `issuerFaction` берётся у владельца целевой
+    // звезды, а владельца имеют 1.65% звёзд — значит у 46–64% живых заказов
+    // заказчика НЕТ, и награда прилетала игроку из ниоткуда. Надбавка на дорогу
+    // (§46) увеличила эту печать восьмикратно: 8 407 Cr за штуку при награде
+    // 981. Заказ без заказчика идёт через КЛИРИНГОВУЮ ПАЛАТУ (§18) — тот самый
+    // банк, который собирает лицензионные деньги и субсидирует колонии.
+    const int payer = validFaction(game, contract.issuerFaction) ? contract.issuerFaction
+                                                                 : game.clearingFaction;
+    if (validFaction(game, payer)) {
+        game.factions[payer].treasury = std::max(0.0, game.factions[payer].treasury - payout);
+        if (emitSignals) game.queueSettlementSignal(payer, contract.targetStar, -payout);
     }
     if (emitSignals) game.queueContractSignal(contract.issuerFaction, contract.id, contract.targetStar, contract.targetStar);
     game.lastEvent = "contract completed";
@@ -1821,8 +1955,10 @@ bool tryAcceptBestContract(Game& game, int agentIndex) {
     return true;
 }
 
-TradePlan findBestTrade(const Game& game, const Agent& agent) {
+TradePlan findBestTrade(const Game& game, const Agent& agent, std::mt19937* gen = 0) {
     TradePlan best;
+    // Нет своего генератора — значит зовёт симуляция, и берём глобальный.
+    std::mt19937& pick = gen ? *gen : rng;
     const int current = agent.currentStar;
     if (current < 0 || current >= int(game.markets.size())) return best;
     if (!validFaction(game, agent.ship.ownerFaction)) return best;
@@ -1838,7 +1974,7 @@ TradePlan findBestTrade(const Game& game, const Agent& agent) {
     std::vector<int> knownDestinations;
     knownDestinations.reserve(size_t(destinationSamples));
     for (int sample = 0; sample < destinationSamples; ++sample) {
-        const int dest = sampledStarAt(game, sample, destinationSamples);
+        const int dest = sampledStarAt(game, sample, destinationSamples, pick);
         if (dest == current || dest < 0 || dest >= int(game.markets.size())) continue;
         if (!game.factionKnowsOwnerAt(agent.ship.ownerFaction, current, dest)) continue;
         if (!game.factionKnowsMarketAt(agent.ship.ownerFaction, current, dest)) continue;
@@ -2173,24 +2309,9 @@ bool sellCargo(Game& game, Agent& agent, int starIndex, double requestedAmount =
     // который обещал «есть чем откопаться». Откопаться было нечем: руду копать
     // можно, продать нельзя, а награда за заказ в квоту не идёт. Теперь путь
     // назад есть, и он честный: работать за долг.
-    double debtPaid = 0.0;
-    if (agent.playerControlled && game.licenceRevoked && gross > 0.0) {
-        debtPaid = std::min(game.licenceBuyback, gross - fee);
-        if (debtPaid > 0.0) {
-            game.licenceBuyback -= debtPaid;
-            if (validFaction(game, game.clearingFaction)) {
-                game.factions[size_t(game.clearingFaction)].treasury += debtPaid;
-            }
-            if (game.licenceBuyback <= 0.01) {
-                game.licenceBuyback = 0.0;
-                game.licenceRevoked = false;
-                game.licenceQuotaPaid = 0.0;
-                game.licencePeriodEnd = game.time + LICENCE_PERIOD_YEARS;
-                game.pushNews("Licence worked off. Trading resumed.", 4);
-                game.lastEvent = "licence worked off - trading resumed";
-            }
-        }
-    }
+    // Закон отработки живёт в ОДНОМ месте — `Game::applyLicenceBuyback`: его
+    // зовут три продажи (руда, экзотика, акции), и расходиться им нельзя.
+    const double debtPaid = agent.playerControlled ? game.applyLicenceBuyback(gross - fee) : 0.0;
 
     market.applyTrade(resourceIndex, amount);
     market.demand[resourceIndex].amount = std::max(0.0, market.demand[resourceIndex].amount - amount);
@@ -2929,7 +3050,12 @@ void updateFleetTrader(Game& game, int agentIndex, Agent& agent, double dt) {
         const ClusterStar& from = game.cluster.stars[size_t(agent.currentStar)];
         for (size_t st = 0; st < game.cluster.stars.size(); ++st) {
             if (int(st) == agent.currentStar) continue;
+            // ⚠️ ОБА знания, как и в `findBestTrade`. Здесь стояло только знание
+            // рынка, а планировщик требует ещё и знания владельца — борт улетал
+            // туда, где потом сам себе отказывал: замер при разведанных ТОЛЬКО
+            // рынках — 400 лет, 0 сделок, 0 перелётов.
             if (!game.factionKnowsMarketAt(agent.ship.ownerFaction, agent.currentStar, int(st))) continue;
+            if (!game.factionKnowsOwnerAt(agent.ship.ownerFaction, agent.currentStar, int(st))) continue;
             if (game.playerOwnsStar(int(st))) continue;
             const ClusterStar& to = game.cluster.stars[st];
             const double dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
@@ -2947,7 +3073,15 @@ void updateFleetTrader(Game& game, int agentIndex, Agent& agent, double dt) {
 
     sellCargo(game, agent, agent.currentStar);
 
-    const TradePlan plan = findBestTrade(game, agent);
+    // ⚠️ СВОЙ ПОТОК, а не глобальный (§2.3). Ради этого §35 и писался узкой
+    // копией `updateTrader` — но обошёл одно обращение к `rng` и оставил 384 в
+    // год на борт внутри `findBestTrade`. Засев детерминирован: сид мира, номер
+    // борта и текущий год, — значит тот же сейв даёт то же поведение, а мир без
+    // автопилота остаётся ПОБИТОВО прежним.
+    std::mt19937 fleetRng(static_cast<unsigned int>(game.seed) * 2654435761u +
+                          static_cast<unsigned int>(agentIndex) * 40503u +
+                          static_cast<unsigned int>(game.time) * 97u + 1013u);
+    const TradePlan plan = findBestTrade(game, agent, &fleetRng);
     // ⚠️ Пауза ставится В ЛЮБОМ исходе. Раньше она стояла только в ветке «плана
     // нет», и провалившийся `startJourney` (маршрут не строится, плечо
     // нефизично) оставлял борт покупать и продавать одно и то же на одном рынке
@@ -3249,7 +3383,7 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 17 " << cluster.stars.size() << '\n';
+    out << "STARCLUSTER_SAVE 18 " << cluster.stars.size() << '\n';
     out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
@@ -3356,7 +3490,9 @@ bool Game::saveToFile(const std::string& path) {
         // Довесок версии 16: сбита ли цель заказа на голову. Дописан В КОНЕЦ
         // строки, а не отдельным блоком, — разбор 15-й версии читает ровно
         // столько чисел, сколько ждёт, и на лишнее не смотрит.
-        out << ' ' << int(contract.targetDown) << '\n';
+        // Довесок версии 18: надбавка на дорогу (§46). Дописан тем же приёмом —
+        // В КОНЕЦ строки, — и разбор версий 15..17 на него не смотрит.
+        out << ' ' << int(contract.targetDown) << ' ' << contract.fuelAllowance << '\n';
     }
 
     out << "REPUTATION " << factionReputation.size() << '\n';
@@ -3565,6 +3701,20 @@ bool Game::saveToFile(const std::string& path) {
         out << '\n';
     }
 
+    // (§46, версия 18) ПРОГРЕСС, КОТОРЫЙ ОТКАТЫВАЛСЯ КАЖДОЙ ЗАГРУЗКОЙ.
+    // Три поля писались и читались в игре, но в сейв не попадали:
+    //  • `everEnteredLocal` — панель целей показывает окно вокруг первой
+    //    незакрытой ступени, и без флага игроку с ячейкой удержания и кузницей
+    //    после загрузки снова писали «ЛЕТАТЬ В СИСТЕМЕ: L», а весь хайтек-этаж
+    //    уходил с экрана (замер: 1 -> 0);
+    //  • `tradeInsightPending`/`tradeInsightTimer` — накопленная торговлей
+    //    прокачка (§34) тратится раз в ГОД симуляции, значит игрок, который
+    //    сохраняется чаще, не получал от торговли ни одного очка (замер:
+    //    12345 -> 0).
+    out << "PROGRESS " << (everEnteredLocal ? 1 : 0) << ' '
+        << tradeInsightPending << ' ' << tradeInsightTimer << ' '
+        << exoticUnitsSold << '\n';
+
     if (!out) {
         lastEvent = "save failed";
         return false;
@@ -3592,8 +3742,11 @@ bool Game::loadFromFile(const std::string& path) {
     // КОНЕЦ СТРОКИ, и разбор версии 16 схватил бы вместо них следующий тег.
     // Правило «новое поле — отдельным блоком ИЛИ новой версией» здесь работает
     // вторым способом.
+    // 18 добавлена блоком `PROGRESS` в конце (§46) — три поля прогресса, что
+    // писались и читались в игре, но в сейв не попадали. Блок отдельный, значит
+    // старые сейвы читаются прежним путём.
     if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" ||
-        version < 14 || version > 17) {
+        version < 14 || version > 18) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -3889,12 +4042,18 @@ bool Game::loadFromFile(const std::string& path) {
                 lastEvent = "load failed: job target";
                 return false;
             }
+            double allowance = 0.0;
+            if (version >= 18 && !(in >> allowance)) {
+                lastEvent = "load failed: job fuel allowance";
+                return false;
+            }
             for (Contract& contract : loaded.contracts) {
                 if (contract.id != id) continue;
                 contract.targetDown = targetDown != 0;
                 contract.tier = tier;
                 contract.rushFactor = rush;
                 contract.carriers = carrierList;
+                contract.fuelAllowance = allowance;
                 break;
             }
         }
@@ -4378,6 +4537,20 @@ bool Game::loadFromFile(const std::string& path) {
         }
     }
 
+    // (§46) Прогресс, откатывавшийся каждой загрузкой. Отдельным блоком и под
+    // своей версией: сейвы 14..17 его просто не содержат, и там остаются
+    // значения по умолчанию — ровно то поведение, что было до правки.
+    if (version >= 18) {
+        int enteredLocal = 0;
+        if (!expectTag(in, "PROGRESS") ||
+            !(in >> enteredLocal >> loaded.tradeInsightPending >> loaded.tradeInsightTimer >>
+              loaded.exoticUnitsSold)) {
+            lastEvent = "load failed: progress";
+            return false;
+        }
+        loaded.everEnteredLocal = enteredLocal != 0;
+    }
+
     if (!in) {
         lastEvent = "load failed";
         return false;
@@ -4659,6 +4832,7 @@ void Game::init(size_t num_stars) {
     playerShieldFrac = 1.0;
     exoticStocks.clear();
     coresForged = 0;
+    exoticUnitsSold = 0.0;
     tradeInsightPending = 0.0;
     tradeInsightTimer = 0.0;
     factionBook.clear();
@@ -5790,7 +5964,7 @@ bool Game::robAgent(int attackerIndex, int victimIndex) {
             
             // Credits are immaterial and cannot be stolen
             downgradeAgentToEscapePod(victim);
-            if (victimIndex == playerAgent) rebakePlayerBakedBonuses();
+            rebakeBakedBonuses(victimIndex);
         } else {
             // Victim surrenders cargo
             attacker.lastAction = "robbed " + victim.type;
@@ -5808,7 +5982,7 @@ bool Game::robAgent(int attackerIndex, int victimIndex) {
             
             // Credits are immaterial and cannot be stolen
             downgradeAgentToEscapePod(attacker);
-            if (attackerIndex == playerAgent) rebakePlayerBakedBonuses();
+            rebakeBakedBonuses(attackerIndex);
         } else {
             // Attacker repelled
             attacker.lastAction = "repelled by " + victim.type;
@@ -5875,7 +6049,7 @@ bool Game::buyShip(int agentIndex, int starIndex, int classId) {
     // же причине: `shipApplyClass` переписал поля табличными значениями. Три
     // ветки прокачки из семи не хранятся больше нигде, поэтому без этой строки
     // покупка корпуса молча стирала всё, что игрок в них вложил.
-    if (agentIndex == playerAgent) rebakePlayerBakedBonuses();
+    rebakeBakedBonuses(agentIndex);
     agent.ship.hullHP = agent.ship.maxHullHP;
     // Состав и ёмкости изменились — рабочая точка двигателя подбирается заново.
     shipTuneDrive(agent.ship, 1.0, 1.0);
@@ -6125,6 +6299,21 @@ double Game::agentContractRouteFuelNeeded(int agentIndex, int contractId) const 
     return cost.feasible ? cost.fuelMass : -1.0;
 }
 
+// (§46) ДОРОГА ЗАКАЗА В КРЕДИТАХ. Строка заказа называла тонны («FUEL 4 OK») и
+// не называла денег, а слово `OK` означает «уже в баке» и читается как
+// «бесплатно». Замер по шести мирам: 45 строк из 48 (94%) убыточны по одному
+// топливу — награда 1 081 Cr при сгорающем на 4 643. Планировщик NPC вычитает
+// `fuelCost` из оценки заказа с самого начала (`findBestTrade`); игроку той же
+// оценки не показывали.
+double Game::agentContractRoadCost(int agentIndex, int contractId) const {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return -1.0;
+    const RouteCost cost = agentContractRouteCost(agentIndex, contractId);
+    if (!cost.feasible) return -1.0;
+    const Agent& agent = agents[size_t(agentIndex)];
+    if (!validStar(*this, agent.currentStar)) return -1.0;
+    return burnCost(*this, agent.ship, agent.currentStar, cost);
+}
+
 RouteCost Game::agentContractRouteCost(int agentIndex, int contractId) const {
     RouteCost bad;
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return bad;
@@ -6293,6 +6482,32 @@ bool Game::agentBuyElementAmount(int agentIndex, int elementIndex, double amount
 // рекомендованную Тимертией кнопку после первой удачной сделки, оставался с
 // полными баками и пустым кошельком. Настоящая дорога стоит 12…22% рейса —
 // вот столько и надо покупать.
+// ТИПИЧНОЕ ПЛЕЧО из этой системы: четвёртая по близости соседка. Именно она, а
+// не ближайшая: ближайшая бывает в полусветовом годе, и залив под неё игрок
+// встанет на первом же настоящем рейсе. Четвёртая лежит там же, где по замерам
+// §26 всегда лежит победитель совета — в двух-трёх световых годах.
+int Game::typicalHopStar(int originStar) const {
+    if (!validStar(*this, originStar)) return -1;
+    const ClusterStar& from = cluster.stars[size_t(originStar)];
+    const int WANT = 4;
+    double best[WANT];
+    int bestIdx[WANT];
+    for (int i = 0; i < WANT; ++i) { best[i] = 1e300; bestIdx[i] = -1; }
+    const int limit = int(std::min(cluster.stars.size(), markets.size()));
+    for (int i = 0; i < limit; ++i) {
+        if (i == originStar) continue;
+        const double d = distanceBetween(from, cluster.stars[size_t(i)]);
+        for (int s = 0; s < WANT; ++s) {
+            if (d >= best[s]) continue;
+            for (int t = WANT - 1; t > s; --t) { best[t] = best[t - 1]; bestIdx[t] = bestIdx[t - 1]; }
+            best[s] = d; bestIdx[s] = i;
+            break;
+        }
+    }
+    for (int i = WANT - 1; i >= 0; --i) if (bestIdx[i] >= 0) return bestIdx[i];
+    return -1;
+}
+
 void Game::refuelTargets(int agentIndex, double& fuelMass, double& propMass) const {
     fuelMass = 0.0;
     propMass = 0.0;
@@ -6301,18 +6516,36 @@ void Game::refuelTargets(int agentIndex, double& fuelMass, double& propMass) con
     const MixSummary fuelMix = shipFuelMix(agent.ship);
     const MixSummary propMix = shipPropellantMix(agent.ship);
 
+    // ⚠️ Считаем по кораблю, каким он ВЫЙДЕТ из порта (§46): трюм под завязку.
+    // Игрок заправляется ДО закупки, а летит ПОСЛЕ неё, и расход растёт вместе
+    // с массой — запас в половину съедался ровно тем грузом, который игрок
+    // купит следующим действием.
+    const Ship planned = shipAsItWillLeave(agent.ship, true);
+
     // Есть назначенная цель — считаем ПО НЕЙ, с запасом в половину: маршрут
     // может пойти другим плечом, а встать без топлива дороже, чем перекупить.
+    //
+    // ⚠️ ЦЕЛИ ОБЫЧНО НЕТ. По прибытии `destStar == currentStar`, а кнопку
+    // нажимают именно по прибытии — новелла учит этому репликой 14. Прежняя
+    // ветка «цели нет» доливала до ПОЛОВИНЫ ЁМКОСТИ, то есть под сотню рейсов
+    // вперёд: замер — переплата x1.1…x86 против настоящего плеча, кнопка
+    // стабильно забирала 60% кошелька, и с одиннадцатого рейса состояние
+    // переставало расти вовсе (x1.12 за пятнадцать рейсов). Поэтому без цели
+    // мерим ТИПИЧНОЕ ПЛЕЧО — дорогу до ближайшей системы, где есть рынок.
+    int leg = agent.destStar;
+    if (!validStar(*this, leg) || leg == agent.currentStar) leg = typicalHopStar(agent.currentStar);
+
     RouteCost need;
-    if (validStar(*this, agent.destStar) && agent.destStar != agent.currentStar) {
-        need = agentRouteCost(agentIndex, agent.destStar);
+    if (validStar(*this, leg) && validStar(*this, agent.currentStar)) {
+        need = plannedRouteCost(*this, planned, agent.currentStar, leg);
     }
     if (need.feasible) {
         fuelMass = need.fuelMass * 1.5;
         propMass = need.propellantMass * 1.5;
     } else {
-        // Цели нет — доливаем до половины ёмкости. Это заведомо больше любого
-        // одного плеча и заведомо меньше «под пробку».
+        // Плечо не считается вовсе (борт в пустоте, мир без соседей) — тогда
+        // прежний закон: половина ёмкости. Это всё ещё много, но это последний
+        // рубеж, а не обычный путь.
         const int fe = shipDominantFuelElement(agent.ship);
         const int pe = shipDominantPropellantElement(agent.ship);
         if (fe >= 0 && fe < int(elementCount())) {
@@ -6389,10 +6622,17 @@ bool Game::agentBuyFuel(int agentIndex) {
     const double purse = agent.money;
     agent.money = std::max(0.0, purse - keep);
 
-    bool any = buyConsumable(*this, agent, agent.currentStar, true, fuelTarget);
+    // ⚠️ РАБОЧЕЕ ТЕЛО ПЕРВЫМ. Бункер заливался первым и выбирал весь лимит
+    // кошелька целиком: топливо (актиний, 500…2200 Cr/ед) на два-три порядка
+    // дороже рабочего тела (водород, 2…4 Cr/ед), и до второй строки деньги
+    // просто не доходили. Замер: восемь нажатий подряд при кошельке 2 000 …
+    // 80 000 Cr тратили его ДО КОПЕЙКИ и оставляли 0.00 т рабочего тела — а без
+    // рабочего тела корабль не движется вообще. Сперва то, без чего не улететь.
+    bool any = false;
     if (!driveUsesFuelAsPropellant(agent.ship.driveIndex)) {
-        any = buyConsumable(*this, agent, agent.currentStar, false, propTarget) || any;
+        any = buyConsumable(*this, agent, agent.currentStar, false, propTarget);
     }
+    any = buyConsumable(*this, agent, agent.currentStar, true, fuelTarget) || any;
     const double spent = std::max(0.0, purse - keep) - agent.money;
     agent.money = purse - spent;
     if (any && keep > 0.0 && spent >= (purse - keep) - 0.01) {
@@ -6595,16 +6835,76 @@ int Game::agentSellAllCargo(int agentIndex) {
     }
     if (agent.ship.enRoute || !validStar(*this, agent.currentStar)) return 0;
 
+    // ⚠️ ГРУЗ ЗАКАЗА НЕ ПРОДАЁТСЯ. Он лежит в трюме обычной партией того же
+    // элемента, и «продать всё» сдавало его вместе с остальным — после чего
+    // заказ становился несдаваемым, а игрок узнавал об этом на другом конце
+    // маршрута. Считаем, сколько единиц этот борт кому-то должен, и оставляем
+    // их на месте.
+    std::vector<std::pair<std::string, double> > owed;
+    for (size_t c = 0; c < contracts.size(); ++c) {
+        const Contract& contract = contracts[c];
+        if (contract.completed || contract.failed || contract.acceptedByAgent < 0) continue;
+        if (!contractUsesCargo(contract.type)) continue;
+        if (contract.resource < 0 || contract.resource >= int(elementCount())) continue;
+        bool carriesIt = contract.acceptedByAgent == agentIndex;
+        for (size_t k = 0; k < contract.carriers.size(); ++k) {
+            if (contract.carriers[k] == agentIndex) carriesIt = true;
+        }
+        if (!carriesIt) continue;
+        const std::string symbol = elementDefinitions()[size_t(contract.resource)].symbol;
+        bool merged = false;
+        for (size_t i = 0; i < owed.size(); ++i) {
+            if (owed[i].first != symbol) continue;
+            owed[i].second += contract.amount;
+            merged = true;
+            break;
+        }
+        if (!merged) owed.push_back(std::make_pair(symbol, contract.amount));
+    }
+
     // Партии сдаются по одной с головы вектора: sellCargo сам стирает опустевшую,
     // поэтому индекс не нужен. Ограничитель по числу партий — от зацикливания,
     // если очередная партия окажется меньше порога 0.01 и sellCargo вернёт false
     // (тогда вектор не уменьшится и цикл обязан прерваться).
+    // ⚠️ Резерв тратится ПО ВСЕМУ БОРТУ, а не вычитается из каждой партии. При
+    // взятии заказа его груз кладётся ОТДЕЛЬНОЙ партией (`emplace_back`), даже
+    // если элемент в трюме уже есть, — поэтому партий одного символа бывает две,
+    // и вычитание из каждой сделало бы непродаваемыми обе.
+    //
+    // ⚠️ Резервируем ВЕСЬ объём заказа на каждом носителе, хотя караван (§24)
+    // режет груз между бортами: сколько именно легло на ЭТОТ борт, нигде не
+    // записано. Ошибка сознательно в безопасную сторону — перерезервировать
+    // значит не дать продать свой же товар того же элемента (неприятно, но
+    // обратимо), недорезервировать значит сдать чужой груз и остаться с
+    // несдаваемым заказом на другом конце маршрута.
     int lots = 0;
     size_t guard = agent.ship.cargo.size();
-    while (!agent.ship.cargo.empty() && guard-- > 0) {
+    size_t skip = 0;   // сколько партий уже отложено под заказ
+    while (agent.ship.cargo.size() > skip && guard-- > 0) {
+        // По ЗНАЧЕНИЮ: `sellCargo` может стереть эту самую партию, и ссылка на
+        // элемент вектора после неё повиснет.
+        const std::string symbol = agent.ship.cargo[skip].element;
+        const double had = agent.ship.cargo[skip].amount;
+        double reserved = 0.0;
+        size_t owedAt = owed.size();
+        for (size_t i = 0; i < owed.size(); ++i) {
+            if (owed[i].first == symbol) { reserved = owed[i].second; owedAt = i; break; }
+        }
+        const double hold = std::min(reserved, had);
+        const double sellable = had - hold;
+        if (sellable <= 0.01) {
+            if (owedAt < owed.size()) owed[owedAt].second -= hold;   // остаток резерва
+            ++skip;
+            continue;
+        }
         const size_t before = agent.ship.cargo.size();
-        if (!sellCargo(*this, agent, agent.currentStar)) break;
-        if (agent.ship.cargo.size() >= before) break;
+        if (!sellCargo(*this, agent, agent.currentStar, sellable, symbol)) { ++skip; continue; }
+        const bool lotGone = agent.ship.cargo.size() < before;
+        if (!lotGone && agent.ship.cargo[skip].amount >= had - 1e-9) break;   // не сдвинулись — выходим
+        if (!lotGone) {
+            if (owedAt < owed.size()) owed[owedAt].second -= hold;
+            ++skip;   // партия ужалась до остатка под заказ
+        }
         ++lots;
     }
     if (lots > 0) {
@@ -6711,6 +7011,15 @@ bool Game::agentAcceptContract(int agentIndex, int contractId) {
     }
     agent.cargoCost = 0.0;
     contract->acceptedByAgent = agentIndex;
+    // (§46) Надбавку на дорогу фиксируем ЗДЕСЬ, по кораблю, который заказ
+    // берёт: заказчик оплачивает сгоревшее тому, кто привезёт в срок. Считается
+    // до того, как борт тронулся, поэтому число видно на доске и не зависит от
+    // того, каким плечом маршрут в итоге пойдёт.
+    {
+        const double road = agentContractRoadCost(agentIndex, contract->id);
+        contract->fuelAllowance = road > 0.0 ? road : 0.0;
+    }
+
     // Залог уходит выдавшему заказ: он и есть тот, кто рискует грузом.
     if (agent.playerControlled && contract->deposit > 0.0) {
         agent.money -= contract->deposit;
@@ -7000,7 +7309,12 @@ bool Game::agentAutoTrade(int agentIndex) {
     Agent& agent = agents[agentIndex];
     if (agent.ship.enRoute || !validStar(*this, agent.currentStar) || !agent.ship.cargo.empty()) return false;
 
-    const TradePlan plan = findBestTrade(*this, agent);
+    // Ручное «сторгуй за меня» — тоже действие ИГРОКА, а не симуляции, и поток
+    // мира сдвигать не имеет права по той же причине, что и автопилот выше.
+    std::mt19937 handRng(static_cast<unsigned int>(seed) * 2654435761u +
+                         static_cast<unsigned int>(agentIndex) * 40503u +
+                         static_cast<unsigned int>(time) * 97u + 7717u);
+    const TradePlan plan = findBestTrade(*this, agent, &handRng);
     if (plan.destStar < 0 || plan.elementIndex < 0) return false;
     buyCargo(*this, agent, agent.currentStar, plan);
     if (agent.ship.cargo.empty()) return false;
@@ -7550,6 +7864,14 @@ std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDea
     // а показываем с дистанцией: везти за 60 ly или нет — решает игрок.
     // Порог `worst` — прибыль худшей строки в текущей top-N: пара, которая не может
     // его перебить даже в идеале, отбрасывается до дорогого перебора объёмов.
+    // Дорога считается по кораблю, каким он ВЫЙДЕТ из порта (§46) — той же
+    // меркой, что и в совете: иначе сводка и совет в одной системе называли бы
+    // разную цену одного и того же плеча.
+    const Ship planned = shipAsItWillLeave(player.ship, false);
+    const double tankPropellantMass = shipPropellantMix(planned).mass;
+    const double tankFuelMass = shipFuelMix(planned).mass;
+    Ship scratch = planned;
+
     double worst = 0.0;
     for (int target = 0; target < int(cluster.stars.size()) && target < int(markets.size()); ++target) {
         if (target == originStar) continue;
@@ -7598,7 +7920,27 @@ std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDea
             if (units <= 0.01) continue;
             // Под фильтром пропускаем только заведомый мусор (нулевой объём); без
             // фильтра — всё, что не бьёт текущий порог top-N.
+            //
+            // ⚠️ Порог `worst` сравнивается с прибылью ДО вычета дороги, а
+            // хранится прибыль ПОСЛЕ. Это нарочно: валовая прибыль — верхняя
+            // оценка чистой, значит отсев остаётся осторожным и не выбросит
+            // строку, которая могла бы победить. Дорога считается только для
+            // тех строк, что уже прошли порог: маршрут по всем разведанным
+            // системам стоил бы дороже самой сводки.
             if (elementFilter < 0 && profit <= worst) continue;
+
+            // (§46) ДОРОГА, СРОК И ДОСТИЖИМОСТЬ — той же меркой, что в совете.
+            const Ship& carried = shipCarrying(planned, e, units * resourceUnitMassByIndex(e), scratch);
+            const RouteCost rc = plannedRouteCost(*this, carried, originStar, target);
+            const bool fits = rc.feasible &&
+                              rc.propellantMass <= tankPropellantMass + 1e-6 &&
+                              rc.fuelMass <= tankFuelMass + 1e-6;
+            const double years = fits ? plannedRouteTravelTime(*this, carried, originStar, target) : 0.0;
+            const double fuel = fits ? burnCost(*this, carried, originStar, rc) : 0.0;
+            // Строка, куда этот корпус с этим грузом не долетит, — не сделка, а
+            // ловушка. Под фильтром по элементу оставляем: там игрок просит
+            // карту «где почём», а не список готовых рейсов.
+            if (elementFilter < 0 && !fits) continue;
 
             ArbitrageDeal deal;
             deal.element = e;
@@ -7607,7 +7949,10 @@ std::vector<ArbitrageDeal> Game::playerArbitrageBoard(int originStar, int maxDea
             deal.sellPrice = sellPrice;
             deal.observedPrice = playerKnownPrice(target, e);
             deal.units = units;
-            deal.profit = profit;
+            deal.profit = profit - fuel;
+            deal.fuelCost = fuel;
+            deal.years = years;
+            deal.perYear = years > 0.0 ? deal.profit / years : 0.0;
             deal.distanceLy = distance;
             deal.ageYears = age;
             deal.confidence = playerKnownMarketConfidence(target, e);
@@ -7682,21 +8027,57 @@ TradeRun Game::playerBestRun(int originStar, int nearestSystems, bool knownOnly)
     std::partial_sort(near.begin(), near.begin() + long(keep), near.end());
     near.resize(keep);
 
+    // ⚠️ Совет считается по кораблю, каким он ВЫЙДЕТ из порта (§46): трюм полон,
+    // баки залиты. Прежде считалось по тому, что стоит у причала, и это давало
+    // круг — совет требует топлива, топливо требует цели, цель даёт совет: на
+    // пустом баке не проходима ни одна цель (замер: 0 из 40), а бак пуст после
+    // КАЖДОГО рейса. Единственным выходом из круга оставалась кнопка заправки,
+    // то есть самая дорогая покупка в игре.
+    const Ship planned = shipAsItWillLeave(player.ship, false);
+
+    // Сколько расходников ВЛЕЗАЕТ в ёмкости. `planned` залит под пробку, значит
+    // это и есть потолок бака и бункера в массе.
+    const double tankPropellantMass = shipPropellantMix(planned).mass;
+    const double tankFuelMass = shipFuelMix(planned).mass;
+    Ship scratch = planned;   // буфер под корабль с загрузкой; см. `shipCarrying`
+
+    // Запасной ответ: лучший рейс из тех, что окупают только КАССОВЫЙ расход.
+    // Он идёт в дело, когда ни один рейс не окупает собственного топлива —
+    // обычно это самое начало партии, где бак пришёл вместе с корпусом.
+    TradeRun prepaid;
+
     for (size_t k = 0; k < near.size(); ++k) {
         const int target = near[k].second;
         // Цель, до которой маршрут не строится, — не совет, а ловушка (§12.5):
         // корабль с такими баками туда просто не полетит.
-        const RouteCost legCost = agentRouteCost(playerAgent, target);
+        // Дешёвый предварительный отсев: если туда не летит даже ПУСТОЙ корпус,
+        // с грузом тем более. Настоящая проверка — ниже, с реальной загрузкой.
+        const RouteCost legCost = plannedRouteCost(*this, planned, originStar, target);
         if (!legCost.feasible) continue;
-        const double years = agentRouteTravelTime(playerAgent, target);
-        if (years <= 0.0) continue;
+        if (plannedRouteTravelTime(*this, planned, originStar, target) <= 0.0) continue;
         // ⚠️ ДОРОГА ТОЖЕ СТОИТ. Совет считал `выручка - закупка` и молчал про
         // топливо, хотя планировщик NPC (`findBestTrade`) вычитает его с самого
         // начала. Замер: расходники съедают 12…22% обещанного, а на дальнем
         // плече могут съесть и всё — то есть Тимертия звала в рейсы, которые
         // сама же делала убыточными.
-        const double legFuelCost = refillCost(*this, agents[size_t(playerAgent)].ship, originStar, legCost);
-
+        // ⚠️ ДВЕ МЕРКИ ДОРОГИ, и обе нужны (§46).
+        //
+        //  • `legBurn` — что СГОРИТ, по станционной цене. Это настоящая цена
+        //    рейса, и по ней рейсы РАНЖИРУЮТСЯ. Прежняя единственная мерка —
+        //    недостача до маршрута — делала уже залитое топливо бесплатным:
+        //    игрок, нажавший кнопку заправки до вопроса (а новелла учит именно
+        //    этому), получал дорогу «за ноль», и совет выбирал рейсы, которые
+        //    сам же делал убыточными — 16% валовой прибыли в среднем, три рейса
+        //    из 69 в чистый минус, худший −15 154 Cr.
+        //
+        //  • `legRefill` — что придётся ЗАПЛАТИТЬ здесь и сейчас. По ней рейс
+        //    ДОПУСКАЕТСЯ. Стартовый бак пришёл вместе с корпусом, он уже
+        //    оплачен, и мерить первый рейс ценой его замещения значит объявить
+        //    партию невозможной с первого хода: замер по сиду 1234 — 0 рейсов
+        //    из 25 при кошельке в 100 Cr.
+        //
+        // Порядок такой: сперва ищем рейс, который окупает СВОЁ ЖЕ топливо;
+        // если такого нет вовсе — лучший из тех, что окупают кассовый расход.
         const Market& tm = markets[target];
         for (int e = 0; e < elems; ++e) {
             const Leg& leg = legs[size_t(e)];
@@ -7708,28 +8089,67 @@ TradeRun Game::playerBestRun(int originStar, int nearestSystems, bool knownOnly)
             if (sellPrice <= 0.0) continue;
 
             const double targetDepth = tm.depthOf(e);
+            const double unitMass = resourceUnitMassByIndex(e);
             for (int step = 1; step <= 10; ++step) {
                 const double u = leg.maxUnits * double(step) / 10.0;
                 if (u <= 0.01) continue;
+                // ⚠️ ПРОХОДИМОСТЬ МЕРИТСЯ С ТОЙ ЗАГРУЗКОЙ, КОТОРУЮ СОВЕТУЕМ.
+                // Совет проверял маршрут на ПУСТОМ корпусе, а рекомендовал
+                // полный трюм. На больших корпусах это расходится вдвое-вчетверо:
+                // Megafreighter физически увозит 54% своего трюма, Giga — 24%.
+                // Замер прогона на 20 000 лет: 523 сорванных вылета на 812
+                // состоявшихся рейсов (39%), и сообщение «propellant short 2»
+                // не говорило, что лечится это выгрузкой половины трюма.
+                // Теперь советчик сам называет ту загрузку, которая долетит.
+                const Ship& carried = shipCarrying(planned, e, u * unitMass, scratch);
+                const RouteCost rc = plannedRouteCost(*this, carried, originStar, target);
+                if (!rc.feasible) continue;
+                // Стена достижимости `k < 1` — не единственный предел: нужное
+                // рабочее тело обязано ВЛЕЗТЬ В БАК. `shipRouteCost` объём бака
+                // не смотрит вовсе, и именно этот зазор давал «short 2» при
+                // полном баке и сотне миллионов в кармане.
+                if (rc.propellantMass > tankPropellantMass + 1e-6) continue;
+                if (rc.fuelMass > tankFuelMass + 1e-6) continue;
+                const double years = plannedRouteTravelTime(*this, carried, originStar, target);
+                if (years <= 0.0) continue;
+                const double legBurn = burnCost(*this, carried, originStar, rc);
+                // ⚠️ ПО НАСТОЯЩЕМУ БОРТУ, а не по `carried`. `shipAsItWillLeave` заливает
+        // баки под пробку, а `refillCost` считает недостачу — по залитому корпусу
+        // она тождественно НОЛЬ (замер: 0.000000 на всех 200 целях трёх миров при
+        // настоящей недостаче 42 201 Cr). Тогда `cash == выручка − закупка`, то
+        // есть запасной ответ ранжировался ВАЛОВОЙ прибылью без дороги — ровно
+        // тем, что §42 назвал главной ошибкой советчика. Замер последствий: 13
+        // ответов из 25 обещали меньше, чем сожжёт тот же рейс, худшее 32x.
+        // Груз на цену долива не влияет: `refillCost` смотрит только на баки.
+        const double legRefill = refillCost(*this, player.ship, originStar, rc);
                 const double avgBuy = home.executionPrice(e, u, false);
                 const double cost = u * avgBuy;
                 const double rev = u * sellPrice * marketExecutionFactor(u, targetDepth, true) * (1.0 - sellTariff);
-                const double net = rev - cost - legFuelCost;
-                const double perYear = net / years;
-                if (net <= 0.0 || perYear <= best.perYear) continue;
-                best.element = e;
-                best.targetStar = target;
-                best.units = u;
-                best.buyPrice = avgBuy;
-                best.sellPrice = sellPrice;
-                best.profit = net;
-                best.years = years;
-                best.perYear = perYear;
-                best.distanceLy = near[k].first;
-                best.valid = true;
+                const double net = rev - cost - legBurn;
+                const double cash = rev - cost - legRefill;
+                TradeRun* slot = 0;
+                double score = 0.0, profit = 0.0;
+                if (net > 0.0 && net / years > best.perYear) {
+                    slot = &best; score = net / years; profit = net;
+                } else if (best.valid == false && cash > 0.0 && cash / years > prepaid.perYear) {
+                    slot = &prepaid; score = cash / years; profit = cash;
+                }
+                if (!slot) continue;
+                slot->element = e;
+                slot->targetStar = target;
+                slot->units = u;
+                slot->buyPrice = avgBuy;
+                slot->sellPrice = sellPrice;
+                slot->profit = profit;
+                slot->years = years;
+                slot->perYear = score;
+                slot->distanceLy = near[k].first;
+                slot->valid = true;
             }
         }
     }
+
+    if (!best.valid && prepaid.valid) best = prepaid;
 
     // ПОЧЕМУ здесь дёшево. Величина осмысленна только там, где элемент вообще
     // потребляют: у синтетических сверхтяжёлых потребление нулевое, и отношение
@@ -7969,7 +8389,8 @@ double Game::playerSellShares(int factionIndex, double shares) {
     resizeShareBooks();
     if (!validFaction(*this, factionIndex) || !(shares > 0.0)) return 0.0;
     if (playerAgent < 0 || playerAgent >= int(agents.size())) return 0.0;
-    if (playerTradingBlocked()) return 0.0;
+    // Продажа акций при отозванной лицензии разрешена по той же причине, что и
+    // продажа экзотики (§46): выручка гасит долг, а не ложится в карман.
     Agent& player = agents[size_t(playerAgent)];
     if (player.ship.enRoute) { lastEvent = "cannot trade in transit"; return 0.0; }
     const double price = factionSharePrice(factionIndex);
@@ -7980,7 +8401,8 @@ double Game::playerSellShares(int factionIndex, double shares) {
     // Себестоимость списывается ПРОПОРЦИОНАЛЬНО проданной доле — тем же
     // законом, что и `cargoCost` при продаже части трюма.
     const double basisShare = held > 1e-9 ? shareCostBasis[size_t(factionIndex)] * (amount / held) : 0.0;
-    player.money += amount * price;
+    const double gross = amount * price;
+    player.money += gross - applyLicenceBuyback(gross);
     playerShares[size_t(factionIndex)] -= amount;
     shareCostBasis[size_t(factionIndex)] = std::max(0.0, shareCostBasis[size_t(factionIndex)] - basisShare);
     lastEvent = "sold shares in " + factions[size_t(factionIndex)].name;
@@ -8144,7 +8566,10 @@ double Game::playerBuyExotic(int kind, double units) {
 double Game::playerSellExotic(int kind, double units) {
     if (playerAgent < 0 || playerAgent >= int(agents.size())) return 0.0;
     if (kind < 0 || kind >= EX_COUNT || !(units > 0.0)) return 0.0;
-    if (playerTradingBlocked()) return 0.0;
+    // ⚠️ Здесь НЕТ гейта `playerTradingBlocked` (§46): при отозванной лицензии
+    // продавать экзотику МОЖНО, просто выручка идёт в отработку долга. Иначе
+    // возчик хайтека запирался насмерть — трюм у него пуст по построению, а всё
+    // состояние лежит в ячейке удержания, и игра советовала «продайте груз».
     Agent& player = agents[size_t(playerAgent)];
     if (player.ship.enRoute) { lastEvent = "cannot trade in transit"; return 0.0; }
     const int starIndex = player.currentStar;
@@ -8170,14 +8595,20 @@ double Game::playerSellExotic(int kind, double units) {
     // ту же квоту. Это и делает хайтек-этаж выходом из квотной ловушки поздней
     // игры: один рейс с конденсатом закрывает тысячелетнюю квоту целиком.
     const double licenceFee = licenceRevoked ? 0.0 : gross * licenceTariffRate;
-    player.money += gross - fee - licenceFee;
+    const double debtPaid = applyLicenceBuyback(gross - fee);
+    player.money += gross - fee - licenceFee - debtPaid;
     const int owner = star.ownerFaction;
     if (validFaction(*this, owner)) factions[size_t(owner)].treasury += fee;
+    // Владелец системы узнаёт о своём крупнейшем сборе тем же светом, что и о
+    // сборе с руды (`sellCargo`): без этого сигнала касса колонии молча
+    // расходилась с тем, что игрок реально заплатил.
+    if (fee > 0.01 && validFaction(*this, owner)) queueSettlementSignal(owner, starIndex, fee);
     if (licenceFee > 0.0) {
         licenceQuotaPaid += licenceFee;
         if (validFaction(*this, clearingFaction)) factions[size_t(clearingFaction)].treasury += licenceFee;
     }
     player.trades += 1;
+    exoticUnitsSold += amount;
     lastEvent = "sold " + std::string(exoticDefs()[size_t(kind)].symbol);
     return amount;
 }
@@ -8432,9 +8863,44 @@ bool Game::markLocalBountyTarget(int agentIndex) {
 
 bool Game::playerTradingBlocked() {
     if (!licenceRevoked) return false;
-    lastEvent = "trading frozen: sell cargo to work off " +
-                std::to_string(int(std::ceil(licenceBuyback))) + " Cr, or pay it (F2)";
+    // ⚠️ «Sell cargo» здесь было ВРАНЬЁМ для половины игры: у возчика экзотики
+    // трюм пуст по определению, всё его состояние лежит в ячейке удержания и в
+    // портфеле. Формулировка называет все три источника, а `applyLicenceBuyback`
+    // делает так, чтобы любой из них действительно гасил долг.
+    // ⚠️ ПЕРЕМЕННАЯ ЧАСТЬ — В КОНЦЕ СТРОКИ. Это единственный текст, который
+    // видит запертый игрок, и он обязан читаться по-русски. Точным ключом
+    // (`EXACT`) его не взять — внутри число; значит остаётся пословная сборка
+    // (§14), а она не берёт оборот, кончающийся знаком препинания. Поэтому всё
+    // словесное собрано в ОДИН оборот без скобок и запятых на концах, а сумма
+    // приписана после него.
+    lastEvent = "trading frozen - pay it with F2 or sell cargo, exotics or shares to work off " +
+                std::to_string(int(std::ceil(licenceBuyback))) + " CR";
     return true;
+}
+
+double Game::applyLicenceBuyback(double available) {
+    if (!licenceRevoked) return 0.0;
+    // ⚠️ ОТОЗВАННАЯ ЛИЦЕНЗИЯ С НУЛЕВЫМ ДОЛГОМ — тупик без выхода: отработать
+    // нечего, а торговля заперта, и сообщение предлагает «отработать 0 Cr».
+    // Состояние не задумано никем (отзыв всегда ставит долг не меньше
+    // `LICENCE_BUYBACK_MIN`), но достижимо арифметически. Лечим на месте.
+    if (licenceBuyback <= 0.0) { licenceRevoked = false; return 0.0; }
+    if (!(available > 0.0)) return 0.0;
+    const double paid = std::min(licenceBuyback, available);
+    if (!(paid > 0.0)) return 0.0;
+    licenceBuyback -= paid;
+    if (validFaction(*this, clearingFaction)) {
+        factions[size_t(clearingFaction)].treasury += paid;
+    }
+    if (licenceBuyback <= 0.01) {
+        licenceBuyback = 0.0;
+        licenceRevoked = false;
+        licenceQuotaPaid = 0.0;
+        licencePeriodEnd = time + LICENCE_PERIOD_YEARS;
+        pushNews("Licence worked off. Trading resumed.", 4);
+        lastEvent = "licence worked off - trading resumed";
+    }
+    return paid;
 }
 
 int Game::playerColonyCount() const {

@@ -8,8 +8,14 @@
 // игрока (чтобы легаси-код их видел); остальные читаются в точке использования.
 
 namespace {
+// ⚠️ ЕДИНСТВЕННЫЙ словарь названий статов. У одного и того же стата их было
+// ТРИ: кузница экзотики писала на кнопке `KIN`, панель игрока — `SPEED`, а
+// новость о полученном ядре — `KINEMATICS`. Игрок выбирает стат в кузнице
+// осознанно (§31: кузница даёт ядро ВЫБРАННОГО стата, а не рулетку), и выбирать
+// он должен из тех же слов, которыми игра потом отчитывается. Слова взяты
+// короткие: их держит и кнопка кузницы (79 px), и колонка панели (78 px).
 const char* STAT_NAMES[TECH_STAT_COUNT] = {
-    "INTELLECT", "CHARISMA", "MATERIALS", "TACTICS", "KINEMATICS", "SENSORS", "LUCK"
+    "MIND", "CHARM", "FRAME", "TACTICS", "SPEED", "SENSOR", "LUCK"
 };
 double& statRef(TechState& t, int stat) {
     switch (stat) {
@@ -55,8 +61,20 @@ void Game::grantChromocore(int stat) {
 }
 
 void Game::rebakePlayerBakedBonuses() {
-    if (playerAgent < 0 || playerAgent >= int(agents.size())) return;
-    Ship& ship = agents[playerAgent].ship;
+    rebakeBakedBonuses(playerAgent);
+}
+
+// ⚠️ ПО НОМЕРУ БОРТА, а не «у капитана». Переоснастка живёт НА КОРПУСЕ (§31.4),
+// значит стирает её `shipApplyClass` у любого борта, а не только у того, за
+// штурвалом которого игрок. `buyShip` звал перезапекание только при
+// `agentIndex == playerAgent`: борт флота с тремя слоями нейтрониума, купивший
+// новый корпус, терял броню 365 -> 20, а `platingLayers` оставался 3 — и
+// загрузка это закрепляла. Хромоядра — тоже собственность ИГРОКА, поэтому
+// перезапекаем только его борта.
+void Game::rebakeBakedBonuses(int agentIndex) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return;
+    if (!agents[size_t(agentIndex)].playerControlled) return;
+    Ship& ship = agents[size_t(agentIndex)].ship;
     shipApplyChromocoreFactors(ship, tech.materials, tech.tactics, tech.kinematics);
     // Хайтек-переоснастка (§31.4) запекается тем же порядком и по той же
     // причине: ёмкость ячейки, броня, корпус и масса — это ОТРАЖЕНИЕ ступеней
@@ -87,7 +105,17 @@ void Game::addResearch(double amount) {
         const double threshold = 100.0 + tech.cores * 40.0;
         if (tech.research < threshold) break;
         tech.research -= threshold;
-        const int stat = randomer(rng, TECH_STAT_COUNT - 1);
+        // §2.3: `addResearch` зовут ОБА слоя — макро (торговля, разведка,
+        // аномалии) и локальный режим (убийства, добыча, радио). Тянуть здесь
+        // из глобального `rng` значило бы, что бой в микромире сдвигает поток
+        // всей макро-симуляции: тот же сид давал бы разные миры в зависимости
+        // от того, летал ли игрок вручную. Поэтому выбор стата берётся из
+        // СВОЕГО потока, засеянного сидом мира и НОМЕРОМ ядра. Это так же
+        // детерминировано (тот же сид -> та же последовательность ядер),
+        // ничего не стоит в сейве (номер ядра уже там) и не трогает `rng`.
+        std::mt19937 coreRng(static_cast<unsigned int>(seed) * 2654435761u +
+                             static_cast<unsigned int>(tech.cores) * 40503u + 7919u);
+        const int stat = randomer(coreRng, TECH_STAT_COUNT - 1);
         grantChromocore(stat);
     }
 }

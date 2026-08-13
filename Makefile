@@ -70,6 +70,7 @@ shot_asan: shot_test.cpp $(LIBSOURCES)
 # переполнение панели видно только на картинке. Артефакты не коммитятся.
 uishots: ui_shot_test.cpp $(LIBSOURCES)
 	$(CXX) ui_shot_test.cpp $(LIBSOURCES) -O2 -std=c++11 $(WARNFLAGS) $(SDL_CFLAGS) $(SDL_LIBS) -o ui_shot_test
+	SDL_VIDEODRIVER=dummy ./ui_shot_test en
 	SDL_VIDEODRIVER=dummy ./ui_shot_test ru
 	@for f in uishot_*.bmp; do sips -s format png "$$f" --out "$${f%.bmp}.png" >/dev/null 2>&1 && echo "png: $${f%.bmp}.png"; done
 

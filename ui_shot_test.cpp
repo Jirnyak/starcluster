@@ -10,6 +10,7 @@
 #include "game.h"
 #include "i18n.h"
 #include "ui.h"
+#include "render2d.h"
 #include "exotic.h"
 
 #include <cstdio>
@@ -320,6 +321,30 @@ int main(int argc, char** argv) {
             }
         }
         std::printf("vn: worst step %d, %d/%d lines\n", worstStep, worstLines, maxLines);
+
+        // ПАНЕЛЬ ЦЕЛЕЙ (§46). Меряем КАЖДУЮ ступень лестницы, а не то, что видно
+        // на нулевом году: панель показывает окно вокруг первой незакрытой
+        // ступени, поэтому снимок никогда не покажет поздние ступени — а
+        // вылезали за рамку именно они. Бюджет: панель 248 px, текст с +34.
+        {
+            const int OBJ_PANEL_W = 248;
+            const int OBJ_TEXT_X = 34;
+            const int budget = OBJ_PANEL_W - OBJ_TEXT_X - 6;   // 6 px поля справа
+            // Мир, где ВСЕ ступени уже видны: харнесу нужен полный список, а не
+            // окно из шести строк. `objectiveLadder` отдаёт лестницу целиком.
+            const std::vector<UI::ObjectiveStep> ladder = UI::objectiveLadder(game);
+            int worstW = 0;
+            const char* worstText = "";
+            for (size_t i = 0; i < ladder.size(); ++i) {
+                const int wpx = UI::textWidth(ladder[i].text, 1);
+                if (wpx > worstW) { worstW = wpx; worstText = ladder[i].text; }
+                if (wpx > budget)
+                    std::printf("OBJECTIVE OVERFLOW: \"%s\" takes %d px of %d\n",
+                                ladder[i].text, wpx, budget);
+            }
+            std::printf("objectives: %d steps, worst %d/%d px (\"%s\")\n",
+                        int(ladder.size()), worstW, budget, worstText);
+        }
 
         // Два снимка: самая длинная реплика (проверка коробки) и топливный шаг —
         // там новелла САМА открывает окно ТРЮМ/БАКИ, и видно, не легла ли коробка

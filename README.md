@@ -814,13 +814,25 @@ work" but "does it lock the player in *together with* the others".
   and the RNG, not routing.
 - Reputation still tops out at 1000 completed jobs with only two outlets: the
   size of the jobs offered and a fresh copy of a power's books. Beyond that it
-  buys nothing.
+  buys nothing - and reaching the cap with one faction takes about 817,000 game
+  years at the measured grind rate of 240 years per delivery.
 - The introductory novel ends at line 27 and only speaks about the high-tech
   floor contextually, in the first port that actually has such a market. It says
   nothing about shares or the fleet autopilot.
-- `addResearch` draws from the *global* RNG when it crosses a core threshold, and
-  local flight calls it. That is a declared exception, but it does mean the local
-  layer can shift the macro stream.
+- Two thirds of the jobs board grants no reputation at all: `issuerFaction` falls
+  back to the owner of the target star, and only 1.65% of stars have an owner, so
+  46-64% of live contracts have no issuer. Completing one gives no reputation, no
+  tier and no bond, and the offer stays a 60-tonne run for 400 Cr forever.
+- The median job reward does not grow with reputation: 400 Cr at zero jobs done
+  and 400 Cr at a thousand. Only the tail grows, and the tail does not fit in any
+  hull.
+- Measured per credit of flight-year, the high-tech floor equals ordinary trade
+  and is ten times worse on a long leg: the rarity of the sources is paid for in
+  travel time, exactly enough to eat the premium. The containment bay caps at 360
+  units, so income per run does not grow with capital.
+- Late game is a plateau by design (see master_prompt section 18): 20,000 years of
+  optimal trade yield 1.47e8 Cr while the cheapest system costs 1.37e8 and pays
+  back in 114,777 years. The 8,192-star empire is out of reach on purpose.
 - A colony's own stockpile now speeds its construction, but the player still
   cannot direct what a colony builds.
 - The propulsion model computes several quantities it does not yet spend:
