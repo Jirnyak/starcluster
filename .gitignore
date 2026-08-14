@@ -10,6 +10,12 @@
 /ui_shot_test
 /balance_test
 /econ_test
+# (§48) Замерные пробники маршрутной оценки — исходники в репозитории, сборка вручную.
+/strand_measure
+/leg_probe
+/deal_probe
+/deal_probe_base
+/top_probe
 /test_rng
 shot_*.bmp
 shot_*.png
@@ -45,6 +51,12 @@ SDL2-*.dmg
 *.dmg
 *.dll
 /econ_test
+# (§48) Замерные пробники маршрутной оценки — исходники в репозитории, сборка вручную.
+/strand_measure
+/leg_probe
+/deal_probe
+/deal_probe_base
+/top_probe
 /Starcluster-Linux/
 /Starcluster-Windows/
 /Starcluster-macOS/

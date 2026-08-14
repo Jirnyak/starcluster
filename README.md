@@ -304,6 +304,19 @@ and fly light, and the midpoint is the cost optimum among settings that actually
 fit your tanks. Load iron as propellant and the reactor will happily melt it and throw
 it away at a terrible exhaust velocity. Nothing stops you.
 
+A full bunker is cargo, and the route estimate says so. Fuel does not leave the
+nozzle - it burns to ash of nearly the same mass and stays aboard - so every unit
+in the bunker is dead weight the propellant has to accelerate. The estimate used
+to solve for a ship carrying exactly the fuel this leg needs, while real hulls fly
+with the bunker full: measured, that understated the propellant burn by a factor
+of **2.44**, and ships arrived at their destination dry, saved only by a snap that
+zeroed their velocity for free. Both are fixed. Because a full bunker is now paid
+for, hulls leave the yard with a quarter of one, and the cruise fraction defaults
+to half the hull's cap rather than full - by credits per flight-year that is the
+optimum, not a concession: -11 Cr/year at full throttle against +61 at half. AI
+ships pick their own cruise fraction against the same measure before departure.
+See master_prompt section 48.
+
 Velocities do not add; rapidity does. Route budgets are `2*artanh(peak)` and
 in-flight burn charges `dv / (1 - v^2)`, so the same speed increment costs more
 the closer you already are to light. Exhaust kinetic energy is `gamma - 1`
@@ -828,13 +841,21 @@ work" but "does it lock the player in *together with* the others".
 - Powers now buy trading licences and commission hulls from their treasuries, so their
   fleets no longer only shrink. Growth is capped at 1.25x the world's designed ship
   population (`AGENT_TARGET_FULL`), because the cost of a simulated year scales with the
-  number of agents. Measured at full scale: 1,005 agents at seed and 125 ms per game
-  year on 8,192 systems.
+  number of agents. Measured at full scale: 1,005 agents at seed and 138 ms per game
+  year on 8,192 systems (125 ms before the route-estimate fix of section 48 added
+  a cruise-fraction search at departure).
 - Stranded ships are still handled by the tug (a flat 35% of the wallet and half the
   cargo, applied automatically). A real rescue mechanic - distress signal, guaranteed
   pickup, and a state-paid bounty of a full tank plus about 10% of the saved hull's
   value for whoever tows it in - is designed but not built. See master_prompt section
   47.12.
+- At the deliberate 100 Cr pauper start there is no profitable trade at all: zero
+  out of forty board entries in each of four measured worlds, because one leg of
+  road costs 6,300-7,500 Cr against 2,700-5,000 Cr of gross. That matches the
+  intent - the first goal of the game is capital, not a destination - but until
+  section 48 the board advertised a healthy profit on those same runs while the
+  flight quietly burned twice what it showed. The novel still opens by teaching
+  trade, and says nothing about where the first working capital comes from.
 - Faction treasuries run away: a power holds on the order of 1e22 credits by year
   2400, while 20,000 years of optimal player trade yield 1.5e8. AI money and player
   money live in different universes. This predates the sixteen-player rework and is

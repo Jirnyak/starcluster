@@ -530,16 +530,33 @@ RouteCost shipRouteCost(const Ship& ship, double deltaV, double propellantPrice,
     const double energyPerMass = fuelMix.specificEnergy / NUCLEON_REST_MEV * jetEfficiency;
     if (energyPerMass <= 1e-12) return result;
 
-    // Полезная нагрузка: корпус и груз. Топливо в неё НЕ входит — оно решается
-    // из уравнения ниже.
-    const double payload = std::max(1.0, ship.dryMass + shipCargoMass(ship) + shipInertExoticMass(ship));
+    // МЁРТВАЯ МАССА манёвра — всё, что двигатель обязан разогнать, но что НЕ
+    // улетит в сопло. Это корпус, груз, экзотика И ТОПЛИВО, УЖЕ ЗАЛИТОЕ В
+    // БУНКЕР: оно перегорает в золу почти той же массы и остаётся на борту.
+    //
+    // ⚠️ (§48) Здесь стояло `dryMass + cargo + exotic`, а топливо решалось из
+    // уравнения — то есть оценка считала борт, у которого в бункере ровно
+    // столько, сколько нужно на это плечо. В жизни бункер залит под пробку, и
+    // замер это поймал: топлива на борту 140…166 единиц массы при рабочем теле
+    // 8…32. Полный бункер — мёртвый груз, которого в расчёте не было ВООБЩЕ.
+    // Отсюда расхождение оценки с фактом в 2.44 раза и сухие баки на подлёте
+    // у бортов, залившихся «с запасом в полтора расчёта». Сам полёт при этом
+    // считал верно (сожжено/расход по фактической массе = 0.96).
+    const double fuelAboard = fuelMix.mass;
+    const double hullAndCargo = ship.dryMass + shipCargoMass(ship) + shipInertExoticMass(ship);
+    // Выбор скорости истечения — ценовой оптимум, а не требование; он остался на
+    // прежней мерке нагрузки, чтобы эта правка меняла ОДНУ вещь за раз.
+    const double payload = std::max(1.0, hullAndCargo);
     const double effectiveDeltaV = deltaV * DELTAV_SCALE;
 
     // Факел жжёт топливо как рабочее тело: скорость истечения не выбирается,
-    // её задаёт сама реакция, и расход считается одним потоком.
+    // её задаёт сама реакция, и расход считается одним потоком. Мёртвая масса
+    // у него другая: улетает как раз топливо, а рабочее тело (если в баке
+    // что-то осталось) едет балластом.
     if (torch) {
         const double ratio = std::exp(std::min(60.0, effectiveDeltaV / ceiling));
-        const double burnMass = payload * (ratio - 1.0);
+        const double deadMass = std::max(1.0, hullAndCargo + shipPropellantMix(ship).mass);
+        const double burnMass = deadMass * (ratio - 1.0);
         if (!std::isfinite(burnMass)) return result;
         result.feasible = true;
         result.exhaustVelocity = ceiling;
@@ -556,21 +573,32 @@ RouteCost shipRouteCost(const Ship& ship, double deltaV, double propellantPrice,
 
     // В сопло уходит ТОЛЬКО рабочее тело; топливо перегорает в золу почти той
     // же массы и остаётся на борту. Поэтому топливо разгоняет само себя, и
-    // уравнение самоссылочно. Пусть P — нагрузка, W — рабочее тело, F — топливо:
+    // уравнение самоссылочно. Пусть D — мёртвая масса (корпус, груз, топливо
+    // УЖЕ на борту), A — это залитое топливо, dF — топливо, которое ещё надо
+    // долить, W — рабочее тело:
     //
-    //     W = (P + F) * (e^x - 1)          Циолковский: улетает только W
-    //     F = W * ve^2 / (2E)              энергия на разгон этого W
-    //  => F = k*P / (1 - k),  k = ve^2/(2E) * (e^x - 1)
+    //     W  = (D + dF) * (e^x - 1)        Циолковский: улетает только W
+    //     A + dF = W * (gamma-1)/E         энергия на разгон этого W
+    //  => dF = (k*D - A) / (1 - k),  k = (gamma-1)/E * (e^x - 1)
+    //
+    // При A = 0 это ровно прежняя формула — прежняя была её частным случаем
+    // «бункер пуст», и именно поэтому недосчитывала полный бункер (§48).
     //
     // При k >= 1 решения нет ВООБЩЕ: топливо, нужное чтобы везти топливо,
     // съедает само себя. Это честный предел достижимости, а не переполнение —
     // такой манёвр не выполнить ни при каком запасе, нужен другой режим,
-    // другое рабочее тело или другой движок.
+    // другое рабочее тело или другой движок. Величина k от запаса не зависит,
+    // поэтому граница достижимости правкой не сдвинулась.
     const double ratio = std::exp(std::min(60.0, effectiveDeltaV / ve));
     const double k = exhaustSpecificEnergy(ve) / energyPerMass * (ratio - 1.0);
     if (!(k < 0.999)) return result;
-    const double fuelMass = k * payload / (1.0 - k);
-    const double propMass = (payload + fuelMass) * (ratio - 1.0);
+    const double deadMass = std::max(1.0, hullAndCargo + fuelAboard);
+    const double extraFuel = std::max(0.0, (k * deadMass - fuelAboard) / (1.0 - k));
+    const double propMass = (deadMass + extraFuel) * (ratio - 1.0);
+    // Сгорит топлива ровно столько, сколько энергии ушло в струю; по построению
+    // это не больше, чем `A + dF`, то есть требование выполнимо тем запасом,
+    // который оно же и называет.
+    const double fuelMass = (deadMass + extraFuel) * k;
     if (!std::isfinite(propMass) || !std::isfinite(fuelMass)) return result;
 
     result.feasible = true;
@@ -860,7 +888,16 @@ void shipApplyClass(Ship& ship, const ShipClass& sc) {
     ship.driveEfficiency = sc.driveEfficiency;
     ship.propellantVolume = sc.propellantVolume;
     ship.fuelVolume = sc.fuelVolume;
-    fillTank(ship.fuel, defaultFuelElement(ship.driveIndex), shipFuelTankVolume(ship), 1.0);
+    // (§48) БУНКЕР ЗАЛИВАЕТСЯ РАБОЧИМ ЗАПАСОМ, А НЕ ПОД ПРОБКУ.
+    //
+    // ⚠️ Топливо плотное, рабочее тело — нет: у Hauler полный бункер весит 220
+    // при сухой массе корпуса 60, вчетверо больше самого корабля. Пока оценка
+    // маршрута не видела мёртвой массы (§48), это было бесплатно; теперь оно
+    // честно оплачивается рабочим телом, и корабль, вышедший с верфи «полным»,
+    // возит собственный штраф. Замер на плече 7 ly: полный бункер требует 8.15
+    // рабочего тела, четверть бункера — 2.9, то есть дорога дешевеет втрое.
+    // Никто в здравом уме не идёт в короткий рейс с полным баком урана.
+    fillTank(ship.fuel, defaultFuelElement(ship.driveIndex), shipFuelTankVolume(ship) * FUEL_START_SHARE, 1.0);
     if (!driveUsesFuelAsPropellant(ship.driveIndex)) {
         fillTank(ship.propellant, defaultPropellantElement(), ship.propellantVolume, 1.0);
     }

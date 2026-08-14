@@ -196,6 +196,26 @@ const double REFUEL_WALLET_SHARE = 0.6;
 const double TOW_WAIT_YEARS = 6.0;      // сколько дрейфовать, прежде чем услышат
 const double TOW_CREDIT_SHARE = 0.35;   // доля кошелька за буксир
 const double TOW_CARGO_SHARE = 0.50;    // доля груза за буксир
+
+// (§48, ЗАМЕР) Сколько бортов доезжает до звезды, НЕ ИМЕЯ чем тормозить.
+// `moveShipToward` при пролёте мимо цели ставит корабль в звезду и обнуляет
+// скорость даром — то есть сухой бак на маршруте сегодня ничем не грозит. Число
+// нужно ДО того, как это чинить: если таких прибытий заметная доля, честная
+// физика превратит спасение из события в фон. Счётчики не сохраняются.
+long long strandStatArrivals();      // всего прибытий по маршруту
+long long strandStatOvershoots();    // из них — с неубираемой скоростью (любая причина)
+long long strandStatDryArrivals();   // из них — потому что кончился РАСХОДНИК
+long long strandStatFastArrivals();  // из них — с остатком свыше 0.01c
+double strandStatWorstSpeed();       // самая большая остаточная скорость у сухих, c
+double strandStatWorstAny();         // самая большая остаточная скорость вообще, c
+double strandStatBurnRatio();        // среднее «сожжено / обещано расчётом»
+double strandStatBurnRatioMax();     // худшее то же
+double strandStatRapidityRatio();    // выданная быстрота / заложенная в оценку
+double strandStatRapidityMax();      // худшее то же
+double strandStatHonestRatio();      // сожжено / расход по ФАКТИЧЕСКОЙ массе борта
+double strandStatDryReserve();       // «залито / обещано» у тех, кому не хватило
+void strandStatTrace(bool on);       // печать разбора первых быстрых прибытий
+void strandStatReset();
 // Провал, в отличие от успеха, считается ПО РАЗМЕРУ заказа: успех всегда +1,
 // а провал снимает `2 * sqrt(масса / базовая масса)`. Отсюда асимметрия, ради
 // которой всё и делалось: сорванный базовый заказ — царапина (−3), сорванный

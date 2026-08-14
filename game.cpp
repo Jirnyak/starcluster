@@ -14,6 +14,7 @@
 #include <queue>
 #include <thread>
 #include <atomic>
+#include <cstdio>   // (§48, замер) разбор быстрых прибытий на stderr
 // Глобальный ГСЧ симуляции. Раньше засевался прямо здесь из `std::random_device`,
 // то есть поле `Game::seed` ни на что не влияло, а мир менялся при каждом запуске
 // НЕВОСПРОИЗВОДИМО: soak и shot-харнесы давали разные числа от прогона к прогону
@@ -2092,6 +2093,27 @@ double consumeAndStoreAsh(Ship& ship, double deltaV) {
     return achieved;
 }
 
+// (§48, замер) См. game.h: считаем прибытия, которым нечем было тормозить.
+// Счётчики живут здесь, рядом с местом события; наружу их отдают обёртки в
+// конце файла — этот кусок лежит в анонимном namespace (внутренняя линковка).
+long long s_strandArrivals = 0;
+long long s_strandDryArrivals = 0;
+long long s_strandOvershoots = 0;
+long long s_strandFastArrivals = 0;   // прибытий с ОЩУТИМОЙ остаточной скоростью (>0.01c)
+double s_strandWorstSpeed = 0.0;
+double s_strandWorstAny = 0.0;        // худший остаток по ЛЮБОЙ причине
+double s_ratioSum = 0.0;              // сумма (сожжено / обещано расчётом) по нормальным прибытиям
+long long s_ratioCount = 0;
+double s_ratioMax = 0.0;
+double s_rapSum = 0.0, s_rapMax = 0.0;   // выданная быстрота / запланированная
+double s_honestSum = 0.0;                // сожжено / расход по фактической массе
+long long s_honestCount = 0;
+long long s_rapCount = 0;
+double s_dryLoadedOverPlanned = 0.0;  // сколько залили сверх расчёта те, кому ВСЁ РАВНО не хватило
+long long s_dryLoadedCount = 0;
+bool s_strandTrace = false;           // печатать разбор первых быстрых прибытий
+int s_strandTraceLeft = 12;
+
 bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
     const double dx = target.x - ship.x;
     const double dy = target.y - ship.y;
@@ -2105,6 +2127,7 @@ bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
         ship.y = target.y;
         ship.z = target.z;
         ship.vx = ship.vy = ship.vz = 0.0;
+        ++s_strandArrivals;
         return true;
     }
 
@@ -2118,8 +2141,15 @@ bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
     // скорости — та самая релятивистская расходимость, без отдельных костылей.
     const double rapidityCost = 1.0 / std::max(1e-6, 1.0 - speed * speed);
 
+    // (§48, замер) Торможению не хватило РАСХОДНИКА, а не времени. Нулевое
+    // ускорение — тот же голод: shipCurrentAcceleration возвращает 0, когда
+    // кончился любой из двух расходников (топливо ИЛИ рабочее тело).
+    bool starvedBraking = (accel <= 0.0 && speed > 0.0);
     if (stoppingDistance + speed * dt * 0.5 >= dist && speed > 0.0) {
-        const double brake = consumeAndStoreAsh(ship, std::min(deltaV, speed) * rapidityCost) / rapidityCost;
+        const double want = std::min(deltaV, speed);
+        const double brake = consumeAndStoreAsh(ship, want * rapidityCost) / rapidityCost;
+        if (brake < want * 0.999) starvedBraking = true;
+        ship.dbgUsedRapidity += brake * rapidityCost;   // (§48, замер)
         ship.vx -= ship.vx / speed * brake;
         ship.vy -= ship.vy / speed * brake;
         ship.vz -= ship.vz / speed * brake;
@@ -2131,6 +2161,7 @@ bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
         // только разгон и торможение. В вакууме крейсер обязан быть бесплатным.
         const double wanted = std::min(deltaV, shipCruiseSpeed(ship) - speed);
         const double thrust = consumeAndStoreAsh(ship, wanted * rapidityCost) / rapidityCost;
+        ship.dbgUsedRapidity += thrust * rapidityCost;   // (§48, замер)
         ship.vx += dirX * thrust;
         ship.vy += dirY * thrust;
         ship.vz += dirZ * thrust;
@@ -2156,6 +2187,61 @@ bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
     const double ndz = target.z - ship.z;
     const double newDist = std::sqrt(ndx * ndx + ndy * ndy + ndz * ndz);
     if (newDist > oldDist && oldDist < std::max(0.01, speed * dt * 2.0)) {
+        // (§48, замер) Остаточная скорость на момент пролёта. Если её нельзя
+        // убрать и следующим тиком тяги — корабль пролетает мимо цели, и
+        // сегодняшнее обнуление ниже это ему ПРОЩАЕТ.
+        //
+        // ⚠️ Два РАЗНЫХ повода для остатка, и путать их нельзя: «не хватило
+        // ВРЕМЕНИ» (грубый шаг интегрирования — артефакт харнеса, в игре шаг
+        // 0.01 года) и «не хватило РАСХОДНИКА» — только второе станет
+        // застреванием, когда прощение уберут.
+        const double residual = std::sqrt(ship.vx * ship.vx + ship.vy * ship.vy + ship.vz * ship.vz);
+        ++s_strandArrivals;
+        if (residual > s_strandWorstAny) s_strandWorstAny = residual;
+        // (§48, замер) Сверка расчёта с расходом. Сожжено = что залили минус
+        // остаток; обещано = оценка плеча, по которой борт и заправлялся.
+        if (ship.dbgPlannedRapidity > 1e-9) {
+            const double rr = ship.dbgUsedRapidity / ship.dbgPlannedRapidity;
+            s_rapSum += rr; ++s_rapCount;
+            if (rr > s_rapMax) s_rapMax = rr;
+        }
+        if (ship.dbgPlannedProp > 1e-9) {
+            const double left = shipPropellantMix(ship).mass;
+            const double burned = std::max(0.0, ship.dbgLoadedProp - left);
+            if (ship.dbgHonestNeed > 1e-9) {
+                s_honestSum += burned / ship.dbgHonestNeed;
+                ++s_honestCount;
+            }
+            if (starvedBraking) {
+                s_dryLoadedOverPlanned += ship.dbgLoadedProp / ship.dbgPlannedProp;
+                ++s_dryLoadedCount;
+            } else {
+                const double ratio = burned / ship.dbgPlannedProp;
+                s_ratioSum += ratio;
+                ++s_ratioCount;
+                if (ratio > s_ratioMax) s_ratioMax = ratio;
+            }
+        }
+        if (residual > 0.01) {
+            ++s_strandFastArrivals;
+            if (s_strandTrace && s_strandTraceLeft > 0) {
+                --s_strandTraceLeft;
+                const double stopNeed = accel > 0.0 ? residual * residual / (2.0 * accel) : -1.0;
+                std::fprintf(stderr,
+                    "  [быстрое прибытие] остаток %.4f c, ускорение %.5f, тормозной путь %.4f ly, "
+                    "плечо %.3f ly, расчёт обещал %.3f, залито было %.3f, осталось %.3f, голодал %d\n",
+                    residual, accel, stopNeed, ship.dbgLegDistance,
+                    ship.dbgPlannedProp, ship.dbgLoadedProp,
+                    shipPropellantMix(ship).mass, int(starvedBraking));
+            }
+        }
+        if (residual > accel * dt * 1.5) {
+            ++s_strandOvershoots;
+            if (starvedBraking) {
+                ++s_strandDryArrivals;
+                if (residual > s_strandWorstSpeed) s_strandWorstSpeed = residual;
+            }
+        }
         ship.x = target.x;
         ship.y = target.y;
         ship.z = target.z;
@@ -2484,6 +2570,42 @@ bool startJourney(Game& game, Agent& agent, int destStar) {
         return false;
     }
 
+    // (§48) КРЕЙСЕР ВЫБИРАЕТСЯ ПОД Cr ЗА ГОД ПОЛЁТА — той же меркой, которой
+    // меряется всё остальное в игре (§23).
+    //
+    // Ручка «доля потолка скорости» — размен: медленнее значит дешевле, но и
+    // реже. Считать её по одной цене (минимум расхода) неверно — так борт
+    // уполз бы на 0.2 и вёз бы груз веками. Правильный вопрос — сколько рейс
+    // приносит В ГОД, и у него есть максимум внутри диапазона: на замере
+    // (плечо 7 ly, бедный старт) −11 Cr/год на полном ходу, +61 на половине,
+    // +52 на трёх десятых.
+    //
+    // Выручка берётся как стоимость трюма ТАМ, КУДА ЛЕТИМ: пустой борт (патруль,
+    // пират, перегон) размена не имеет и остаётся на умолчании — иначе он бы
+    // крался на самом дешёвом делении, а торопиться ему как раз незачем платить.
+    // Игроку ручку не крутим: она его, кроме борта под автопилотом.
+    if ((!agent.playerControlled || agent.autoTrade) && docked) {
+        const double revenue = cargoValueAt(game, agent, destStar);
+        if (revenue > 0.0) {
+            const double keep = agent.ship.cruiseFraction;
+            const double legDistance = distanceShipToStar(agent.ship, game.cluster.stars[destStar]);
+            double bestPerYear = -1e300;
+            double bestCruise = keep;
+            for (int ci = 0; ci <= 4; ++ci) {
+                const double frac = 0.2 + 0.8 * double(ci) / 4.0;
+                agent.ship.cruiseFraction = frac;
+                shipTuneDrive(agent.ship, propellantPrice, fuelPrice);
+                const RouteCost r = legCost(agent.ship, legDistance, propellantPrice, fuelPrice);
+                if (!r.feasible) continue;
+                const double years = legDistance / std::max(1e-9, shipCruiseSpeed(agent.ship));
+                const double cost = r.propellantMass * propellantPrice + r.fuelMass * fuelPrice;
+                const double perYear = (revenue - cost) / std::max(1e-9, years);
+                if (perYear > bestPerYear) { bestPerYear = perYear; bestCruise = frac; }
+            }
+            agent.ship.cruiseFraction = bestPerYear > -1e299 ? bestCruise : keep;
+        }
+    }
+
     // Двигатель настраивается ПЕРЕД вылетом по ценам порта отправления и
     // дальше не меняется: планировщик и реальный расход считают по одной ve.
     shipTuneDrive(agent.ship, propellantPrice, fuelPrice);
@@ -2519,6 +2641,24 @@ bool startJourney(Game& game, Agent& agent, int destStar) {
     agent.destStar = destStar;
     agent.ship.targetStar = legStar;
     agent.ship.enRoute = true;
+    agent.ship.dbgPlannedProp = need.propellantMass;              // (§48, замер)
+    agent.ship.dbgLoadedProp = shipPropellantMix(agent.ship).mass; // (§48, замер)
+    agent.ship.dbgLegDistance = distance;                          // (§48, замер)
+    {   // (§48, замер) Бюджет быстроты, который заложила оценка плеча: тот же
+        // профиль, что в shipEstimateRoute — разгон до пика и торможение.
+        const double aEst = std::max(0.001, std::min(agent.ship.acceleration,
+            agent.ship.driveThrust / shipTotalMass(agent.ship)));
+        const double peak = std::min(shipCruiseSpeed(agent.ship), std::sqrt(distance * aEst));
+        const double b = std::max(-0.999999, std::min(0.999999, peak));
+        agent.ship.dbgPlannedRapidity = 2.0 * (0.5 * std::log((1.0 + b) / (1.0 - b)));
+        agent.ship.dbgUsedRapidity = 0.0;
+        // Тот же манёвр, но посчитанный ФОРМУЛОЙ САМОГО ПОЛЁТА: Циолковский от
+        // фактической массы борта (полные баки — тоже груз, который надо разгонять).
+        agent.ship.dbgHonestNeed = need.exhaustVelocity > 1e-9
+            ? shipTotalMass(agent.ship) * (1.0 - std::exp(-std::min(60.0,
+                  agent.ship.dbgPlannedRapidity * DELTAV_SCALE / need.exhaustVelocity)))
+            : 0.0;
+    }
     agent.lastAction = "departed";
     return true;
 }
@@ -3396,6 +3536,25 @@ bool localDockSellCargo(Game& game, int agentIndex, int starIndex) {
     if (agentIndex < 0 || agentIndex >= (int)game.agents.size()) return false;
     return sellCargo(game, game.agents[agentIndex], starIndex);
 }
+
+// (§48, замер) Обёртки над счётчиками «бесплатного прибытия» — по той же причине,
+// что и localDockSellCargo: сами счётчики лежат в анонимном namespace.
+long long strandStatArrivals() { return s_strandArrivals; }
+long long strandStatDryArrivals() { return s_strandDryArrivals; }
+long long strandStatOvershoots() { return s_strandOvershoots; }
+long long strandStatFastArrivals() { return s_strandFastArrivals; }
+void strandStatTrace(bool on) { s_strandTrace = on; }
+double strandStatBurnRatio() { return s_ratioCount ? s_ratioSum / double(s_ratioCount) : 0.0; }
+double strandStatBurnRatioMax() { return s_ratioMax; }
+double strandStatRapidityRatio() { return s_rapCount ? s_rapSum / double(s_rapCount) : 0.0; }
+double strandStatRapidityMax() { return s_rapMax; }
+double strandStatHonestRatio() { return s_honestCount ? s_honestSum / double(s_honestCount) : 0.0; }
+double strandStatDryReserve() { return s_dryLoadedCount ? s_dryLoadedOverPlanned / double(s_dryLoadedCount) : 0.0; }
+double strandStatWorstAny() { return s_strandWorstAny; }
+double strandStatWorstSpeed() { return s_strandWorstSpeed; }
+void strandStatReset() { s_strandArrivals = s_strandDryArrivals = s_strandOvershoots = s_strandFastArrivals = 0; s_strandWorstSpeed = s_strandWorstAny = 0.0;
+    s_ratioSum = s_ratioMax = s_dryLoadedOverPlanned = 0.0; s_ratioCount = s_dryLoadedCount = 0;
+    s_rapSum = s_rapMax = 0.0; s_rapCount = 0; s_honestSum = 0.0; s_honestCount = 0; }
 
 Game::Game() : time(0.0) {}
 
