@@ -5,7 +5,7 @@
 
 # Starcluster — 10,000-Star Sublight N-Body Gravitational Engine
 
-[![Physics Engine](https://img.shields.io/badge/Physics-N--Body%20Vector-purple?style=for-the-badge)][][![Live Site](https://img.shields.io/badge/Website-GitHub%20Pages-00f2fe?style=for-the-badge)](https://jirnyak.github.io/starcluster/)
+[![Physics Engine](https://img.shields.io/badge/Physics-N--Body%20Vector-purple?style=for-the-badge)] [![Live Site](https://img.shields.io/badge/Website-GitHub%20Pages-00f2fe?style=for-the-badge)](https://Jirnyak.github.io/starcluster/)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge)]()
 [![Audit](https://img.shields.io/badge/Audit-100%25%20Verified-purple?style=for-the-badge)]()
 
