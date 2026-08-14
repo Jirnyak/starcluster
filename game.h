@@ -665,6 +665,11 @@ struct LocalClaims {
     // не из воздуха, а из БЮДЖЕТА системы, и он конечен — см. payLocalBounty.
     double bountyPaid = 0.0;
     double bountyAt = 0.0;
+    // (§52) Сколько массы игрок уже выскреб из ДОСТУПНОГО пояса этой системы и
+    // когда считали в последний раз. Восстанавливается тем же ленивым
+    // экспоненциальным приёмом, что и бюджет наград, — см. `minedRichnessAt`.
+    double minedMass = 0.0;
+    double minedAt = 0.0;
 };
 
 // Запас экзотики на КОНКРЕТНОЙ звезде (§31.2).
@@ -863,6 +868,9 @@ public:
 
     // --- Расширения геймплея (вертикальный срез) ---
     TechState tech;                     // хромокоры игрока
+    // (§52) Чем игрок зарабатывал исследования ПОСЛЕ последнего ядра, по статам.
+    // Обнуляется выдачей ядра. Размер — TECH_STAT_COUNT; заводится в `init`.
+    std::vector<double> researchLean;
     std::vector<MarketEvent> marketEvents;
     std::vector<Anomaly> anomalies;
     std::vector<NewsItem> news;         // скользящая лента новостей
@@ -1099,6 +1107,11 @@ public:
 
     // --- Что уже взято в микромире (§32.1) ---------------------------------
     // Радиоисточник забирают ОДИН раз: он вещь, а не источник дохода.
+    // (§52) Выработанность ДОСЯГАЕМОГО пояса: множитель к куску, 0..1, и учёт
+    // добытого. Разбор — у определения в `game.cpp`.
+    double minedRichnessAt(int starIndex);
+    void addMinedMass(int starIndex, double mass);
+
     bool localRadioClaimed(int starIndex, int radioIndex) const;
     void markLocalRadioClaimed(int starIndex, int radioIndex);
     // Награда за голову платится из БЮДЖЕТА системы, а не из воздуха.
@@ -1175,6 +1188,11 @@ public:
     void updateLicence(double dt);       // начисление ставки и смена периода
     // Медиана стоимости единицы услуги по всем рынкам скопления «сейчас».
     double measureClusterServiceCost() const;
+    // (§52) Тариф владельца системы для БОРТА ИГРОКА, доступный за пределами
+    // `game.cpp`: сам `tariffFor` живёт в безымянном пространстве имён и наружу
+    // не виден, а ремонт (`combat.cpp`) обязан платить владельцу ту же пошлину,
+    // что и заправка. Ставка `externalRate` та же, что у топлива, — 0.014.
+    double playerPortTariff(int starIndex) const;
     // Она же, отнесённая к уровню при основании партии. Чистая функция
     // состояния, без RNG: воспроизводится вместе с seed.
     double measureClusterPriceLevel() const;
@@ -1188,7 +1206,9 @@ public:
     // портфеле против долга в 50 000, и игра советовала продать груз, которого
     // у него по определению нет.
     double applyLicenceBuyback(double available);
-    double licencePrice() const;         // цена следующей лицензии
+    double licencePrice() const;         // цена следующей лицензии (со скидкой за доверие)
+    // (§52) Лучший тир доверия по всем державам: им палата и снижает залог.
+    double playerBestTrustTier() const;
     double licenceSettleCost() const;    // цена досрочного погашения остатка квоты
     int playerShipCount() const;         // сколько бортов у игрока (= занятых лицензий)
     int playerFreeLicences() const;      // лицензий сверх имеющихся бортов
@@ -1305,7 +1325,10 @@ public:
 
     bool playerRepairHull();                                // combat.cpp
     void grantChromocore(int stat);                         // chromo.cpp
-    void addResearch(double amount);                        // chromo.cpp
+    // (§52) `stat` — ЧЕМ игрок это заработал (индекс из `TechStat`), −1 если
+    // занятие ни к чему конкретному не приписано. Копится в `researchLean` и
+    // решает, каким выйдет следующее ядро. Разбор — у `addResearch` в chromo.cpp.
+    void addResearch(double amount, int stat = -1);         // chromo.cpp
     bool buyModule(int agentIndex, int defIndex);           // modules.cpp
     bool equipModule(int agentIndex, int defIndex);         // modules.cpp
     bool unequipModule(int agentIndex, int moduleListIndex);// modules.cpp

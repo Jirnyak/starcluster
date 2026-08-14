@@ -135,10 +135,26 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         }
     };
 
-    // spawnWreck: ударная волна + обломки + дым + 1..3 контейнера лута в точке гибели.
-    auto spawnWreck = [&scene](double x, double y, double z,
+    // spawnWreck: ударная волна + обломки + дым + контейнеры груза в точке гибели.
+    //
+    // (§52) ГРУЗ УБИТОГО ВЫСЫПАЕТСЯ, А НЕ ИСЧЕЗАЕТ. `agentIndex` — чей это был
+    // борт; если он известен и в трюме что-то есть, контейнеры несут ЕГО груз, и
+    // только иначе остаётся прежний запасной вариант «руда пояса».
+    //
+    // ⚠️ Звать ДО `downgradeAgentToEscapePod`: тот чистит трюм, и после него
+    // высыпать уже нечего.
+    //
+    // Материя тут сходится с двух сторон разом. Раньше в этой точке мира её и
+    // рождали из ничего (контейнер с выдуманным элементом, 3..12 единиц), и
+    // уничтожали (весь трюм в ноль) — два нарушения, гасившие друг друга в
+    // отчётности и ни одного в физике. Ограбление (`robAgent`) всегда честно
+    // ПЕРЕЛИВАЛО груз победителю; теперь так же ведёт себя и гибель, только
+    // посредником служат обломки: подбирать надо самому, трюмом и досягаемостью
+    // (`LOOT_SCOOP_RANGE`), — то есть даровой добычи из этого не выходит.
+    auto spawnWreck = [&scene, &game](double x, double y, double z,
                                double vx, double vy, double vz,
-                               uint8_t cr, uint8_t cg, uint8_t cb) {
+                               uint8_t cr, uint8_t cg, uint8_t cb,
+                               int agentIndex = -1) {
         std::mt19937 lr((uint32_t)(scene.fx.size() * 2654435761u)
                         ^ (uint32_t)(uint64_t)(scene.localHours * 1000.0)
                         ^ (uint32_t)(scene.loot.size() * 40503u)
@@ -182,28 +198,54 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
             f.r = 90; f.g = 88; f.b = 92; f.a = 150;
             scene.fx.push_back(f);
         }
-        // Лут: 1..3 контейнера с элементом (руда пояса, если есть, иначе средний элемент).
-        size_t ec = elementCount();
-        int el;
-        if (!scene.rocks.empty()) {
-            el = scene.rocks[(size_t)(lr() % (uint32_t)scene.rocks.size())].element;
-        } else {
-            el = (ec > 0) ? (int)(ec / 2) : 0;
-        }
-        if (el < 0) el = 0;
-        if (ec > 0 && el >= (int)ec) el = (int)ec - 1;
-        int nLoot = 1 + (int)(u01(lr) * 3.0); // 1..3
-        if (nLoot > 3) nLoot = 3;
-        for (int k = 0; k < nLoot; ++k) {
-            if ((int)scene.loot.size() >= 200) break;
+        // Контейнер в точке гибели: общая часть для обеих веток ниже.
+        auto dropContainer = [&](int element, double amount) {
+            if ((int)scene.loot.size() >= 200 || amount <= 0.0) return;
             LocalLoot lt;
             lt.x = x + us(lr) * 4.0; lt.y = y + us(lr) * 4.0; lt.z = z + us(lr) * 4.0;
             lt.vx = vx * 0.2 + us(lr) * 6.0; lt.vy = vy * 0.2 + us(lr) * 6.0; lt.vz = vz * 0.2 + us(lr) * 6.0;
-            lt.element = el;
-            lt.amount = 3.0 + u01(lr) * 9.0; // 3..12
+            lt.element = element;
+            lt.amount = amount;
             lt.life = LocalCfg::LOOT_LIFE_HOURS;
             lt.spin = u01(lr) * 6.28318;
             scene.loot.push_back(lt);
+        };
+
+        size_t ec = elementCount();
+        bool spilled = false;
+        if (agentIndex >= 0 && agentIndex < (int)game.agents.size() && ec > 0) {
+            const std::vector<Resource>& hold = game.agents[(size_t)agentIndex].ship.cargo;
+            for (size_t h = 0; h < hold.size(); ++h) {
+                if (hold[h].amount <= 0.0) continue;
+                // Трюм хранит СИМВОЛ элемента, а контейнер — индекс. Обратного
+                // перевода в игре нет ни одного (везде идут индекс -> символ),
+                // поэтому ищем перебором: элементов пара десятков, а гибель
+                // борта — событие редкое, и делать ради неё таблицу незачем.
+                int el = -1;
+                for (size_t e = 0; e < ec; ++e) {
+                    if (hold[h].element == elementDefinitions()[e].symbol) { el = (int)e; break; }
+                }
+                if (el < 0) continue;
+                dropContainer(el, hold[h].amount);
+                spilled = true;
+            }
+        }
+
+        // Запасной вариант: борт шёл порожняком (или это вообще не борт) —
+        // тогда прежние 1..3 контейнера руды. Это уже не «груз ниоткуда», а
+        // обломки самого корпуса: он из металла и есть.
+        if (!spilled) {
+            int el;
+            if (!scene.rocks.empty()) {
+                el = scene.rocks[(size_t)(lr() % (uint32_t)scene.rocks.size())].element;
+            } else {
+                el = (ec > 0) ? (int)(ec / 2) : 0;
+            }
+            if (el < 0) el = 0;
+            if (ec > 0 && el >= (int)ec) el = (int)ec - 1;
+            int nLoot = 1 + (int)(u01(lr) * 3.0); // 1..3
+            if (nLoot > 3) nLoot = 3;
+            for (int k = 0; k < nLoot; ++k) dropContainer(el, 3.0 + u01(lr) * 9.0);
         }
     };
 
@@ -961,7 +1003,8 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                 }
                 if (before > 0.0 && o.hullHP <= 0.0) {
                     const bool cWasWantedBefore = c.wanted;   // (§5.13.38) фикс. ДО §5.13.26G ниже — тот ставит c.wanted=true
-                    spawnWreck(o.x, o.y, o.z, o.vx, o.vy, o.vz, o.r, o.g, o.b);
+                    // ⚠️ Порядок важен: высыпаем трюм ДО даунгрейда ниже — он его чистит.
+                    spawnWreck(o.x, o.y, o.z, o.vx, o.vy, o.vz, o.r, o.g, o.b, o.agentIndex);
                     // (§5.13.26) СВИДЕТЕЛЬСТВО ПИРАТСТВА: смерть NPC-vs-NPC больше не «инертна» для макро.
                     //   (A) Жертва-зеркало гибнет и в постоянном мире — корабль её макро-агента деградирует в
                     //       спас-капсулу (та же семантика и помощник, что в player-kill §5.13.14: кредиты не
@@ -1127,12 +1170,13 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                             // печатным станком; теперь выбитая система платит ноль, и лететь надо
                             // в другую.
                             double bounty = game.payLocalBounty(scene.starIndex, 150.0 + c.maxHullHP * 6.0);
-                            game.addResearch(3.0);
+                            game.addResearch(3.0, TECH_TACTICS);
                             scene.toast = bounty > 0.0
                                 ? ("SHIP DOWN +" + std::to_string((int)bounty) + " CR")
                                 : std::string("SHIP DOWN - NO BOUNTY LEFT HERE");
                             scene.toastTimer = 2.5;
-                            spawnWreck(c.x, c.y, c.z, c.vx, c.vy, c.vz, c.r, c.g, c.b);
+                            // ⚠️ До даунгрейда ниже: он чистит трюм, из которого мы и сыплем.
+                            spawnWreck(c.x, c.y, c.z, c.vx, c.vy, c.vz, c.r, c.g, c.b, c.agentIndex);
                             scene.shake = std::min(40.0, std::max(scene.shake, 14.0));
                             // (§5.13.11) Спасение конвоя: сбитый борт — пират, атаковавший НЕ-пиратскую
                             //   жертву в этом кадре (threatConvoy выставлен проходом ИИ). Бонус ПОВЕРХ
@@ -1140,7 +1184,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                             //   положительный rep-бамп фракции жертвы. Строго ADDITIVE — пиратов НЕ трогали.
                             if (c.kind == CK_PIRATE && c.threatConvoy) {
                                 double convoyBonus = game.payLocalBounty(scene.starIndex, 200.0);
-                                game.addResearch(2.0);
+                                game.addResearch(2.0, TECH_TACTICS);
                                 scene.toast = "CONVOY SAVED +" + std::to_string((int)(bounty + convoyBonus)) + " CR";
                                 scene.toastTimer = 3.0;
                                 scene.shake = std::min(40.0, std::max(scene.shake, 18.0));
@@ -1157,7 +1201,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                             //   число убийств не меняется ⇒ craftDestroyed неизменно.
                             if (c.kind == CK_PIRATE && c.wanted) {
                                 const double head = game.payLocalBounty(scene.starIndex, c.wantedBounty);
-                                game.addResearch(1.5);
+                                game.addResearch(1.5, TECH_TACTICS);
                                 if (head > 0.0) {
                                     scene.toast = "BOUNTY CLAIMED +" + std::to_string((int)head) + " CR";
                                     scene.toastTimer = 3.0;
@@ -1446,7 +1490,8 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                 double before = c.hullHP;
                 applyDamage(c.shield, c.shieldRegenTimer, c.hullHP, dmgRate);
                 if (before > 0.0 && c.hullHP <= 0.0) {
-                    spawnWreck(c.x, c.y, c.z, c.vx, c.vy, c.vz, c.r, c.g, c.b);
+                    // Сгорел в звезде — груз высыпается там же (и там же и сгорит).
+                    spawnWreck(c.x, c.y, c.z, c.vx, c.vy, c.vz, c.r, c.g, c.b, c.agentIndex);
                 }
             }
         }
@@ -1671,7 +1716,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                 if (!found && amt > 0.0) ps.cargo.emplace_back(s, amt);
                 rk.ore -= massGain;
                 scene.miningAccum += massGain;
-                game.addResearch(0.2 * dtHours);
+                game.addResearch(0.2 * dtHours, TECH_KINEMATICS);
                 // (I) Пыль добычи: изредка тусклая дымка от астероида к игроку.
                 if ((int)scene.fx.size() < LocalCfg::FX_MAX) {
                     std::mt19937 lr((uint32_t)(scene.fx.size() * 2654435761u)
@@ -1772,7 +1817,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
                             if (ps.cargo[k].element == s) { ps.cargo[k].amount += lt.amount; found = true; break; }
                         }
                         if (!found) ps.cargo.emplace_back(s, lt.amount);
-                        game.addResearch(0.1);
+                        game.addResearch(0.1, TECH_MATERIALS);
                         scene.toast = "+" + std::to_string((int)lt.amount) + " " + s;
                         scene.toastTimer = 2.0;
                         remove = true;
@@ -1800,7 +1845,7 @@ int updateLocalScene(Game& game, LocalScene& scene, const LocalInput& in, double
         // Забор: проявленный источник в зоне активации.
         if (rs.revealed && dist <= LocalCfg::RADIO_CLAIM_RANGE) {
             if (playerValid) game.agents[game.playerAgent].money += rs.reward;
-            game.addResearch(rs.research);
+            game.addResearch(rs.research, TECH_SENSORS);
             // Клад-элемент в трюм (та же логика уважения cargoCapacity, что у лута/добычи).
             bool cargoFull = false;
             std::string lootStr;

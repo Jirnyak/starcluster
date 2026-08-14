@@ -43,20 +43,59 @@ bool Game::playerRepairHull() {
         return false;
     }
 
+    // (§52) РЕМОНТ СТОИТ ПО-МЕСТНОМУ, А НЕ ПО КОНСТАНТЕ.
+    //
+    // До этого 3.0 Cr за HP брали одинаково в нищем пограничье и в столице —
+    // единственная цена в игре, не знавшая ни рынка, ни владельца, ни
+    // расстояния. Верфь чинит корпус трудом и материалами, а обе эти вещи на
+    // рынке уже есть ценой: `serviceCostAvg` — средняя цена ЕДИНИЦЫ УСЛУГИ в
+    // этом порту. Делим её на медиану по скоплению (`measureClusterServiceCost`
+    // — тот же измеритель, на котором стоит ставка тарифа, §21): в порту
+    // СРЕДНЕЙ дороговизны множитель равен 1.0, то есть прежние 3.0 Cr/HP
+    // остаются якорем, и баланс никуда не съезжает — двигается только разброс.
+    //
+    // ⚠️ Пределы ЗАМЕРЕНЫ, а не выбраны: `repair_probe`, 8192 звезды, 150 лет,
+    // сид 20260814 — отношение к медиане идёт от 0.05 (1-й перцентиль 0.27)
+    // до 2.98 (99-й 2.46). Хвосты и обрезаем по 1% и 99%: без нижнего порога
+    // выродившийся порт чинил бы почти даром, без верхнего — ремонт в дорогом
+    // порту становился бы неподъёмным, а неподъёмный ремонт запирает игру
+    // насмерть (§42).
+    double locality = 1.0;
+    if (p.currentStar >= 0 && p.currentStar < int(markets.size())) {
+        const double local = markets[size_t(p.currentStar)].serviceCostAvg;
+        const double median = measureClusterServiceCost();
+        if (local > 0.0 && median > 0.0) {
+            locality = std::max(0.27, std::min(2.46, local / median));
+        }
+    }
     // Харизма удешевляет ремонт (>=1). Латаем столько HP, сколько по карману.
-    double costPerHP = 3.0 / std::max(1.0, tech.charisma);
+    const double costPerHP = 3.0 * locality / std::max(1.0, tech.charisma);
+    // Вторая сторона проводки (§47): владелец системы получает свою пошлину.
+    // Раньше за ремонт ему не капало ничего — порт чинил чужие корпуса даром
+    // для казны. Харизма сбивает и её, ровно как при заправке.
+    const double tariff = playerPortTariff(p.currentStar) / std::max(1.0, tech.charisma);
+    const double perHP = costPerHP * (1.0 + tariff);
+
     double missing = p.ship.maxHullHP - p.ship.hullHP;
-    if (p.money <= 0.0) {
+    if (p.money <= 0.0 || perHP <= 0.0) {
         lastEvent = "not enough credits to repair";
         pushNews("Not enough credits to repair", 0);
         return false;
     }
-    double affordableHP = p.money / costPerHP;
+    double affordableHP = p.money / perHP;
     double repaired = std::min(missing, affordableHP);
+    const double base = repaired * costPerHP;
+    const double fee = repaired * costPerHP * tariff;
     p.ship.hullHP += repaired;
-    p.money -= repaired * costPerHP;
+    p.money -= base + fee;
+    const int owner = p.currentStar >= 0 && p.currentStar < int(cluster.stars.size())
+        ? cluster.stars[size_t(p.currentStar)].ownerFaction : -1;
+    if (owner >= 0 && owner < int(factions.size()) && fee > 0.0) {
+        factions[size_t(owner)].treasury += fee;
+        if (fee > 0.01) queueSettlementSignal(owner, p.currentStar, fee);
+    }
 
-    pushNews("Hull repaired +" + intStr(repaired) + " (-" + intStr(repaired * costPerHP) + " cr)", 4);
+    pushNews("Hull repaired +" + intStr(repaired) + " (-" + intStr(base + fee) + " cr)", 4);
     p.lastAction = "repaired hull";
     return true;
 }

@@ -124,7 +124,7 @@ void Game::updateAnomalies(double dt) {
                     (a.nearStar >= 0 && a.nearStar < scount) ? cluster.stars[a.nearStar].name
                                                              : std::string("deep space");
                 pushNews("Anomaly detected: " + a.name + " near " + starName, 3);
-                addResearch(0.5);
+                addResearch(0.5, TECH_LUCK);
             }
         }
     }
@@ -171,7 +171,7 @@ bool Game::playerScanAnomaly() {
             p.money += cr;
             if (a.lootElement >= 0 && a.lootElement < ecount && a.lootAmount > 0.0)
                 addLootOrCredits(p.ship, p.money, a.lootElement, a.lootAmount);
-            addResearch(4);
+            addResearch(4, TECH_LUCK);
             pushNews("Salvaged derelict: +" + std::to_string(int(cr)) + " cr", 3);
             break;
         }
@@ -179,18 +179,18 @@ bool Game::playerScanAnomaly() {
             if (a.credits > 0.0) p.money += a.credits * luck; // тайник = кредиты + редкие элементы
             if (a.lootElement >= 0 && a.lootElement < ecount && a.lootAmount > 0.0)
                 addLootOrCredits(p.ship, p.money, a.lootElement, a.lootAmount);
-            addResearch(20 * luck);
+            addResearch(20 * luck, TECH_LUCK);
             pushNews("Cache recovered", 3);
             break;
         }
         case AnomalyKind::ChromocoreVault: {
             grantChromocore(a.chromocoreStat >= 0 ? a.chromocoreStat : 0);
-            addResearch(30);
+            addResearch(30, TECH_LUCK);
             pushNews("Chromocore vault attuned!", 3);
             break;
         }
         case AnomalyKind::NebulaEcho: {
-            addResearch(55 * luck);
+            addResearch(55 * luck, TECH_LUCK);
             pushNews("Nebula echo decoded — research surge", 3);
             break;
         }
@@ -198,7 +198,7 @@ bool Game::playerScanAnomaly() {
             const double dmg = a.hazard * 30.0 / luck;
             p.ship.hullHP = std::max(1.0, p.ship.hullHP - dmg);
             p.money += (400 + randomer(rng, 800)) * luck;
-            addResearch(18);
+            addResearch(18, TECH_LUCK);
             pushNews("Rode the ion storm: hull -" + std::to_string(int(dmg)) + ", data +", 2);
             break;
         }

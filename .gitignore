@@ -17,6 +17,13 @@
 /deal_probe_base
 /top_probe
 /test_rng
+# (§52) Пробники этого захода: сейв, ремонт, путь новичка, цена такта.
+/save_probe
+/save_diff
+/repair_probe
+/journey_probe
+/tick_probe
+/advisor_probe
 shot_*.bmp
 shot_*.png
 uishot_*.bmp

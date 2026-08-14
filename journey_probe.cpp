@@ -106,7 +106,22 @@ int main(int argc, char** argv) {
             }
             // Лицензия и второй корпус: как только кошелёк позволяет. Лицензия
             // расширяет и квоту, и разрешённое число бортов (§21, §24).
-            if (g.agents[size_t(pa)].money > g.licencePrice() * 3.0 && g.playerBuyLicence()) ++licences;
+            //
+            // ⚠️ (§52) ПОРОГ ВЫВЕДЕН, А НЕ ВЗЯТ ИЗ ВОЗДУХА. Раньше здесь стоял
+            // «тройной запас», и он же и был ответом пробника: на выходе
+            // кошелёк 1.438e6 против цены лицензии 1.02e6 — то есть игрок купить
+            // МОГ, а пробник не давал и рапортовал «второй корпус НЕ ВЗЯТ».
+            // Правило теперь из самой игры: лицензия без корпуса бесполезна,
+            // значит копим на пару «лицензия + самый дешёвый корпус».
+            double cheapestHull = 0.0;
+            {
+                const std::vector<ShipClass>& classes = shipClasses();
+                for (size_t c = 0; c < classes.size(); ++c) {
+                    if (classes[c].price <= 0.0) continue;
+                    if (cheapestHull <= 0.0 || classes[c].price < cheapestHull) cheapestHull = classes[c].price;
+                }
+            }
+            if (g.agents[size_t(pa)].money >= g.licencePrice() + cheapestHull && g.playerBuyLicence()) ++licences;
             if (g.playerShipCount() < g.licence().count) {
                 const std::vector<ShipClass>& classes = shipClasses();
                 for (size_t c = classes.size(); c-- > 0; ) {
@@ -133,6 +148,12 @@ int main(int argc, char** argv) {
         if (g.agents[size_t(pa)].ship.enRoute) break;
 
         g.agentSellAllCargo(pa);
+        // ⚠️ (§52) СДАЧА ЗАКАЗА, КОТОРОЙ ЗДЕСЬ НЕ БЫЛО. Пробник брал заказы (28
+        // за прогон) и не сдавал НИ ОДНОГО — репутация выходила ровно 0.0, а по
+        // ней в игре считается тир, масса и ставка заказа. Из-за этого пробник
+        // объявлял мёртвой всю ветку репутации, хотя молчал его собственный
+        // круг: взял — довёз — СДАЛ. Сдаём всё, что довезли до этой звезды.
+        g.agentCompleteContracts(pa);
 
         const double after = g.playerNetWorth().total;
         const double wallet = g.agents[size_t(pa)].money;

@@ -78,7 +78,10 @@ void Game::updateMining(double dt) {
         if (idx >= ecount) idx = ecount - 1;
 
         // --- Объём куска (держим малым, ~1..3 массы) ---
-        double amt = (1.2 + 0.4 * star.miningRichness) *
+        // (§52) `miningRichness` — свойство НЕДР и не меняется; кончается
+        // досягаемое: обработанные глыбы коридора входа. Их выработанность и
+        // даёт множитель (разбор — у `minedRichnessAt` в game.cpp).
+        double amt = (1.2 + 0.4 * star.miningRichness) * minedRichnessAt(miningStar) *
                      (0.85 + 0.30 * (randomer(rng, 100) / 100.0));
         amt *= (1.0 + p.ship.utility * 0.01);
         amt *= (1.0 + (tech.luck - 1.0) * 0.10); // маленький бонус удачи (no-op при luck==1)
@@ -105,7 +108,10 @@ void Game::updateMining(double dt) {
         if (!found) p.ship.cargo.emplace_back(sym, amt);
 
         miningYieldAccum += amt;
-        addResearch(0.5); // подпитка исследований
+        // Выскребленное записываем В МАССЕ: пояс кончается тоннами, а не
+        // единицами элемента, и трюм (мера истощения) тоже меряется массой.
+        addMinedMass(miningStar, addMass);
+        addResearch(0.5, TECH_MATERIALS); // подпитка исследований
 
         // --- Редкий бонус у пульсара/нейтронной звезды/чёрной дыры ---
         //
@@ -120,7 +126,7 @@ void Game::updateMining(double dt) {
             shipExoticRoom(p.ship) > 0.05) {
             const double got = std::min(0.35, shipExoticRoom(p.ship));
             p.ship.exotic[EX_NEUTRONIUM] += got;
-            addResearch(6.0);
+            addResearch(6.0, TECH_MATERIALS);
             pushNews("Neutronium siphoned from the dead star's crust", 3);
             p.lastAction = "mining";
             return;
@@ -148,7 +154,7 @@ void Game::updateMining(double dt) {
                     }
                 }
                 if (!bfound) p.ship.cargo.emplace_back(bsym, bonusAmt);
-                addResearch(6.0);
+                addResearch(6.0, TECH_MATERIALS);
                 pushNews("Rare matter siphoned from the dead star", 3);
             }
         }

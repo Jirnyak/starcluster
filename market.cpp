@@ -211,6 +211,19 @@ void Market::seed(const std::vector<Resource>& localResources, const std::vector
     for (size_t i = 0; i < n; ++i) demand[i].amount = demandRate[i] * 8.0;
 }
 
+void Market::restoreScale(double scale) {
+    if (scale <= 0.0 || needs.size() != size_t(EF_COUNT)) return;
+    // Ровно те же три строки, что и в конце `rescale`, — одна формула на засев,
+    // на рост и на загрузку. Добычу здесь не трогаем: `productionRate` лежит в
+    // сейве своей строкой, и домножать её на отношение значило бы применить
+    // прошлый рост второй раз.
+    const double* profile = econRoleNeedProfile(role);
+    for (int f = 0; f < EF_COUNT; ++f) needs[f] = scale * profile[f];
+    const double saturationScale = POPULATION_TYPICAL * 0.005;
+    tradeAccess = clamp(0.10 + 0.90 * std::min(1.0, scale / saturationScale), 0.10, 1.0);
+    seededScale = scale;
+}
+
 bool Market::rescale(double population, double industry) {
     const size_t n = prices.size();
     if (n == 0 || needs.size() != size_t(EF_COUNT)) return false;

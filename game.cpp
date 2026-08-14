@@ -3651,9 +3651,9 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    // (§50) Версия 20: блок `DISTRESS` — маяки бедствия, состояние спасателей и
-    // годы дрейфа. Поднята ОДИН РАЗ на всё, что добавил раздел.
-    out << "STARCLUSTER_SAVE 20 " << cluster.stars.size() << '\n';
+    // (§52) Версия 21: блок `MARKETCLOCK` — фаза обхода рынков и таймеры
+    // событий. До неё сейв доносил ЦЕНЫ, но не ЧАСЫ, которые эти цены двигают.
+    out << "STARCLUSTER_SAVE 21 " << cluster.stars.size() << '\n';
     out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
@@ -3945,8 +3945,10 @@ bool Game::saveToFile(const std::string& path) {
     // они и заведены.
     out << "LOCAL_CLAIMS " << localClaims.size() << ' ' << playerShieldFrac << '\n';
     for (const LocalClaims& c : localClaims) {
+        // Довесок версии 21 — выработанность пояса — дописан В КОНЕЦ строки:
+        // разбор версий 16..20 читает ровно четыре числа и на лишние не смотрит.
         out << "LC " << c.starIndex << ' ' << c.radioMask << ' ' << c.bountyPaid << ' '
-            << c.bountyAt << '\n';
+            << c.bountyAt << ' ' << c.minedMass << ' ' << c.minedAt << '\n';
     }
 
     // Хайтек-этаж (§31). Ступень ячейки и слои брони обязаны быть здесь: они
@@ -4049,6 +4051,49 @@ bool Game::saveToFile(const std::string& path) {
             << agent.rescueResumeStar << ' ' << agent.driftYears << '\n';
     }
 
+    // (§52) ЧАСЫ РЫНКОВ. Цены сохранялись с самого начала, а часы, которые их
+    // двигают, — нет, и загрузка ставила всем звёздам `time - INTERVAL`, то
+    // есть «каждой пора обновиться на целый интервал». Рынки обходятся по
+    // кругу курсором с дробным бюджетом (`updateMarkets`), поэтому в живом мире
+    // у каждой звезды свой возраст обновления; после загрузки все получали
+    // ОДИН И ТОТ ЖЕ, максимальный. Момент загрузки от этого не менялся — цены
+    // ведь сохранены, — а будущее менялось: замер на 600 звёздах, 20 лет до
+    // сейва и 10 после, дал казну 1.10327e9 против 1.12378e9 (1.9%).
+    // ⚠️ Отсюда и правило: круг «сохранил -> загрузил -> сравнил» такое НЕ
+    // ловит, ловит только «покрутил ОБЕ копии -> сравнил» (§51.5).
+    //
+    // Таймеры событий и аномалий в той же строке: они тоже фаза, а не
+    // состояние, и обнулением сдвигали, в каком году случится следующее.
+    out << "MARKETCLOCK " << marketUpdatedAt.size() << ' ' << marketUpdateCursor << ' '
+        << marketUpdateBudget << ' ' << marketEventTimer << ' ' << anomalyTimer << '\n';
+    for (size_t i = 0; i < marketUpdatedAt.size(); ++i) {
+        out << marketUpdatedAt[i] << (((i + 1) % 16 == 0) ? '\n' : ' ');
+    }
+    if (!marketUpdatedAt.empty() && marketUpdatedAt.size() % 16 != 0) out << '\n';
+
+    // (§52) ЗАДЫХАЕМОСТЬ СИСТЕМЫ. `strain` и `serviceCostAvg` при загрузке
+    // пересеивались в ноль вместе с моделью нужды (см. ⚠️ в разборе `MARKET`):
+    // их считали чистой функцией звезды. Это верно для `needs`, `pref`,
+    // `tradeAccess` и `seededScale` — те и правда выводятся из населения с
+    // индустрией, — но не для этих двух: они НАКАПЛИВАЮТСЯ обновлением рынка.
+    // А обновление ходит по кругу курсором, то есть до своей очереди рынок
+    // стоит с нулём, тогда как колонии читают `strain` КАЖДЫЙ такт
+    // (`supplySatisfaction`, game.cpp). Отсюда и расходилось население звёзд
+    // на первом же году после загрузки.
+    // (§52) Чем игрок зарабатывал исследования после последнего ядра: от этого
+    // зависит, каким ядро выйдет. Без сейва накопленное занятие терялось, и
+    // сохранившийся перед самым ядром игрок получал его случайным.
+    out << "LEAN " << researchLean.size();
+    for (size_t k = 0; k < researchLean.size(); ++k) out << ' ' << researchLean[k];
+    out << '\n';
+
+    out << "MARKETSTATE " << markets.size() << '\n';
+    for (size_t i = 0; i < markets.size(); ++i) {
+        out << markets[i].strain << ' ' << markets[i].serviceCostAvg << ' '
+            << markets[i].seededScale << (((i + 1) % 8 == 0) ? '\n' : ' ');
+    }
+    if (!markets.empty() && markets.size() % 8 != 0) out << '\n';
+
     if (!out) {
         lastEvent = "save failed";
         return false;
@@ -4080,7 +4125,7 @@ bool Game::loadFromFile(const std::string& path) {
     // писались и читались в игре, но в сейв не попадали. Блок отдельный, значит
     // старые сейвы читаются прежним путём.
     if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" ||
-        version < 14 || version > 20) {
+        version < 14 || version > 21) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -4809,6 +4854,12 @@ bool Game::loadFromFile(const std::string& path) {
                 lastEvent = "load failed: local claim entry";
                 return false;
             }
+            // Выработанность пояса: сейвы 16..20 её не знают, и там пояс
+            // остаётся нетронутым — прежнее поведение.
+            if (version >= 21 && !(in >> c.minedMass >> c.minedAt)) {
+                lastEvent = "load failed: local claim mining";
+                return false;
+            }
             loaded.localClaims.push_back(c);
         }
 
@@ -4994,6 +5045,57 @@ bool Game::loadFromFile(const std::string& path) {
         }
     }
 
+    // (§52) Часы рынков. Сейвы 14..20 их не содержат — там ниже остаётся старый
+    // сброс фазы, то есть ровно то поведение, с которым эти сейвы писались.
+    bool clockLoaded = false;
+    if (version >= 21) {
+        size_t clockCount = 0;
+        if (!expectTag(in, "MARKETCLOCK") ||
+            !(in >> clockCount >> loaded.marketUpdateCursor >> loaded.marketUpdateBudget >>
+              loaded.marketEventTimer >> loaded.anomalyTimer)) {
+            lastEvent = "load failed: market clock";
+            return false;
+        }
+        loaded.marketUpdatedAt.assign(clockCount, 0.0);
+        for (size_t i = 0; i < clockCount; ++i) {
+            if (!(in >> loaded.marketUpdatedAt[i])) {
+                lastEvent = "load failed: market clock row";
+                return false;
+            }
+        }
+        clockLoaded = true;
+
+        size_t leanCount = 0;
+        if (!expectTag(in, "LEAN") || !(in >> leanCount)) {
+            lastEvent = "load failed: research lean";
+            return false;
+        }
+        loaded.researchLean.assign(size_t(TECH_STAT_COUNT), 0.0);
+        for (size_t k = 0; k < leanCount; ++k) {
+            double v = 0.0;
+            if (!(in >> v)) { lastEvent = "load failed: research lean row"; return false; }
+            if (k < loaded.researchLean.size()) loaded.researchLean[k] = v;
+        }
+
+        size_t stateCount = 0;
+        if (!expectTag(in, "MARKETSTATE") || !(in >> stateCount)) {
+            lastEvent = "load failed: market state";
+            return false;
+        }
+        for (size_t i = 0; i < stateCount; ++i) {
+            double strain = 0.0, serviceCostAvg = 0.0, seededScale = 0.0;
+            if (!(in >> strain >> serviceCostAvg >> seededScale)) {
+                lastEvent = "load failed: market state row";
+                return false;
+            }
+            if (i < loaded.markets.size()) {
+                loaded.markets[i].strain = strain;
+                loaded.markets[i].serviceCostAvg = serviceCostAvg;
+                loaded.markets[i].restoreScale(seededScale);
+            }
+        }
+    }
+
     if (!in) {
         lastEvent = "load failed";
         return false;
@@ -5004,9 +5106,13 @@ bool Game::loadFromFile(const std::string& path) {
     if (signalMemory.size() != cluster.stars.size()) {
         signalMemory.assign(cluster.stars.size(), std::vector<SignalMemoryRecord>());
     }
-    marketUpdatedAt.assign(markets.size(), time - MARKET_UPDATE_INTERVAL_YEARS);
-    marketUpdateCursor = 0;
-    marketUpdateBudget = 0.0;
+    // Сейв 21 приносит фазу обхода рынков с собой; старым сейвам её взять
+    // неоткуда, и им остаётся прежний сброс — «всем пора обновиться».
+    if (!clockLoaded || marketUpdatedAt.size() != markets.size()) {
+        marketUpdatedAt.assign(markets.size(), time - MARKET_UPDATE_INTERVAL_YEARS);
+        marketUpdateCursor = 0;
+        marketUpdateBudget = 0.0;
+    }
     // Денежный уровень — часть партии, а не процесса: восстанавливаем его в
     // ценовом слое сразу, не дожидаясь первого такта рынков.
     marketSetClusterLevel(clusterPriceLevel);
@@ -5225,6 +5331,9 @@ void Game::init(size_t num_stars) {
     // бы в следующем, и харнес мерил бы чужое спасение.
     distress.clear();
     distressTimer = 0.0;
+    // (§52) Чем зарабатывались исследования — тоже состояние мира: без сброса
+    // занятия прошлой партии решали бы, каким выйдет ядро в следующей.
+    researchLean.assign(size_t(TECH_STAT_COUNT), 0.0);
     signalMemory.clear();
     routeNextHop.clear();
     marketUpdatedAt.clear();
@@ -5700,7 +5809,7 @@ void Game::update(double dt) {
             // торговец получал первое ядро примерно за тридцать рейсов, то есть
             // за тысячу лет. Прокачка от торговли должна быть медленной, но не
             // невидимой — теперь первое ядро выходит рейсов за двенадцать.
-            addResearch(4.0 * std::log10(1.0 + tradeInsightPending / 1000.0));
+            addResearch(4.0 * std::log10(1.0 + tradeInsightPending / 1000.0), TECH_CHARISMA);
             tradeInsightPending = 0.0;
         }
         tradeInsightTimer = 0.0;
@@ -9664,8 +9773,47 @@ TradeRun Game::playerBestRun(int originStar, int nearestSystems, bool knownOnly)
     return best;
 }
 
+// (§52) Пошлина владельца порта для борта игрока. Обёртка нужна затем, что сам
+// `tariffFor` объявлен в безымянном пространстве имён этого файла, а платить
+// владельцу обязан и ремонт, живущий в `combat.cpp`. Ставка та же, что у
+// заправки (0.014): порт берёт с услуги столько же, сколько с товара.
+double Game::playerPortTariff(int starIndex) const {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return 0.0;
+    return tariffFor(*this, starIndex, agents[size_t(playerAgent)].ship.ownerFaction, 0.014);
+}
+
+// (§52) РЕПУТАЦИЯ РАСТИТ ФЛОТ — ЧЕРЕЗ ЗАЛОГ, А НЕ ЧЕРЕЗ РАЗРЕШЕНИЕ.
+//
+// Развилка стояла так: флот — это «сколько купишь» или «скольким доверяют»?
+// Было первое, и репутация не влияла на него никак: `playerBuyLicence` смотрел
+// в кошелёк и только. Второе крыло — «тир поднимает разрешённое число бортов» —
+// отвергнуто: тогда лицензия перестала бы быть покупкой, а квота (которая
+// растёт с каждой лицензией, `LICENCE_QUOTA_PER_EXTRA`) осталась бы висеть на
+// шее у того, кто её не выбирал.
+//
+// Взято то, что честнее по смыслу самой бумаги: лицензия — это ЗАЛОГ, который
+// палата берёт за право возить с оборотом. Капитан с доказанной историей сдач —
+// меньший риск, и залог с него меньше. Деньги остаются входным билетом, но
+// репутация их удешевляет.
+//
+// Ни одного нового числа: берётся ГОТОВЫЙ `factionJobTier` (тот же корень из
+// доли пути, §24) той державы, что доверяет игроку больше прочих — она за него
+// и ручается. Делитель `1 + тир` структурный: без репутации цена прежняя, на
+// вершине лестницы — половина.
+//
+// Замер (`journey_probe`, сид 1234, 1200 звёзд, 60 рейсов): второй корпус
+// брался на 44-м рейсе к 1519 году; после правки — см. §52 канона.
+double Game::playerBestTrustTier() const {
+    double best = 0.0;
+    for (size_t f = 0; f < factionReputation.size(); ++f) {
+        best = std::max(best, factionJobTier(int(f)));
+    }
+    return best;
+}
+
 double Game::licencePrice() const {
-    return licence().quotaBase * LICENCE_PRICE_K * double(std::max(1, licence().count));
+    const double bond = licence().quotaBase * LICENCE_PRICE_K * double(std::max(1, licence().count));
+    return bond / (1.0 + playerBestTrustTier());
 }
 
 // (§47) Цена следующей лицензии для ЛЮБОЙ из шестнадцати — та же формула, что и
@@ -10498,6 +10646,66 @@ double Game::payLocalBounty(int starIndex, double amount) {
     return paid;
 }
 
+// (§52) ПОЯС ВЫРАБАТЫВАЕТСЯ. Множитель к куску руды, 0..1.
+//
+// Развилка стояла так: `star.miningRichness` не уменьшался нигде, и пояс был
+// полон при каждом входе. Ограничителем служила только цена в КОНКРЕТНОМ порту
+// — переехал в соседний, и петля обнулилась, тогда как вся остальная экономика
+// в игре конечна.
+//
+// Что именно кончается — важно. Недра системы лоне капитану не по зубам: рядом
+// работает промышленность, ворочающая тысячи масс в год, и уменьшать от ручной
+// добычи `miningRichness` (свойство НЕДР) было бы враньём физике. Кончается
+// другое — ДОСЯГАЕМОЕ: обработанные глыбы в коридоре входа, те самые, до
+// которых долетает один корабль. Их естественная мера — его собственный трюм:
+// «шлюпочный» пояс держит примерно корабельную загрузку рабочей руды, а новые
+// камни надрейфовывают десятилетиями.
+//
+// Отсюда обе величины БЕЗ единого нового числа:
+//   • масштаб — `cargoCapacity` корабля игрока: выскреб полный трюм — отдача
+//     вдвое ниже, три трюма — вчетверо (закон 1/(1+x), без ступенек);
+//   • восстановление — `BOUNTY_RECOVERY_YEARS` (40 лет), тот же медленный
+//     клапан системы, что и у бюджета наград. Второй такой константы не
+//     заводим: разделять «скорость надрейфовывания камней» и «скорость
+//     пополнения казны охраны» нечем — ни замера, ни физики под это нет.
+//
+// ⚠️ ЦЕНА ОТМЕНЫ: одна функция и её вызов в `mining.cpp`; поля `minedMass` и
+// `minedAt` останутся в сейве мёртвым грузом (версия 21 их уже несёт).
+// ⚠️ Игру это не запирает: истощается ОДНА система, а их 8192 — добыча
+// становится кочевой, а не мёртвой.
+double Game::minedRichnessAt(int starIndex) {
+    if (playerAgent < 0 || playerAgent >= int(agents.size())) return 1.0;
+    int at = localClaimsIndex(localClaims, starIndex);
+    if (at < 0) return 1.0;                       // тут ещё не копали
+    LocalClaims& rec = localClaims[size_t(at)];
+
+    // Ленивое восстановление: считаем в момент обращения, а не тиком по всем
+    // звёздам. Тот же приём, что у бюджета наград и рынка экзотики.
+    const double years = std::max(0.0, time - rec.minedAt);
+    rec.minedMass *= std::exp(-years / BOUNTY_RECOVERY_YEARS);
+    rec.minedAt = time;
+
+    const double hold = std::max(1.0, agents[size_t(playerAgent)].ship.cargoCapacity);
+    return 1.0 / (1.0 + rec.minedMass / hold);
+}
+
+void Game::addMinedMass(int starIndex, double mass) {
+    if (!(mass > 0.0)) return;
+    int at = localClaimsIndex(localClaims, starIndex);
+    if (at < 0) {
+        LocalClaims rec;
+        rec.starIndex = starIndex;
+        rec.minedAt = time;
+        localClaims.push_back(rec);
+        at = int(localClaims.size()) - 1;
+    }
+    LocalClaims& rec = localClaims[size_t(at)];
+    const double years = std::max(0.0, time - rec.minedAt);
+    rec.minedMass *= std::exp(-years / BOUNTY_RECOVERY_YEARS);
+    rec.minedAt = time;
+    rec.minedMass += mass;
+}
+
 bool Game::playerSetAutoTrade(int agentIndex, bool on) {
     if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
     Agent& agent = agents[size_t(agentIndex)];
@@ -10991,7 +11199,7 @@ void Game::observeStar(int starIndex) {
     observeStarForFaction(playerFaction, starIndex);
     observeMarketForFaction(playerFaction, starIndex);
     absorbLocalSignalsForFaction(playerFaction, starIndex, true);
-    if (freshMarket) addResearch(3.0);
+    if (freshMarket) addResearch(3.0, TECH_INTELLECT);
 }
 
 void Game::absorbLocalSignalsForFaction(int factionIndex, int observerStar, bool updatePlayerMemory) {

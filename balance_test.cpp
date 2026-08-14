@@ -3871,6 +3871,62 @@ void testSaveKeepsTheMarketAlive() {
     check(ok, "загрузка сохраняет модель спроса", buf);
 }
 
+// (§52) СЕЙВ ОБЯЗАН ДОНЕСТИ БУДУЩЕЕ, А НЕ ТОЛЬКО МОМЕНТ.
+//
+// Круг «сохранил -> загрузил -> сравнил» проходит и со сломанным сейвом: в файле
+// лежат ЦИФРЫ мира, и они, конечно, совпадут. Ломается то, чего в файле нет, —
+// фаза обхода рынков, `strain`, масштаб хозяйства; проявляется это только на
+// прокрутке. Поэтому здесь крутится не одна копия, а обе.
+//
+// ⚠️ ПООЧЕРЁДНО, С ВОЗВРАТОМ ГЕНЕРАТОРА. `rng` — глобал ПРОЦЕССА, один на все
+// миры сразу. Крутить копии вперемешку (`a.update(); b.update();`) значит
+// заставить их тянуть числа из общего потока по очереди — тогда они разойдутся
+// ВСЕГДА, при любом сейве. Ровно на этом артефакте стояло «сейв не доносит
+// будущее» из задания на этот заход: сломана была проверка, а не механика.
+void testSaveCarriesTheFuture() {
+    Game a;
+    a.seed = 4242;
+    a.init(400);
+    for (int s = 0; s < 1000; ++s) a.update(0.01);   // шагом ИГРЫ, 10 лет
+
+    const std::string path = "balance_future_save.txt";
+    if (!a.saveToFile(path)) {
+        check(false, "будущее после загрузки совпадает", "сохранить не удалось");
+        return;
+    }
+    Game b;
+    if (!b.loadFromFile(path)) {
+        check(false, "будущее после загрузки совпадает", "загрузить не удалось");
+        std::remove(path.c_str());
+        return;
+    }
+    std::remove(path.c_str());
+
+    const std::mt19937 rngAfterLoad = rng;
+    for (int s = 0; s < 500; ++s) a.update(0.01);
+    rng = rngAfterLoad;
+    for (int s = 0; s < 500; ++s) b.update(0.01);
+
+    // Три числа с разных этажей мира: деньги палаты (экономика), население
+    // (колонии) и число заказов (ИИ держав). Сойтись обязаны ТОЧНО — это не
+    // порог баланса, а тождество.
+    const double treasuryA = a.clearingFaction >= 0 ? a.factions[a.clearingFaction].treasury : 0.0;
+    const double treasuryB = b.clearingFaction >= 0 ? b.factions[b.clearingFaction].treasury : 0.0;
+    double popA = 0.0, popB = 0.0;
+    for (size_t i = 0; i < a.cluster.stars.size(); ++i) popA += a.cluster.stars[i].population;
+    for (size_t i = 0; i < b.cluster.stars.size(); ++i) popB += b.cluster.stars[i].population;
+    size_t ordersA = 0, ordersB = 0;
+    for (size_t f = 0; f < a.factions.size(); ++f) ordersA += a.factions[f].orders.size();
+    for (size_t f = 0; f < b.factions.size(); ++f) ordersB += b.factions[f].orders.size();
+
+    const bool ok = treasuryA == treasuryB && popA == popB && ordersA == ordersB;
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "казна %.17g против %.17g, население %.17g против %.17g, приказов %d против %d",
+        treasuryA, treasuryB, popA, popB, int(ordersA), int(ordersB));
+    check(ok, "будущее после загрузки совпадает", buf);
+}
+
 // Хромокоры обязаны пережить покупку корпуса.
 //
 // Три ветки прокачки из семи (материалы, тактика, кинематика) не хранятся
@@ -4506,6 +4562,7 @@ int main(int argc, char** argv) {
     RUN(testRevokedLicenceUnlocksExoticsAndShares);
     RUN(testProgressSurvivesSave);
     RUN(testSaveKeepsTheMarketAlive);
+    RUN(testSaveCarriesTheFuture);
     RUN(testChromocoresSurviveHullChange);
     RUN(testChromocoresReachTheWholeFleet);
     RUN(testExoticMarketsAreRare);
