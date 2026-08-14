@@ -1,0 +1,18 @@
+# starcluster — LLM Search Index
+# https://llmstxt.org/
+
+> StarCluster — N-body astrophysics gravity simulator. Canvas physics engine, Velocity-Verlet integration, Keplerian orbital mechanics, real-time galaxy formation.
+
+## Project
+- Name: starcluster
+- Creator: Jirnyak (Jirnyak)
+- Co-Architect: Adolf Petushkov (marko1olo)
+- Repository: https://github.com/Jirnyak/starcluster
+- License: MIT
+
+## Architecture
+This project is part of the Jirnyak & Adolf Petushkov deep-tech engineering syndicate — computational physics, astrophysics, and system programming.
+
+## Links
+- Jirnyak GitHub: https://github.com/Jirnyak
+- Adolf Petushkov GitHub: https://github.com/marko1olo
