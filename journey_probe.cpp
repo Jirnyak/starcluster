@@ -19,6 +19,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <algorithm>
+#include <vector>
 
 namespace {
 
@@ -54,6 +56,11 @@ int main(int argc, char** argv) {
     const unsigned seed = argc > 1 ? unsigned(std::atoi(argv[1])) : 1234u;
     const int stars = argc > 2 ? std::atoi(argv[2]) : 1200;
     const int maxTrips = argc > 3 ? std::atoi(argv[3]) : 60;
+    // (§55) Диагностический режим: брать заказ ВСЕГДА, не спрашивая выгоды.
+    // Нужен затем, чтобы развести два разных вопроса, которые до сих пор
+    // путались: «выгодно ли брать заказ» и «доходит ли взятый заказ до сдачи».
+    // Второй нельзя мерить, пока первый не даёт их брать вовсе.
+    const bool forceJobs = argc > 4 && std::atoi(argv[4]) != 0;
 
     Game g;
     g.seed = seed;
@@ -86,6 +93,11 @@ int main(int argc, char** argv) {
     // рациональный игрок репутацию не наберёт вообще.
     int jobsRejected = 0;
     double bestJobPerYear = 0.0, gapSum = 0.0;
+    // Судьба взятых заказов: сдан / просрочен / всё ещё висит.
+    int jobsDelivered = 0, jobsExpired = 0, jobsPending = 0;
+    double slackSum = 0.0;      // отношение «данный срок / мой реальный полёт»
+    int slackCount = 0, slackImpossible = 0;
+    std::vector<double> slackAll;   // распределение «срок / мой полёт»
     int gapCount = 0;
     double freeSum = 0.0;
     int freeCount = 0;
@@ -95,7 +107,7 @@ int main(int argc, char** argv) {
         const int here = g.agents[size_t(pa)].currentStar;
         if (here < 0) { ++adrift; break; }
         // Куда увёл попутный заказ и чем при этом выгодно догрузиться.
-        int jobTarget = -1, jobElement = -1;
+        int jobTarget = -1, jobElement = -1, takenJob = -1;
 
         // Шаг игрока 1: осмотреться и заправиться — ровно то, чему учит новелла.
         g.observeStar(here);
@@ -152,6 +164,29 @@ int main(int argc, char** argv) {
                 if (!g.agentContractCargoFits(pa, job.id)) continue;
                 const double years = g.agentContractRouteTravelTime(pa, job.id);
                 if (!(years > 0.0)) continue;
+                // (§55) Срок против МОЕГО реального полёта — по КАЖДОМУ
+                // предложению, а не только по взятым: на двух образцах вывода не
+                // сделать. <1 значит «сдать физически нельзя».
+                {
+                    const double given = job.deadline - g.time;
+                    if (given > 0.0) {
+                        slackSum += given / years;
+                        ++slackCount;
+                        if (given / years < 1.0) ++slackImpossible;
+                        slackAll.push_back(given / years);
+                        if (false) {
+                            const Ship& ms = g.agents[size_t(pa)].ship;
+                            // given = max(4, refYears * 1.35) -> опорный рейс
+                            const double refYears = given / 1.35;
+                            std::printf("  [срок] дано %.2f лет (опорный рейс %.2f), мой полёт %.2f, "
+                                        "отношение %.2f | мой корпус %s: масса %.1f, потолок %.4f c, "
+                                        "ускорение %.4f, крейсер %.2f\n",
+                                        given, refYears, years, given / years,
+                                        ms.name.c_str(), shipTotalMass(ms), ms.speed,
+                                        ms.acceleration, ms.cruiseFraction);
+                        }
+                    }
+                }
                 const double net = job.reward - g.agentContractRoadCost(pa, job.id);
 
                 // Чем догрузиться в ту же систему: лучшая строка сводки туда.
@@ -171,11 +206,35 @@ int main(int argc, char** argv) {
                 bestElement = haulElement;
                 bestTarget = job.targetStar;
             }
+            // В диагностическом режиме берём первый влезающий заказ, каким бы
+            // невыгодным он ни был, — нас интересует только его судьба.
+            if (forceJobs && bestJob < 0) {
+                for (size_t c = 0; c < g.contracts.size(); ++c) {
+                    const Contract& job = g.contracts[c];
+                    if (job.originStar != here || job.acceptedByAgent >= 0) continue;
+                    if (!g.agentContractCargoFits(pa, job.id)) continue;
+                    double haulProfit = 0.0; int haulElement = -1;
+                    for (size_t d = 0; d < board.size(); ++d) {
+                        if (board[d].targetStar != job.targetStar) continue;
+                        if (board[d].profit > haulProfit) { haulProfit = board[d].profit; haulElement = board[d].element; }
+                    }
+                    bestJob = job.id; bestElement = haulElement; bestTarget = job.targetStar;
+                    break;
+                }
+            }
             if (bestJob >= 0 && g.agentAcceptContract(pa, bestJob)) {
                 ++jobsTaken;
                 take(mContract, g, trips);
                 jobTarget = bestTarget;
                 jobElement = bestElement;
+                takenJob = bestJob;
+                for (size_t c = 0; c < g.contracts.size(); ++c) {
+                    if (g.contracts[c].id != bestJob) continue;
+                    // Срок, который дали, против времени, которое рейс реально
+                    // займёт У ЭТОГО корпуса. Отношение <1 значит «сдать нельзя
+                    // физически»: заказ просрочен в момент взятия.
+                    break;
+                }
             }
             // Лицензия и второй корпус: как только кошелёк позволяет. Лицензия
             // расширяет и квоту, и разрешённое число бортов (§21, §24).
@@ -230,6 +289,16 @@ int main(int argc, char** argv) {
         // объявлял мёртвой всю ветку репутации, хотя молчал его собственный
         // круг: взял — довёз — СДАЛ. Сдаём всё, что довезли до этой звезды.
         g.agentCompleteContracts(pa);
+        // Судьба взятого заказа: сдан, просрочен или ещё висит.
+        if (takenJob >= 0) {
+            for (size_t c = 0; c < g.contracts.size(); ++c) {
+                if (g.contracts[c].id != takenJob) continue;
+                if (g.contracts[c].completed) ++jobsDelivered;
+                else if (g.contracts[c].failed) ++jobsExpired;
+                else ++jobsPending;
+                break;
+            }
+        }
 
         const double after = g.playerNetWorth().total;
         const double wallet = g.agents[size_t(pa)].money;
@@ -252,6 +321,21 @@ int main(int argc, char** argv) {
                 refusedDepartures, silentAdvice, adrift);
     std::printf("двери, в которые стучались: заказов взято %d (отвергнуто по Cr/год %d), лицензий %d, корпусов %d, систем %d\n",
                 jobsTaken, jobsRejected, licences, hulls, systems);
+    std::printf("судьба заказов: взято %d, сдано %d, просрочено %d, висит %d; срок/мой полёт в среднем %.3g по %d\n",
+                jobsTaken, jobsDelivered, jobsExpired, jobsPending,
+                slackCount > 0 ? slackSum / double(slackCount) : 0.0, slackCount);
+    if (!slackAll.empty()) {
+        std::sort(slackAll.begin(), slackAll.end());
+        const double q[] = {0.05, 0.10, 0.25, 0.50, 0.75};
+        std::printf("срок/полёт по перцентилям:");
+        for (int k = 0; k < 5; ++k) {
+            std::printf("  %.0f%%=%.2f", q[k] * 100.0, slackAll[size_t(q[k] * double(slackAll.size() - 1))]);
+        }
+        std::printf("\n");
+    }
+    std::printf("срок: невыполнимых в момент предложения %d из %d (%.0f%%)\n",
+                slackImpossible, slackCount,
+                slackCount > 0 ? 100.0 * double(slackImpossible) / double(slackCount) : 0.0);
     std::printf("Cr/год: свободный рейс в среднем %.4g; лучший заказ %.4g; отношение заказ/рейс в среднем %.4g по %d строкам\n",
                 freeCount > 0 ? freeSum / double(freeCount) : 0.0, bestJobPerYear,
                 gapCount > 0 ? gapSum / double(gapCount) : 0.0, gapCount);

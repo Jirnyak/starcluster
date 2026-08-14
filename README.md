@@ -852,24 +852,24 @@ work" but "does it lock the player in *together with* the others".
   ms with 1,016 agents. The figure is machine-dependent and drifts with the
   horizon (the same commit reads 169.6 ms over 100 years and 158.3 over 200),
   so only before/after on one machine over one horizon means anything.
-- Reputation still tops out at 1000 completed jobs, but it now has a third
-  outlet: it discounts the licence bond. A trading licence is a bond the clearing
-  house takes against turnover, and a captain with a proven delivery record is a
-  smaller risk, so the price is divided by `1 + best job tier` - unchanged with no
-  reputation, halved at the top of the ladder. ⚠️ **That discount never fires,
-  and the reason is the jobs board, not the licence.** Once `journey_probe` was
-  taught to actually haul its contracts and to judge them the canonical way -
-  credits per year of flight against the free trade run the advisor offers from
-  the same port - it rejected **123 out of 123** offers over a sixty-run career
-  (seed 1234, 1,200 stars, starting Hauler). No board entry beats simply trading,
-  so a rational captain never builds reputation at all and never reaches the
-  discount. Fixing job pay is a balance fork with numbers, deliberately not done
-  blind on the eve of a release. The cost of the old behaviour is visible though:
-  no longer hauling loss-making jobs moves the second hull from trip 44 (year
-  1519) to trip 23 (year 673). The old figure of 817,000 game years to cap one
-  faction was measured when only 1.65% of stars had an owner; powers now buy
-  systems from the centre and their holdings grow, so the grind is shorter - but
-  it has not been measured again.
+- Reputation still tops out at 1000 completed jobs, and its third outlet - a
+  discount on the licence bond, priced at `1 + best job tier` - has never fired,
+  because until now **two thirds of the jobs board could not be delivered at
+  all.** Measured across 123 offers in a sixty-run career (seed 1234, 1,200
+  stars): the deadline granted was on average 0.743 of the time the player's own
+  ship needs for that route, and 84 of 123 offers were already impossible the
+  moment they were posted. The issuer priced the deadline against an idealised
+  reference hull; the slack has been re-derived from the real one
+  (`CONTRACT_DEADLINE_SLACK` 1.35 -> 2.5), which moves the mean to 1.40, the
+  median to 1.48 and the impossible share to 30%. ⚠️ The remaining tail is not a
+  scalar problem: at the 5th percentile the deadline is nine times too short.
+  Those are jobs across the whole cluster that a given hull simply cannot reach
+  in time, and declining them is correct behaviour - the median is the acceptance
+  figure, not the tail. Job *pay* is still untouched at `CONTRACT_PAY_PER_YEAR =
+  9.0`, a constant left over from the economy before its rescale, so a contract
+  contributes about 0.4% of what the same flight-year earns in trade. Trade is
+  the core system by design and should stay ahead; the open question is only
+  whether contracts pay enough to live on for a player who prefers them.
 - The introductory novel ends at line 29 and only speaks about the high-tech
   floor contextually, in the first port that actually has such a market. Lines 27
   and 28 now cover the distress beacon and answering one. It still says nothing
