@@ -171,6 +171,125 @@ is the system on-screen keyboard, so the game's keyboard bindings work unchanged
 touch doubles as mouse for the windowed UI. See `android/README.md` for the build
 steps, the asset-extraction layer, and the list of keys the IME cannot produce.
 
+
+---
+
+## 🚀 Astrodynamics, Propulsion Blueprints & Galactic Economy
+
+Starcluster simulates full sublight astrodynamics across 10,000 N-body gravitating stars with zero arcade shortcuts: every transfer burn consumes propellant mass and alters your orbital eccentricity.
+
+```mermaid
+graph TD
+    subgraph Orbital Mechanics & Physics
+        A[10,000 Stars & Planets] -->|Barnes-Hut Octree Multipole Force| B[Symplectic Verlet Integrator]
+        B -->|Keplerian State Vectors: Pos/Vel| C[Player & NPC Spacecraft Fleet]
+        C -->|Tsiolkovsky Rocket Equation| D[Fuel & Propellant Mass Depletion]
+    end
+
+    subgraph Macro-Galactic Economy
+        C -->|Asteroid Mining & Refining| E[Commodity Market Exchange]
+        E -->|Dynamic Price Slippage & Tariffs| F[Faction Trade Network / 8,192 Systems]
+        F -->|Arbitrage Profit & Fleet Expansion| C
+    end
+```
+
+---
+
+### 🛰️ 1. Sublight Propulsion Drive Catalog & Reactor Specs
+
+Every drive type balances specific impulse ($I_{\text{sp}}$), thrust-to-weight ratio, and thermal radiator dissipation limits:
+
+| Engine Class | Propulsion Type | Specific Impulse ($I_{\text{sp}}$) | Thrust Rating | Propellant Type | Cooling / Radiator Requirement |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Chemical Bi-Propellant** | LOX / Liquid Methane | $380\text{ s}$ | $2,400\text{ kN}$ | High volume tanks | Passive radiative skin |
+| **Nuclear Thermal Rocket (NTR)**| Enriched Uranium Core | $950\text{ s}$ | $1,200\text{ kN}$ | Liquid Hydrogen ($LH_2$)| Graphene loop heat pipes |
+| **Magnetoplasmadynamic (MPD)**| Deuterium Plasma Arc | $8,500\text{ s}$ | $180\text{ kN}$ | Argon / Xenon gas | High-temp droplet radiators |
+| **Fusion Torch Drive (D-He3)** | Magnetic Confinement Fusion | $45,000\text{ s}$ | $6,500\text{ kN}$ | Deuterium + Helium-3 | Liquid lithium cooling circuit |
+| **Antimatter-Catalyzed Micro-Fission**| Positron-Beam Injected | $120,000\text{ s}$| $9,800\text{ kN}$ | Uranium-235 + Antiprotons| Superconducting magnetic nozzles |
+
+---
+
+### ⛏️ 2. Asteroid Mineral Prospecting & Elemental Refining
+
+Mining ships scan and drill asteroids across 4 distinct spectral composition classes:
+
+```
+               ASTEROID MINING & EXTRACTION YIELD MATRIX
+ ┌───────────────┬───────────────────────────────┬───────────────────────────────┐
+ │ Asteroid Type │ Primary Yields                │ Refining & Industrial Output  │
+ ├───────────────┼───────────────────────────────┼───────────────────────────────┤
+ │ **C-Type**    │ Water Ice (45%), Carbon (30%) │ $LH_2/LOX$ Rocket Fuel, Food  │
+ │ (Carbonaceous)│ Methane (15%), Phosphorus (5%)│ Life support atmosphere mix   │
+ ├───────────────┼───────────────────────────────┼───────────────────────────────┤
+ │ **S-Type**    │ Iron (50%), Silicon (25%)     │ Structural Hull Girders,      │
+ │ (Silicaceous) │ Nickel (15%), Magnesium (8%)  │ Solar Photovoltaic Panels     │
+ ├───────────────┼───────────────────────────────┼───────────────────────────────┤
+ │ **M-Type**    │ Titanium (40%), Platinum (12%)│ Armor Sintering, Superconductors│
+ │ (Metallic)    │ Gold (8%), Cobalt (18%)       │ High-Density Battery Banks    │
+ ├───────────────┼───────────────────────────────┼───────────────────────────────┤
+ │ **V-Type**    │ Thorium (14%), Uranium (8%)   │ Fission Fuel Pellets,         │
+ │ (Basaltic/Ore)│ Rare Earth Oxides (22%)       │ High-Yield Laser Cavities     │
+ └───────────────┴───────────────────────────────┴───────────────────────────────┘
+```
+
+---
+
+### 📈 3. Galactic Commodity Arbitrage & Price Slippage Equation
+
+Market prices across star systems adjust dynamically based on local storage inventory ($S$), daily consumption rate ($C$), and hauler trade volume ($Q$):
+
+$$P(Q) = P_{\text{base}} \cdot \left( \frac{C_{\text{demand}}}{S_{\text{stock}} + 1} \right)^{\alpha} \cdot \left( 1 + \beta \cdot \frac{Q}{S_{\text{stock}}} \right)$$
+
+* $P_{\text{base}}$: Baseline universal manufacturing price.
+* $\alpha = 0.65$: Elasticity coefficient of planetary scarcity.
+* $\beta = 0.40$: Quadratic market slippage penalty for dumping massive hauler payloads in single transactions.
+
+---
+
+### 🌌 4. Barnes-Hut Octree 3D Gravitational Compute Loop
+
+To simulate 10,000 stars in real-time within browser JavaScript, the Barnes-Hut algorithm groups distant star clusters into center-of-mass multipole nodes:
+
+```javascript
+// High-Performance 3D Barnes-Hut Gravitational Step
+function computeStarGravity(starIndex, octreeRoot, theta, G, dt) {
+    const starX = starsX[starIndex];
+    const starY = starsY[starIndex];
+    const starZ = starsZ[starIndex];
+    
+    let totalAx = 0.0, totalAy = 0.0, totalAz = 0.0;
+    const nodeStack = [octreeRoot];
+    
+    while (nodeStack.length > 0) {
+        const node = nodeStack.pop();
+        if (!node || node.totalMass === 0) continue;
+        
+        const dx = node.comX - starX;
+        const dy = node.comY - starY;
+        const dz = node.comZ - starZ;
+        const distSq = dx * dx + dy * dy + dz * dz + 0.001; // Softening parameter
+        const dist = Math.sqrt(distSq);
+        
+        // Opening angle criterion (s / d < theta)
+        if (node.size / dist < theta || node.isLeaf) {
+            const force = (G * node.totalMass) / (distSq * dist);
+            totalAx += force * dx;
+            totalAy += force * dy;
+            totalAz += force * dz;
+        } else {
+            for (let i = 0; i < 8; i++) {
+                if (node.children[i]) nodeStack.push(node.children[i]);
+            }
+        }
+    }
+    
+    // Symplectic velocity update
+    starsVx[starIndex] += totalAx * dt;
+    starsVy[starIndex] += totalAy * dt;
+    starsVz[starIndex] += totalAz * dt;
+}
+```
+
 ## Controls
 
 ### View And Simulation
