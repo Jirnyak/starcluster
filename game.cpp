@@ -1551,15 +1551,43 @@ bool tryCreateDeliveryContract(Game& game, int originStar) {
     const double cargoMass = amount * unitMass;
 
     const double distance = cachedRouteDistance(game, originStar, targetStar);
+
+    // (§56) ЦЕНА ЗАКАЗА ВЫВОДИТСЯ ИЗ МИРА, А НЕ ИЗ СТАВКИ ФРАХТА.
+    //
+    // Было: `scarcityPay` на подобранных долях (0.055 и 0.012) плюс
+    // `CONTRACT_PAY_PER_YEAR * годы` — прейскурант посреди эмерджентной
+    // экономики. Он не знал ни сколько груз стоит, ни насколько он нужен, и
+    // потому давал 0.4% от того, что тот же год полёта приносит торговлей.
+    //
+    // Стало — три величины, и все они УЖЕ ЕСТЬ в симуляции:
+    //
+    //  • ДОРОГА. Нижняя граница: меньше неё не возьмётся никто, потому что рейс
+    //    станет убытком. Считается тем же `burnCost`, что показывает игроку цену
+    //    его собственного полёта, по ЛОКАЛЬНЫМ ценам топлива в порту отправления.
+    //
+    //  • СПРЕД. Верхняя граница: `amount * (цена ТАМ − цена ЗДЕСЬ)`. Больше
+    //    заказчик не заплатит никогда — дешевле купить самому. Это же и есть
+    //    «множитель к рыночной цене»: чем дороже элемент в цели и чем больше
+    //    партия, тем дороже заказ, само собой и без коэффициента.
+    //
+    //  • НУЖДА. Где между границами лечь — решает `target.strain`, доля
+    //    незакрытых нужд системы (0..1). Задыхающаяся отдаёт почти весь спред,
+    //    благополучная — почти ничего. Это единственный «множитель», и он не
+    //    выбран, а взят из состояния мира.
+    //
+    // reward = дорога + спред × нужда
+    //
+    // Отсюда всё, чего не было: цена растёт с расстоянием (через дорогу), с
+    // ценностью груза (через спред), с дефицитом (через strain), и падает,
+    // когда везти незачем. Ни одного нового числа; `CONTRACT_PAY_PER_YEAR` и
+    // `JOB_TIER_PAY_TOP` для доставки больше не нужны — величину заказа задаёт
+    // тир через МАССУ и ДАЛЬНОСТЬ, а деньги считает рынок.
     const double spread = std::max(0.0, target.prices[resourceIndex] - origin.prices[resourceIndex]);
-    const double scarcityPay = amount * (spread * 0.055 + target.prices[resourceIndex] * 0.012);
-    // Плата за рейс × множитель тира. Именно множитель и делает верх лестницы
-    // выгоднее торговли. Доля `cargoMass / номинал тира` — чтобы разброс массы
-    // ±25% внутри одного тира честно отражался в цене: два заказа одного тира
-    // не обязаны стоить одинаково, если один тяжелее другого на четверть.
-    const double nominalMass = std::max(1.0, Game::jobCargoForTier(tier));
-    const double tripPay = contractTripPay(game, originStar, targetStar) *
-        Game::jobPayMultiplierForTier(tier) * (cargoMass / nominalMass);
+    const RouteCost road = plannedRouteCost(game, contractReferenceShip(), originStar, targetStar);
+    const double roadPay = road.feasible ? burnCost(game, contractReferenceShip(), originStar, road) : 0.0;
+    const double urgency = std::max(0.0, std::min(1.0, target.strain));
+    const double scarcityPay = amount * spread * urgency;
+    const double tripPay = roadPay;
 
     Contract contract;
     contract.id = game.nextContractId++;

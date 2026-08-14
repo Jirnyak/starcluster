@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
             // Сводка широкая: нужна цена не «лучшей» цели, а КАЖДОЙ, куда может
             // позвать заказ.
             const std::vector<ArbitrageDeal> board = g.playerArbitrageBoard(here, 400, -1);
-            double bestCombined = planPerYear;
+            double bestCombined = 0.0;   // порог — «окупает дорогу», а не «бьёт рейс»
             int bestJob = -1, bestElement = plan.valid ? plan.element : -1;
             int bestTarget = plan.valid ? plan.targetStar : -1;
             for (size_t c = 0; c < g.contracts.size(); ++c) {
@@ -188,6 +188,7 @@ int main(int argc, char** argv) {
                     }
                 }
                 const double net = job.reward - g.agentContractRoadCost(pa, job.id);
+                const double given = job.deadline - g.time;
 
                 // Чем догрузиться в ту же систему: лучшая строка сводки туда.
                 double haulProfit = 0.0;
@@ -200,6 +201,13 @@ int main(int argc, char** argv) {
                 const double combined = (net + haulProfit) / years;
                 if (net / years > bestJobPerYear) bestJobPerYear = net / years;
                 if (planPerYear > 0.0) { gapSum += combined / planPerYear; ++gapCount; }
+                // ⚠️ (§56) ПРАВИЛО ОТБОРА ПО ЗАМЫСЛУ, А НЕ ПО КОНКУРЕНЦИИ.
+                // Торговля — ядро игры и обязана оставаться выгоднее; заказ —
+                // параллельная механика для того, кому нравится их возить.
+                // Значит и брать его надо не «если он побил рейс» (так он не
+                // будет взят никогда и по замыслу), а если он ОКУПАЕТ СВОЮ
+                // ДОРОГУ и его успеваешь сдать. Заодно едет попутный товар.
+                if (given <= years) { ++jobsRejected; continue; }   // не успеть
                 if (combined <= bestCombined) { ++jobsRejected; continue; }
                 bestCombined = combined;
                 bestJob = job.id;
