@@ -175,6 +175,11 @@ steps, the asset-extraction layer, and the list of keys the IME cannot produce.
 ---
 
 ## 🚀 Astrodynamics, Propulsion Blueprints & Galactic Economy
+<p align="center">
+  <img src="https://raw.githubusercontent.com/marko1olo/gigahrush/main/docs/starcluster_galaxy.jpg" width="100%" alt="Starcluster 10,000-Star Sublight Exploration & N-Body Simulation"/>
+</p>
+
+
 
 Starcluster simulates full sublight astrodynamics across 10,000 N-body gravitating stars with zero arcade shortcuts: every transfer burn consumes propellant mass and alters your orbital eccentricity.
 
