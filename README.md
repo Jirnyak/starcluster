@@ -844,11 +844,17 @@ work" but "does it lock the player in *together with* the others".
   number of agents. Measured at full scale: 1,005 agents at seed and 138 ms per game
   year on 8,192 systems (125 ms before the route-estimate fix of section 48 added
   a cruise-fraction search at departure).
-- Stranded ships are still handled by the tug (a flat 35% of the wallet and half the
-  cargo, applied automatically). A real rescue mechanic - distress signal, guaranteed
-  pickup, and a state-paid bounty of a full tank plus about 10% of the saved hull's
-  value for whoever tows it in - is designed but not built. See master_prompt section
-  47.12.
+- Ships now strand for real, and the rescue that answers is still faceless. Two
+  physical doors into trouble were opened in section 48.9: only a live engine can
+  dock, so a ship with empty tanks flies past its destination, and a trader too poor
+  to buy the full reserve departs on a shoestring rather than standing in port
+  forever. Measured on the full world at the game's own timestep: 0.075 shoestring
+  departures per year and one rescue per 33 years. The tow is now free - the state
+  pulls you in and the only price is the time lost. What is missing is the mechanic
+  proper: a distress signal travelling at light speed, a living rescuer who diverts
+  and intercepts (with the clearing house as the fallback), the player able to fly to
+  a signal and chase the drifting hull, and the state-paid bounty of a full tank plus
+  about 10% of the saved hull's value. See master_prompt section 48.9.
 - At the deliberate 100 Cr pauper start there is no profitable trade at all: zero
   out of forty board entries in each of four measured worlds, because one leg of
   road costs 6,300-7,500 Cr against 2,700-5,000 Cr of gross. That matches the

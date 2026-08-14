@@ -194,8 +194,9 @@ const double CONTRACT_DEPOSIT_RATE = 0.25;
 const double REFUEL_WALLET_SHARE = 0.6;
 
 const double TOW_WAIT_YEARS = 6.0;      // сколько дрейфовать, прежде чем услышат
-const double TOW_CREDIT_SHARE = 0.35;   // доля кошелька за буксир
-const double TOW_CARGO_SHARE = 0.50;    // доля груза за буксир
+// (§48.8) Платы за спасение больше нет: `TOW_CREDIT_SHARE` (0.35 кошелька) и
+// `TOW_CARGO_SHARE` (половина трюма) убраны вместе с самим побором. Вытаскивает
+// государство, и цена беды — только потерянное время.
 
 // (§48, ЗАМЕР) Сколько бортов доезжает до звезды, НЕ ИМЕЯ чем тормозить.
 // `moveShipToward` при пролёте мимо цели ставит корабль в звезду и обнуляет
@@ -204,6 +205,8 @@ const double TOW_CARGO_SHARE = 0.50;    // доля груза за буксир
 // физика превратит спасение из события в фон. Счётчики не сохраняются.
 long long strandStatArrivals();      // всего прибытий по маршруту
 long long strandStatOvershoots();    // из них — с неубираемой скоростью (любая причина)
+long long strandStatRiskyDepartures(); // вылетов впритык по нищете (§48.8)
+long long strandStatTows();          // сколько раз кого-то вытащили
 long long strandStatDryArrivals();   // из них — потому что кончился РАСХОДНИК
 long long strandStatFastArrivals();  // из них — с остатком свыше 0.01c
 double strandStatWorstSpeed();       // самая большая остаточная скорость у сухих, c

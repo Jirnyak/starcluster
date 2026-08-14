@@ -2733,7 +2733,21 @@ void testAdvisorRunsCompound() {
             g.setAgentDestination(pa, r.targetStar);
             g.agentBuyElementAmount(pa, r.element, 1.0e12);
             if (!g.commandAgentToStar(pa, r.targetStar)) break;
-            for (int t = 0; t < 800 && g.agents[pa].ship.enRoute; ++t) g.update(1.0);
+            // (§48.8) ЛЕТИМ ШАГОМ, БЛИЗКИМ К ИГРОВОМУ.
+            //
+            // ⚠️ Здесь стоял шаг в ГОД, а игра дробит время на 0.01 года
+            // (`MAX_SIM_STEP_YEARS`). На годовом шаге корабль проскакивает точку
+            // начала торможения и тратит расходники на возвраты — то есть
+            // харнес мерил ошибку интегрирования, а не механику. Пока пролёт
+            // мимо звезды прощался бесплатной стыковкой (§48), это было не
+            // видно; с §48.8 такой борт честно уходит в дрейф, и партия у
+            // проверки вставала на четвёртом рейсе, вытащенная буксиром трижды.
+            // Замер того же сида: шаг 1.0 — 4 рейса и 5 буксиров; шаг 0.1 —
+            // 25 рейсов, состояние 1.21e6, 2 буксира; шаг игры 0.01 — 25 рейсов,
+            // 1.29e6; шаг 0.25 — 25 рейсов, 1.26e6, 1 буксир. Берём 0.1: он
+            // ближе всех к игре, а весь набор проверок от него не дорожает —
+            // 8:08 против 8:07 на шаге 0.25, то есть узкое место не здесь.
+            for (int t = 0; t < 8000 && g.agents[pa].ship.enRoute; ++t) g.update(0.1);
             g.agentSellAllCargo(pa);
             ++runs;
         }
@@ -2817,8 +2831,13 @@ void testStrandedShipGetsTowed() {
     const Agent& after = g.agents[pa];
     const double cargoAfter = after.ship.cargo.empty() ? 0.0 : after.ship.cargo[0].amount;
     const bool freed = !after.ship.enRoute && after.currentStar >= 0;
-    const bool paid = after.money < moneyBefore * 0.9;
-    const bool lostCargo = cargoAfter < cargoBefore * 0.9;
+    // (§48.8) Спасение БЕСПЛАТНО. Раньше здесь требовалось обратное — что борт
+    // потерял треть кошелька и половину трюма, — и это было честным описанием
+    // механики: буксир приходил как штраф. Решение пользователя: вытаскивает
+    // государство даром, платит застрявший только временем. Кошелёк и груз
+    // обязаны дойти ЦЕЛЫМИ, иначе за одну беду возьмут дважды.
+    const bool keptMoney = after.money >= moneyBefore - 1e-6;
+    const bool keptCargo = cargoAfter >= cargoBefore - 1e-6;
     const bool canFly = shipFuelMass(after.ship) > 0.0;
 
     char buf[240];
@@ -2826,7 +2845,41 @@ void testStrandedShipGetsTowed() {
         "освобождён %s (система %d), кошелёк %.0f -> %.0f, груз %.0f -> %.0f, топливо на борту %.2f",
         freed ? "да" : "НЕТ", after.currentStar, moneyBefore, after.money,
         cargoBefore, cargoAfter, shipFuelMass(after.ship));
-    check(freed && paid && lostCargo && canFly, "застрявший корабль вытаскивает буксир", buf);
+    check(freed && keptMoney && keptCargo && canFly, "застрявшего вытаскивают, и это не грабёж", buf);
+}
+
+// Никто не остаётся в дрейфе НАВСЕГДА (§48.8).
+//
+// ⚠️ С §48.8 борта ИИ застревают по-настоящему: нищий торговец вылетает
+// впритык, а корабль без тяги больше не получает бесплатную стыковку при
+// пролёте мимо звезды. Обе двери открыты нарочно — но выход обязан быть у
+// каждого, кто в них вошёл, иначе мир начнёт копить вечных дрейфующих, и
+// каждый из них — это агент, который жив, считается и ничего не делает.
+void testNobodyDriftsForever() {
+    Game g;
+    g.seed = 20260814u;
+    g.init(1200);
+    strandStatReset();
+    // Шаг 0.25 года: достаточно близко к игровому (0.01), чтобы расход сходился
+    // с оценкой, и достаточно крупно, чтобы четыре века считались быстро.
+    for (int t = 0; t < 1600; ++t) g.update(0.25);
+
+    int stuck = 0, drifting = 0;
+    double worstDrift = 0.0;
+    for (size_t i = 0; i < g.agents.size(); ++i) {
+        const Agent& a = g.agents[i];
+        if (!a.ship.enRoute) continue;
+        if (shipCurrentAcceleration(a.ship) > 0.0) continue;
+        ++drifting;
+        if (a.driftYears > worstDrift) worstDrift = a.driftYears;
+        if (a.driftYears > TOW_WAIT_YEARS * 2.0) ++stuck;
+    }
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "за 400 лет: вылетов впритык %lld, спасений %lld; сейчас дрейфует %d, дольше срока %d (худшее ожидание %.1f года)",
+        strandStatRiskyDepartures(), strandStatTows(), drifting, stuck, worstDrift);
+    check(stuck == 0, "в дрейфе никто не остаётся навсегда", buf);
 }
 
 // Дробление партии не должно печатать хромокоры (§34).
@@ -4029,6 +4082,7 @@ int main() {
     testAdvisorRunsCompound();
     testRevokedLicenceCanBeWorkedOff();
     testStrandedShipGetsTowed();
+    testNobodyDriftsForever();
     testInsightIgnoresLotSplitting();
     testJobBondBurnsOnFailure();
     testGrownColonyOutgrowsItsMarket();

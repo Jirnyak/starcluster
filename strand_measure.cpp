@@ -39,6 +39,10 @@ int main(int argc, char** argv) {
 
     std::printf("сид %u, звёзд %d, лет %d, шаг %.3f года, бортов %d (в пути %d, дрейфует %d)\n",
                 seed, stars, years, dt, int(g.agents.size()), enRoute, drifting);
+    std::printf("вылетов впритык (нищета) %lld  (%.3f в год)\n",
+                strandStatRiskyDepartures(), double(strandStatRiskyDepartures()) / years);
+    std::printf("СПАСЕНИЙ (буксир)        %lld  (одно на %.1f лет)\n",
+                strandStatTows(), strandStatTows() ? double(years) / double(strandStatTows()) : 0.0);
     std::printf("прибытий всего          %lld  (%.3f в год)\n", total, double(total) / years);
     std::printf("  с пролётом мимо цели  %lld  (%.2f%% прибытий)\n",
                 over, total ? 100.0 * double(over) / double(total) : 0.0);

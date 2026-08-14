@@ -2099,6 +2099,8 @@ double consumeAndStoreAsh(Ship& ship, double deltaV) {
 long long s_strandArrivals = 0;
 long long s_strandDryArrivals = 0;
 long long s_strandOvershoots = 0;
+long long s_strandRiskyDepartures = 0;   // вылетов впритык, по нищете (§48.8)
+long long s_strandTows = 0;              // сколько раз кого-то вытащили
 long long s_strandFastArrivals = 0;   // прибытий с ОЩУТИМОЙ остаточной скоростью (>0.01c)
 double s_strandWorstSpeed = 0.0;
 double s_strandWorstAny = 0.0;        // худший остаток по ЛЮБОЙ причине
@@ -2196,6 +2198,11 @@ bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
         // 0.01 года) и «не хватило РАСХОДНИКА» — только второе станет
         // застреванием, когда прощение уберут.
         const double residual = std::sqrt(ship.vx * ship.vx + ship.vy * ship.vy + ship.vz * ship.vz);
+        if (accel <= 0.0) {   // (§48.8) мёртвый борт проходит мимо — это не прибытие
+            ++s_strandDryArrivals;
+            if (residual > s_strandWorstSpeed) s_strandWorstSpeed = residual;
+            return false;
+        }
         ++s_strandArrivals;
         if (residual > s_strandWorstAny) s_strandWorstAny = residual;
         // (§48, замер) Сверка расчёта с расходом. Сожжено = что залили минус
@@ -2242,6 +2249,22 @@ bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
                 if (residual > s_strandWorstSpeed) s_strandWorstSpeed = residual;
             }
         }
+        // (§48.8) ШВАРТУЕТСЯ ТОЛЬКО ЖИВОЙ ДВИГАТЕЛЬ.
+        //
+        // ⚠️ Здесь стояло безусловное обнуление скорости, и корабль, которому
+        // нечем тормозить, влетал в звезду на 0.29c и получал полную остановку
+        // ДАРОМ. Именно это прощение прятало недосчёт маршрутной оценки (§48) —
+        // а заодно делало сухой бак в пути безнаказанным, из-за чего борта ИИ
+        // не застревали НИКОГДА.
+        //
+        // ⚠️ Но и мерить остаток порогом «в один тик тяги» нельзя: шаг
+        // интегрирования конечен, идеально погасить ход ровно в точке нельзя
+        // никогда, и на замере борта заплясали вокруг звёзд — 91% прибытий
+        // «мимо», прибытий вдесятеро больше, топливо в пустоту. Различать надо
+        // не величину остатка, а ЖИВ ЛИ ДВИГАТЕЛЬ: борт с тягой довёл манёвр и
+        // швартуется (остаток — артефакт тика, худший замеренный 0.012c), борт
+        // без тяги не сможет пришвартоваться никогда и уходит в дрейф.
+        if (accel <= 0.0) return false;
         ship.x = target.x;
         ship.y = target.y;
         ship.z = target.z;
@@ -2629,14 +2652,33 @@ bool startJourney(Game& game, Agent& agent, int destStar) {
         agent.lastAction = "drive cannot reach";
         return false;
     }
-    if (shipFuelMix(agent.ship).mass < need.fuelMass) {
-        agent.lastAction = "need fuel";
-        return false;
-    }
-    if (!driveUsesFuelAsPropellant(agent.ship.driveIndex) &&
-        shipPropellantMix(agent.ship).mass < need.propellantMass) {
-        agent.lastAction = "need propellant";
-        return false;
+    // (§48.8) НИЩЕТА ВЫНУЖДАЕТ ЛЕТЕТЬ ВПРИТЫК.
+    //
+    // Заправка уже отработала выше и купила всё, на что хватило денег и что
+    // было на складе. Если запаса всё равно не хватает, у борта ИИ есть ровно
+    // два выхода: стоять в порту вечно или лететь на том, что есть. Он летит —
+    // и это единственная причина, по которой борта ИИ вообще попадают в беду
+    // (решение пользователя, §48.8). Частота отсюда вытекает сама: она равна
+    // тому, как часто торговец оказывается на мели, и руками не задана.
+    //
+    // ⚠️ Игрока так не выпускаем: отправить его в дрейф молча, не спросив, —
+    // это не риск, а подстава. Ему по-прежнему отказ.
+    const bool shortFuel = shipFuelMix(agent.ship).mass < need.fuelMass;
+    const bool shortProp = !driveUsesFuelAsPropellant(agent.ship.driveIndex) &&
+                           shipPropellantMix(agent.ship).mass < need.propellantMass;
+    if (shortFuel || shortProp) {
+        if (agent.playerControlled) {
+            agent.lastAction = shortFuel ? "need fuel" : "need propellant";
+            return false;
+        }
+        // Совсем пустой бак — это не риск, а гарантированная гибель на первом
+        // же тике: без обоих расходников двигатель не даёт тяги вовсе, и борт
+        // не сдвинулся бы с места. Такой остаётся в порту.
+        if (shipFuelMix(agent.ship).mass <= 0.0) { agent.lastAction = "need fuel"; return false; }
+        if (!driveUsesFuelAsPropellant(agent.ship.driveIndex) &&
+            shipPropellantMix(agent.ship).mass <= 0.0) { agent.lastAction = "need propellant"; return false; }
+        ++s_strandRiskyDepartures;
+        agent.lastAction = "departed on a shoestring";
     }
     agent.destStar = destStar;
     agent.ship.targetStar = legStar;
@@ -3542,6 +3584,8 @@ bool localDockSellCargo(Game& game, int agentIndex, int starIndex) {
 long long strandStatArrivals() { return s_strandArrivals; }
 long long strandStatDryArrivals() { return s_strandDryArrivals; }
 long long strandStatOvershoots() { return s_strandOvershoots; }
+long long strandStatRiskyDepartures() { return s_strandRiskyDepartures; }
+long long strandStatTows() { return s_strandTows; }
 long long strandStatFastArrivals() { return s_strandFastArrivals; }
 void strandStatTrace(bool on) { s_strandTrace = on; }
 double strandStatBurnRatio() { return s_ratioCount ? s_ratioSum / double(s_ratioCount) : 0.0; }
@@ -3552,7 +3596,8 @@ double strandStatHonestRatio() { return s_honestCount ? s_honestSum / double(s_h
 double strandStatDryReserve() { return s_dryLoadedCount ? s_dryLoadedOverPlanned / double(s_dryLoadedCount) : 0.0; }
 double strandStatWorstAny() { return s_strandWorstAny; }
 double strandStatWorstSpeed() { return s_strandWorstSpeed; }
-void strandStatReset() { s_strandArrivals = s_strandDryArrivals = s_strandOvershoots = s_strandFastArrivals = 0; s_strandWorstSpeed = s_strandWorstAny = 0.0;
+void strandStatReset() { s_strandArrivals = s_strandDryArrivals = s_strandOvershoots = s_strandFastArrivals = s_strandRiskyDepartures = s_strandTows = 0;
+    s_strandWorstSpeed = s_strandWorstAny = 0.0;
     s_ratioSum = s_ratioMax = s_dryLoadedOverPlanned = 0.0; s_ratioCount = s_dryLoadedCount = 0;
     s_rapSum = s_rapMax = 0.0; s_rapCount = 0; s_honestSum = 0.0; s_honestCount = 0; }
 
@@ -6148,11 +6193,14 @@ void towStrandedShip(Game& game, int agentIndex) {
     }
     if (nearest < 0) return;
 
-    const double fee = std::max(0.0, agent.money) * TOW_CREDIT_SHARE;
-    agent.money -= fee;
-    for (size_t c = 0; c < agent.ship.cargo.size(); ++c) {
-        agent.ship.cargo[c].amount *= (1.0 - TOW_CARGO_SHARE);
-    }
+    // (§48.8) СПАСЕНИЕ БЕСПЛАТНО. Цена — только ожидание.
+    //
+    // ⚠️ Здесь буксир забирал `TOW_CREDIT_SHARE` кошелька и `TOW_CARGO_SHARE`
+    // трюма, то есть «спасение» было ШТРАФОМ, приходящим безлично и без всякого
+    // решения игрока. Решение пользователя (§48.8): вытаскивает государство и
+    // даром, а платит застрявший временем — сигнал идёт со светом, спасатель
+    // летит своим ходом. Штраф деньгами поверх этого был бы второй платой за
+    // одну беду и спорил бы с живым спасателем, которому награду платит казна.
     const ClusterStar& port = game.cluster.stars[size_t(nearest)];
     agent.ship.x = port.x; agent.ship.y = port.y; agent.ship.z = port.z;
     agent.ship.vx = agent.ship.vy = agent.ship.vz = 0.0;
@@ -6164,9 +6212,10 @@ void towStrandedShip(Game& game, int agentIndex) {
     // Глоток «на дорогу»: без него корабль встанет ровно так же на следующем
     // же плече, и буксир превратится в бесконечную петлю.
     shipEmergencyPrime(agent.ship);
+    ++s_strandTows;
     agent.lastAction = "towed in";
     if (agent.playerControlled) {
-        game.lastEvent = "towed to " + port.name + " - the tug took its share";
+        game.lastEvent = "rescued - brought in to " + port.name;
         game.pushNews("Distress call answered: towed to " + port.name, 0);
     }
 }
@@ -6213,7 +6262,29 @@ void Game::updateAgents(double dt) {
                 }
             } else if (agent.ship.targetStar >= 0 && agent.ship.targetStar < int(cluster.stars.size())) {
                 const bool arrived = moveShipToward(agent.ship, cluster.stars[agent.ship.targetStar], dt);
+                // (§48.8) БЕДА СЛУЧАЕТСЯ И НА МАРШРУТЕ, а не только после X STOP.
+                //
+                // Двигатель без тяги (кончился любой из двух расходников) — это
+                // и есть беспомощный дрейф: цель впереди, но затормозить у неё
+                // нечем, и корабль пройдёт мимо. Считаем годы и через
+                // TOW_WAIT_YEARS зовём помощь — тем же путём, что и застрявший
+                // после экстренной остановки. До §48 сюда было не попасть:
+                // прощение при пролёте выдавало таким бортам бесплатную
+                // стыковку, а маршрутная оценка вдобавок занижала расход вдвое.
+                if (!arrived) {
+                    if (shipCurrentAcceleration(agent.ship) <= 0.0) {
+                        agent.driftYears += dt;
+                        if (agent.driftYears >= TOW_WAIT_YEARS) {
+                            towStrandedShip(*this, int(i));
+                            agent.driftYears = 0.0;
+                            continue;
+                        }
+                    } else {
+                        agent.driftYears = 0.0;
+                    }
+                }
                 if (arrived) {
+                    agent.driftYears = 0.0;
                     agent.currentStar = agent.ship.targetStar;
                     agent.ship.targetStar = -1;
                     agent.ship.enRoute = false;
