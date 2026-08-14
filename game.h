@@ -796,9 +796,9 @@ public:
     std::vector<std::vector<SignalMemoryRecord> > signalMemory;
     std::vector<unsigned short> routeNextHop;
     std::vector<double> marketUpdatedAt;
-    // (§50) Накопитель опроса маяков. Не сохраняется намеренно: это доля года
-    // внутри одного опроса, и после загрузки диспетчер просто отработает на
-    // четверть года позже — против ожидания, которое меряется годами, это ноль.
+    // (§50) Накопитель опроса маяков. СОХРАНЯЕТСЯ: сдвиг фазы опроса меняет,
+    // кого диспетчер назначит спасателем, а от этого расходится дальше весь мир
+    // (замер — §51.5).
     double distressTimer = 0.0;
     double routeCacheBuiltAt = -1.0;
     int marketUpdateCursor = 0;

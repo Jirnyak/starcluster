@@ -824,6 +824,15 @@ work" but "does it lock the player in *together with* the others".
   are not synchronized with the current source list.
 - Startup generates 8,192 systems and takes several seconds with no loading
   screen.
+- A save restores the moment exactly but not the future. Measured on the full
+  world (8,192 systems, 150 years in, 40 years out, game timestep): every field
+  checked at the instant of loading matches to the digit, yet forty years later
+  the clearing house treasury reads 3.908e9 in the original against 3.861e9 in
+  the reloaded copy - 1.2% apart. The same divergence is present before the
+  section 50 work, so it is not the rescue mechanic; something that drives
+  faction economics is not in the file. `save_probe.cpp` reproduces it. Note the
+  method: a plain save/load/compare passes even with a broken save - only
+  save, load, *run both copies*, compare catches this.
 - A game-year of simulation costs on the order of 160 ms at 8,192 systems and
   roughly a thousand agents. That is 16% of a second at 1 year/second and fine,
   but it cannot sustain the higher speed multipliers: the loop caps its substeps

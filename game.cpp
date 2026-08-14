@@ -4022,7 +4022,15 @@ bool Game::saveToFile(const std::string& path) {
     // последним в ней идёт токен `lastAction`, и разбор старой версии схватил
     // бы вместо него следующий тег (та же грабля, что развела версии 16 и 17).
     // Спасатели пишутся РАЗРЕЖЕННО: их единицы на тысячу бортов.
-    out << "DISTRESS " << distress.size() << '\n';
+    // ⚠️ `distressTimer` СОХРАНЯЕТСЯ, хотя это доля года внутри одного опроса.
+    // Сначала он был объявлен «не стоящим сейва»: после загрузки диспетчер
+    // отработал бы на четверть года позже, а ожидание меряется годами. Проверка
+    // полного мира это опровергла: круг «сейв -> загрузка» сходился точно, но
+    // сорок лет ПОСЛЕ загрузки расходились с оригиналом (казна 3.908e9 против
+    // 3.861e9). Сдвиг фазы опроса меняет, кого назначат спасателем, а дальше
+    // расходится всё. Детерминизм мира (§2.3) — это про будущее, а не только
+    // про момент загрузки.
+    out << "DISTRESS " << distress.size() << ' ' << distressTimer << '\n';
     for (const DistressBeacon& beacon : distress) {
         out << "DB " << beacon.agent << ' ' << beacon.x << ' ' << beacon.y << ' ' << beacon.z << ' '
             << beacon.vx << ' ' << beacon.vy << ' ' << beacon.vz << ' '
@@ -4944,7 +4952,7 @@ bool Game::loadFromFile(const std::string& path) {
     // не имела возраста, и после загрузки застрявший ждал заново.
     if (version >= 20) {
         size_t beaconCount = 0;
-        if (!expectTag(in, "DISTRESS") || !(in >> beaconCount)) {
+        if (!expectTag(in, "DISTRESS") || !(in >> beaconCount >> loaded.distressTimer)) {
             lastEvent = "load failed: distress";
             return false;
         }
