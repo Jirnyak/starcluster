@@ -85,11 +85,17 @@ int main(int argc, char** argv) {
     // свободного рейса). Число важнее взятых: если отвергнуты все, значит
     // рациональный игрок репутацию не наберёт вообще.
     int jobsRejected = 0;
+    double bestJobPerYear = 0.0, gapSum = 0.0;
+    int gapCount = 0;
+    double freeSum = 0.0;
+    int freeCount = 0;
     double worstWallet = startMoney, peakWorth = 0.0;
 
     for (; trips < maxTrips; ++trips) {
         const int here = g.agents[size_t(pa)].currentStar;
         if (here < 0) { ++adrift; break; }
+        // Куда увёл попутный заказ и чем при этом выгодно догрузиться.
+        int jobTarget = -1, jobElement = -1;
 
         // Шаг игрока 1: осмотреться и заправиться — ровно то, чему учит новелла.
         g.observeStar(here);
@@ -100,20 +106,46 @@ int main(int argc, char** argv) {
         // системы, — и пробник обязан в них стучаться. Иначе он замерит один
         // торговый цикл и объявит игру целой (урок §42).
         {
-            // Заказ: берём первый, который здесь висит, влезает в трюм И
-            // ОКУПАЕТ ДОРОГУ.
+            // ЗАКАЗ — ПОПУТНЫЙ ГРУЗ, А НЕ АЛЬТЕРНАТИВА РЕЙСУ.
             //
-            // ⚠️ (§53) Отбора тут не было вовсе, и это выяснилось, как только
-            // пробник начал заказы ВОЗИТЬ, а не только брать: он хватал первый
-            // подходящий по трюму — включая цель на другом конце скопления — и
-            // упирался в потолок прогона (один рейс за 979 лет).
+            // ⚠️ (§54) Здесь дважды подряд стояла НЕВЕРНАЯ МОДЕЛЬ, и она едва не
+            // увела в правку баланса, которой не требовалось.
+            //   Сначала пробник заказы брал и не сдавал (§53).
+            //   Потом стал сдавать, но летел ПО ЗАКАЗУ вместо торгового рейса и
+            //   сравнивал одно с другим по Cr/год — как конкурентов. При такой
+            //   мерке заказ проигрывал всегда (123 отказа из 123), и напрашивался
+            //   вывод «плата за заказ сломана». Подняли плату — стало хуже: за
+            //   заказами карьера уходила в многовековые плечи, 13 рейсов вместо
+            //   60 и ни одного второго корпуса.
             //
-            // Мерка взята каноническая (§23): плата и срок заказа сравниваются
-            // ТОЛЬКО в Cr на ГОД ПОЛЁТА и ТОЛЬКО против свободного рейса,
-            // который советчик предлагает отсюда же. Это ровно тот выбор, перед
-            // которым стоит живой игрок, и никакого нового числа он не требует.
-            const TradeRun freeRun = g.playerBestRun(here, 40, false);
-            const double freePerYear = freeRun.valid ? freeRun.perYear : 0.0;
+            // Правильный порядок — тот, которым играет живой человек: торговля
+            // это основной доход, а заказ берётся ПО ПУТИ и догружается рынком.
+            // Значит и решать надо не «заказ ИЛИ рейс», а «есть ли заказ ТУДА,
+            // КУДА Я И ТАК ЛЕЧУ». Тогда плата за заказ и не обязана побеждать
+            // торговлю: она к ней прибавляется.
+            //
+            // Считаем СОВОКУПНУЮ выгоду рейса: заказ ПЛЮС догрузка в ту же
+            // систему — против чистого торгового рейса. Цель задаёт заказ, товар
+            // подбирается под неё.
+            //
+            // ⚠️ Две предыдущие попытки промахнулись мимо модели:
+            //   «заказ вместо рейса» — заказ проигрывает всегда (123 из 123), и
+            //     напрашивалась ложная правка платы;
+            //   «заказ туда же, куда лучший рейс» — совпадений почти нет (1 за
+            //     60 рейсов): 12 лучших целей из 1200 звёзд с доской заказов
+            //     пересекаются исчезающе редко.
+            // Живой игрок делает третье: берёт попутный заказ и ДОГРУЖАЕТСЯ
+            // рынком под его цель. Тогда дорога одна, а доходов два.
+            const TradeRun plan = g.playerBestRun(here, 40, false);
+            const double planPerYear = plan.valid ? plan.perYear : 0.0;
+            if (planPerYear > 0.0) { freeSum += planPerYear; ++freeCount; }
+
+            // Сводка широкая: нужна цена не «лучшей» цели, а КАЖДОЙ, куда может
+            // позвать заказ.
+            const std::vector<ArbitrageDeal> board = g.playerArbitrageBoard(here, 400, -1);
+            double bestCombined = planPerYear;
+            int bestJob = -1, bestElement = plan.valid ? plan.element : -1;
+            int bestTarget = plan.valid ? plan.targetStar : -1;
             for (size_t c = 0; c < g.contracts.size(); ++c) {
                 const Contract& job = g.contracts[c];
                 if (job.originStar != here || job.acceptedByAgent >= 0) continue;
@@ -121,9 +153,29 @@ int main(int argc, char** argv) {
                 const double years = g.agentContractRouteTravelTime(pa, job.id);
                 if (!(years > 0.0)) continue;
                 const double net = job.reward - g.agentContractRoadCost(pa, job.id);
-                if (net / years <= freePerYear) { ++jobsRejected; continue; }
-                if (g.agentAcceptContract(pa, job.id)) { ++jobsTaken; take(mContract, g, trips); }
-                break;
+
+                // Чем догрузиться в ту же систему: лучшая строка сводки туда.
+                double haulProfit = 0.0;
+                int haulElement = -1;
+                for (size_t d = 0; d < board.size(); ++d) {
+                    if (board[d].targetStar != job.targetStar) continue;
+                    if (board[d].profit > haulProfit) { haulProfit = board[d].profit; haulElement = board[d].element; }
+                }
+
+                const double combined = (net + haulProfit) / years;
+                if (net / years > bestJobPerYear) bestJobPerYear = net / years;
+                if (planPerYear > 0.0) { gapSum += combined / planPerYear; ++gapCount; }
+                if (combined <= bestCombined) { ++jobsRejected; continue; }
+                bestCombined = combined;
+                bestJob = job.id;
+                bestElement = haulElement;
+                bestTarget = job.targetStar;
+            }
+            if (bestJob >= 0 && g.agentAcceptContract(pa, bestJob)) {
+                ++jobsTaken;
+                take(mContract, g, trips);
+                jobTarget = bestTarget;
+                jobElement = bestElement;
             }
             // Лицензия и второй корпус: как только кошелёк позволяет. Лицензия
             // расширяет и квоту, и разрешённое число бортов (§21, §24).
@@ -155,40 +207,17 @@ int main(int argc, char** argv) {
             if (g.playerBuySystem()) ++systems;
         }
 
-        // Шаг 2: КУДА ЛЕТИМ. ⚠️ (§53) Раньше здесь всегда стоял торговый
-        // советчик, и принятый заказ оставался лежать мёртвым грузом: борт летел
-        // не туда, куда заказ указывает, и не сдавал НИ ОДНОГО из 27. Отсюда шла
-        // «репутация суммой 0.0», по которой §51 похоронил всю ветку репутации.
-        //
-        // Порядок теперь тот же, что у живого игрока: взял заказ — вези заказ, а
-        // торговлю пристраивай ПОД этот маршрут. Свободен — слушай советчика.
-        int haulContract = -1;
-        int destStar = -1;
-        for (size_t c = 0; c < g.contracts.size(); ++c) {
-            const Contract& job = g.contracts[c];
-            if (job.acceptedByAgent != pa || job.completed || job.failed) continue;
-            if (job.targetStar < 0 || job.targetStar >= int(g.cluster.stars.size())) continue;
-            haulContract = job.id;
-            destStar = job.targetStar;
-            break;
-        }
-
-        TradeRun run = g.playerBestRun(here, 40, false);
-        if (destStar < 0) {
-            if (!run.valid || run.element < 0 || run.targetStar < 0) { ++silentAdvice; break; }
-            destStar = run.targetStar;
-        }
+        // Шаг 2: ЛЕТИМ ТУДА, ГДЕ СОШЛИСЬ ТОРГОВЛЯ И ЗАКАЗ, и догружаем трюм.
+        const TradeRun run = g.playerBestRun(here, 40, false);
+        int destStar = jobTarget >= 0 ? jobTarget : (run.valid ? run.targetStar : -1);
+        int buyElement = jobTarget >= 0 ? jobElement : (run.valid ? run.element : -1);
+        if (destStar < 0) { ++silentAdvice; break; }
 
         const double before = g.playerNetWorth().total;
         g.setAgentDestination(pa, destStar);
-        // Груз заказа уже в трюме (его кладёт `agentAcceptContract`), поэтому
-        // докупаем только если советчик указывает В ТУ ЖЕ систему — иначе на
-        // сдаче не хватит места под сам заказ.
-        if (run.valid && run.element >= 0 && run.targetStar == destStar) {
-            g.agentBuyElementAmount(pa, run.element, 1.0e12);
-        }
+        // Догрузка: груз заказа уже в трюме, покупка берёт ОСТАТОК места.
+        if (buyElement >= 0) g.agentBuyElementAmount(pa, buyElement, 1.0e12);
         if (!g.commandAgentToStar(pa, destStar)) { ++refusedDepartures; break; }
-        (void)haulContract;
 
         // Шаг игры 0.1: мельче годового, чтобы расход сходился с оценкой (§48.9).
         for (int s = 0; s < 8000 && g.agents[size_t(pa)].ship.enRoute; ++s) g.update(0.1);
@@ -223,6 +252,9 @@ int main(int argc, char** argv) {
                 refusedDepartures, silentAdvice, adrift);
     std::printf("двери, в которые стучались: заказов взято %d (отвергнуто по Cr/год %d), лицензий %d, корпусов %d, систем %d\n",
                 jobsTaken, jobsRejected, licences, hulls, systems);
+    std::printf("Cr/год: свободный рейс в среднем %.4g; лучший заказ %.4g; отношение заказ/рейс в среднем %.4g по %d строкам\n",
+                freeCount > 0 ? freeSum / double(freeCount) : 0.0, bestJobPerYear,
+                gapCount > 0 ? gapSum / double(gapCount) : 0.0, gapCount);
     // Почему дверь не открылась: цена против кошелька на последнем шаге.
     std::printf("на выходе: кошелёк %.4g Cr; лицензия стоит %.4g; лицензий у игрока %d, бортов %d\n",
                 g.agents[size_t(pa)].money, g.licencePrice(), g.licence().count, g.playerShipCount());
