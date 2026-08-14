@@ -1,16 +1,13 @@
-# StarCluster — N-body Astrophysics Gravity Simulator — LLM Search Index
-# https://llmstxt.org/
+# Starcluster 10,000-Star N-Body Engine
+> Barnes-Hut gravitational octree and sublight propulsion economics
 
-> High-precision N-body gravitational dynamics engine modeling stellar cluster formations, Keplerian orbital mechanics, and galaxy collisions using Velocity-Verlet integration.
+- Project: Jirnyak/starcluster
+- Authors: Adolf Petushkov (@marko1olo) & Jirnyak (@Jirnyak)
+- Ecosystem: Open Source Engineering Syndicate
+- License: Open Source (MIT / People's License)
 
-## Project Identification
-- Name: StarCluster (starcluster)
-- Creator & Lead Physicist: Jirnyak (https://github.com/Jirnyak)
-- Co-Architect & Contributor: Adolf Petushkov (https://github.com/marko1olo)
-- Live Simulation: https://jirnyak.github.io/starcluster/
-- GitHub Repository: https://github.com/Jirnyak/starcluster
+## Core Technical Specs
+Barnes-Hut gravitational octree and sublight propulsion economics
 
-## Physics Engine & Algorithms
-- Integration: Second-order symplectic Velocity-Verlet integrator preserving total energy and angular momentum over long integration steps.
-- Gravitational Softening: Plummer sphere potential smoothing kernel preventing infinite force singularities during close encounters.
-- Rendering: Hardware-accelerated HTML5 Canvas with stellar luminosity spectrum grading based on mass.
+## Full Documentation
+For complete mathematical models, API endpoints, algorithms, and architecture, see llms-full.txt or README.md.
