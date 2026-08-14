@@ -7516,7 +7516,13 @@ bool Game::buyAdditionalShip(int agentIndex, int starIndex, int classId) {
     shipApplyClass(newShip, sc);
     // Второй борт — тоже борт КАПИТАНА, и его экипаж пользуется теми же
     // моделями. Иначе флот из двух кораблей вёл бы себя как два разных игрока.
-    if (agentIndex == playerAgent) {
+    //
+    // ⚠️ (§51) Условие было `agentIndex == playerAgent`, то есть корпус,
+    // купленный НЕ с флагмана (а именно так и покупают третий борт — стоя на
+    // втором), рождался вообще без хромоядер. Спрашивать надо про
+    // собственность, а не про то, за чьим штурвалом сидит игрок в эту секунду:
+    // ровно так же исправлялось `buyShip` (см. `rebakeBakedBonuses`).
+    if (agents[agentIndex].playerControlled) {
         shipApplyChromocoreFactors(newShip, tech.materials, tech.tactics, tech.kinematics);
         newShip.hullHP = newShip.maxHullHP;
     }

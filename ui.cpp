@@ -3802,13 +3802,25 @@ static void drawShipTechPanel(SDL_Renderer* renderer, const Game& game, int x, i
     // стат) наезжали друг на друга. Три колонки по трети панели дают 103 px:
     // запас есть на обоих языках и на двузначном множителе.
     const int colW = std::max(60, (w - 20) / 3);
+    // (§51) ⚠️ КИНЕМАТИКА УПИРАЕТСЯ В ПОТОЛОК, и об этом надо сказать.
+    // `shipApplyChromocoreFactors` считает `speed = min(0.5, speed * kinematics)`:
+    // световой предел лестницы корпусов кинематикой не отменяется. Панель же
+    // печатала голый множитель, и борт, давно упёршийся в 0.5c, продолжал
+    // показывать «SPEED 3.20» — обещание интерфейса, которого игра не исполняет
+    // (та же порода ошибок, что §39). Упёршийся множитель гасим до тусклого и
+    // помечаем звёздочкой: число остаётся честным, но перестаёт звать вкладывать
+    // ядра туда, где они уже ничего не дают.
+    const bool speedCapped = game.playerAgent >= 0 && game.playerAgent < int(game.agents.size()) &&
+        game.agents[size_t(game.playerAgent)].ship.speed >= 0.4999 && game.tech.kinematics > 1.0001;
     for (int i = 0; i < 7; ++i) {
         const int col = i % 3, rowi = i / 3;
         char cell[24];
-        std::snprintf(cell, sizeof(cell), "%s %.2F", chromocoreStatLabel(i), vals[i]);
-        const SDL_Color cc = vals[i] > 1.0001 ? P.green : P.dim;
+        const bool capped = (i == TECH_KINEMATICS) && speedCapped;
+        std::snprintf(cell, sizeof(cell), "%s %.2F%s", chromocoreStatLabel(i), vals[i], capped ? "*" : "");
+        const SDL_Color cc = capped ? P.amber : (vals[i] > 1.0001 ? P.green : P.dim);
         drawText(renderer, x + 10 + col * colW, y + 56 + rowi * 12, cell, cc, 1);
     }
+    if (speedCapped) drawText(renderer, x + 10, y + 56 + 3 * 12, "* HULL AT 0.5C LIMIT", P.amber, 1);
 }
 
 // ⚠️ ЛЕСТНИЦА ЖИВЁТ В ОДНОМ МЕСТЕ. Она объявлена свободной функцией не ради

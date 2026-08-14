@@ -42,12 +42,22 @@ void Game::grantChromocore(int stat) {
     double& s = statRef(tech, stat);
     s *= (1.0 + step);
 
-    // Запекаем в поля корабля игрока статы, которые читает легаси-код. Закон
+    // Запекаем в поля кораблей статы, которые читает легаси-код. Закон
     // запекания — общий с пересадкой на новый корпус (shipApplyChromocoreFactors),
     // сюда он приходит с приростом ровно одного ядра.
-    if (playerAgent >= 0 && playerAgent < int(agents.size())) {
-        Ship& ship = agents[playerAgent].ship;
-        const double f = 1.0 + step;
+    //
+    // ⚠️ (§51) ПО ВСЕМУ ФЛОТУ, а не только по борту под штурвалом. Здесь стоял
+    // один `agents[playerAgent].ship`, и это молча расслаивало флот: ядро,
+    // добытое капитаном, доставалось только его нынешнему корпусу, а остальные
+    // борта игрока навсегда оставались на том множителе, с которым были куплены.
+    // Расхождение копилось невидимо — панель `SHIP SYSTEMS` показывает ОДИН
+    // набор множителей на игрока (`TechState`), то есть обещала прокачку,
+    // которой у половины флота не было. Ровно та же мысль уже записана в
+    // `rebakeBakedBonuses`: хромоядра — собственность ИГРОКА, а не корпуса.
+    const double f = 1.0 + step;
+    for (size_t i = 0; i < agents.size(); ++i) {
+        if (!agents[i].playerControlled) continue;
+        Ship& ship = agents[i].ship;
         shipApplyChromocoreFactors(ship,
                                    stat == TECH_MATERIALS ? f : 1.0,
                                    stat == TECH_TACTICS ? f : 1.0,

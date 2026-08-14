@@ -3880,6 +3880,68 @@ void testSaveKeepsTheMarketAlive() {
 // продолжая показывать «>1.00» в интерфейсе. Меряем ОТНОШЕНИЕ к чистому
 // корпусу того же класса, а не абсолютные числа: лестница классов может
 // двигаться, закон запекания — нет.
+// (§51) ХРОМОЯДРА — СОБСТВЕННОСТЬ ИГРОКА, А НЕ КОРПУСА.
+//
+// Панель `SHIP SYSTEMS` показывает ОДИН набор множителей на игрока (`TechState`),
+// то есть обещает, что прокачан весь флот. Проверка требует, чтобы обещание
+// исполнялось на всех бортах: и на тех, что уже были, и на купленных потом, и на
+// купленных НЕ С ФЛАГМАНА.
+void testChromocoresReachTheWholeFleet() {
+    Game g;
+    buildWorld(g, 5150, 40);
+    const int pa = g.playerAgent;
+    const int home = g.agents[pa].currentStar;
+
+    // Покупаем второй борт ДО ядер: он должен догнать прокачку задним числом.
+    int cheap = -1;
+    for (size_t c = 0; c < shipClasses().size(); ++c) {
+        if (shipClasses()[c].price > 0.0) { cheap = int(c); break; }
+    }
+    if (cheap < 0) { check(false, "хромоядра доходят до всего флота", "нет корпусов в таблице"); return; }
+    g.agents[pa].money = 1.0e12;
+    while (g.playerShipCount() < 2 && g.playerBuyLicence()) {}
+    const bool boughtSecond = g.buyAdditionalShip(pa, home, cheap);
+
+    // Третий борт покупаем СО ВТОРОГО, а не с флагмана: именно этот случай
+    // рождал корпус без единого ядра.
+    int second = -1;
+    for (size_t i = 0; i < g.agents.size(); ++i) {
+        if (int(i) != pa && g.agents[i].playerControlled) { second = int(i); break; }
+    }
+    if (second >= 0) {
+        g.agents[size_t(second)].money = 1.0e12;
+        while (g.playerShipCount() < 3 && g.playerBuyLicence()) {}
+        g.buyAdditionalShip(second, home, cheap);
+    }
+
+    // Теперь ядра. Материалы видны на любом корпусе: трюм и корпус есть у всех.
+    const int cores = 8;
+    std::vector<double> before;
+    for (size_t i = 0; i < g.agents.size(); ++i) {
+        if (g.agents[i].playerControlled) before.push_back(g.agents[i].ship.cargoCapacity);
+    }
+    for (int i = 0; i < cores; ++i) g.grantChromocore(TECH_MATERIALS);
+
+    const double expected = std::pow(1.06, double(cores));
+    int hulls = 0, lagging = 0;
+    double worst = 1e9;
+    size_t k = 0;
+    for (size_t i = 0; i < g.agents.size(); ++i) {
+        if (!g.agents[i].playerControlled) continue;
+        ++hulls;
+        const double ratio = before[k] > 0.0 ? g.agents[i].ship.cargoCapacity / before[k] : 0.0;
+        if (ratio < worst) worst = ratio;
+        if (ratio < expected - 0.001) ++lagging;
+        ++k;
+    }
+
+    char buf[260];
+    std::snprintf(buf, sizeof(buf),
+        "бортов игрока %d (второй куплен %s), ядер %d: ждали x%.3f, худший борт x%.3f, отстало %d",
+        hulls, boughtSecond ? "да" : "НЕТ", cores, expected, worst, lagging);
+    check(hulls >= 2 && lagging == 0, "хромоядра доходят до всего флота", buf);
+}
+
 void testChromocoresSurviveHullChange() {
     Game g;
     buildWorld(g, 4242, 40);
@@ -4445,6 +4507,7 @@ int main(int argc, char** argv) {
     RUN(testProgressSurvivesSave);
     RUN(testSaveKeepsTheMarketAlive);
     RUN(testChromocoresSurviveHullChange);
+    RUN(testChromocoresReachTheWholeFleet);
     RUN(testExoticMarketsAreRare);
     RUN(testExoticRunIsAnotherFloor);
     RUN(testAntimatterBurnsWithTheFuel);

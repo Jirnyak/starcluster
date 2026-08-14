@@ -836,7 +836,10 @@ work" but "does it lock the player in *together with* the others".
   gate.
 - Reputation still tops out at 1000 completed jobs with only two outlets: the
   size of the jobs offered and a fresh copy of a power's books. Beyond that it
-  buys nothing. The old figure of 817,000 game years to cap one faction was
+  buys nothing - in particular it does not raise fleet capacity, which grows on
+  credits alone: the second trading licence costs 1,000,000 Cr against the
+  1.45e6 net worth a measured sixty-run career reaches (section 51.1), so a
+  second hull lands later than exotics and almost level with buying a system. The old figure of 817,000 game years to cap one faction was
   measured when only 1.65% of stars had an owner; powers now buy systems from the
   centre and their holdings grow, so the grind is shorter - but it has not been
   measured again.
