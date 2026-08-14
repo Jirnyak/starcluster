@@ -856,15 +856,20 @@ work" but "does it lock the player in *together with* the others".
   outlet: it discounts the licence bond. A trading licence is a bond the clearing
   house takes against turnover, and a captain with a proven delivery record is a
   smaller risk, so the price is divided by `1 + best job tier` - unchanged with no
-  reputation, halved at the top of the ladder. ⚠️ The size of that effect is *not
-  measured*: `journey_probe` flies where the trade advisor points rather than
-  where its accepted contracts point, so it delivers none of them and its
-  reputation stays at zero. What is measured is that the second hull is reachable
-  at all - trip 44, year 1519, once the probe's own two broken premises are fixed
-  (it used to demand a 3x cash margin and never completed a job). The old figure
-  of 817,000 game years to cap one faction was measured when only 1.65% of stars
-  had an owner; powers now buy systems from the centre and their holdings grow,
-  so the grind is shorter - but it has not been measured again.
+  reputation, halved at the top of the ladder. ⚠️ **That discount never fires,
+  and the reason is the jobs board, not the licence.** Once `journey_probe` was
+  taught to actually haul its contracts and to judge them the canonical way -
+  credits per year of flight against the free trade run the advisor offers from
+  the same port - it rejected **123 out of 123** offers over a sixty-run career
+  (seed 1234, 1,200 stars, starting Hauler). No board entry beats simply trading,
+  so a rational captain never builds reputation at all and never reaches the
+  discount. Fixing job pay is a balance fork with numbers, deliberately not done
+  blind on the eve of a release. The cost of the old behaviour is visible though:
+  no longer hauling loss-making jobs moves the second hull from trip 44 (year
+  1519) to trip 23 (year 673). The old figure of 817,000 game years to cap one
+  faction was measured when only 1.65% of stars had an owner; powers now buy
+  systems from the centre and their holdings grow, so the grind is shorter - but
+  it has not been measured again.
 - The introductory novel ends at line 29 and only speaks about the high-tech
   floor contextually, in the first port that actually has such a market. Lines 27
   and 28 now cover the distress beacon and answering one. It still says nothing
@@ -885,11 +890,15 @@ work" but "does it lock the player in *together with* the others".
   the first at trip 19 around year 800 - and the forge, the one way to pick a stat
   outright, still costs about 7.5M Cr of condensate and so arrives long after it
   would have mattered. The hook is now a steering wheel on a slow vehicle.
-- Repair is finally priced by the local market (the port's service cost against
-  the cluster median, clamped to the measured 1st and 99th percentiles) and pays
-  the system's owner a tariff. It still only matters in local flight: macro combat
-  never touches `hullHP`, so the outcome there stays binary - intact or escape
-  pod. There is no insurance of any kind.
+- Repair is priced by the local market (the port's service cost against the
+  cluster median, clamped to the measured 1st and 99th percentiles) and pays the
+  system's owner a tariff. Hull damage is now one system across both layers:
+  macro combat spends the same weapon fields on the same `hullHP` that local
+  flight shoots at, so a skirmish leaves a mark instead of resolving as
+  intact-or-escape-pod, and a hull that runs out dies. The pair to that is that a
+  port patches a ship the moment it docks - instantly, exactly where the player
+  repairs, since otherwise ships would grind themselves to death over centuries.
+  There is still no insurance of any kind.
 - Ships strand for real and the rescue that answers is now a mechanic, not a
   timer (section 50). A dead engine raises a beacon; the beacon travels at light
   speed like every other signal in the cluster; whoever hears it and can overhaul

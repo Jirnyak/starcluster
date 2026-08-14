@@ -7366,6 +7366,18 @@ void Game::updateAgents(double dt) {
                     // наказание без решения игрока и без связи с чем-либо. Его место заняла
                     // лицензионная квота — та же тема «налог», но с целью, счётчиком и выбором.
 
+                    // (§53) ПОРТ ЛАТАЕТ ПРИШВАРТОВАВШИЙСЯ БОРТ. Пара к тому, что
+                    // макро-бой теперь царапает корпус: без этого борта копили бы
+                    // повреждения веками и вымирали от истирания. Чинится СРАЗУ и
+                    // ровно там же, где чинится игрок, — в обитаемой системе; за
+                    // борт державы платит её казна, и отдельного числа тут нет,
+                    // потому что и у игрока ремонт мгновенный, а упирается лишь в
+                    // деньги (`playerRepairHull`).
+                    if (validStar(*this, agent.currentStar) &&
+                        cluster.stars[size_t(agent.currentStar)].population > 0.0) {
+                        agent.ship.hullHP = agent.ship.maxHullHP;
+                    }
+
                     observeLocalThreatsForFaction(agent.ship.ownerFaction, agent.currentStar);
                     queueOwnerSignal(agent.ship.ownerFaction, agent.currentStar, agent.currentStar);
                     queueMarketSignal(agent.ship.ownerFaction, agent.currentStar, agent.currentStar);
@@ -7497,6 +7509,28 @@ bool Game::robAgent(int attackerIndex, int victimIndex) {
         loser.cargoCost = 0.0;
     };
     
+    // (§53) КОРПУС ОДИН НА ОБА СЛОЯ. До этого макро-бой не трогал `hullHP`
+    // вовсе: исход был двоичным — цел или капсула, — и повреждения существовали
+    // только в ручном полёте. То есть одно и то же поле означало в двух слоях
+    // разное, а цена ремонта (§52.3) работала лишь для того, кто летает руками.
+    //
+    // Единиц не изобретаем: `calcPower` уже считает урон, прошедший броню, в тех
+    // же полях оружия, которыми стреляет локальный бой (`heavy*0.6 + light*0.4`
+    // против `hullHP` там же). Значит стычка в макро — это обмен ровно на эту
+    // величину, и обе стороны получают её в корпус. Ни одной новой константы.
+    //
+    // ⚠️ Гибель теперь наступает ДВУМЯ путями: прежним (разгром по силе) и новым
+    // (корпус кончился). Второй и делает бой изнашивающим: пират, раз за разом
+    // нападавший безнаказанно, доживает до стычки, которой ему хватит.
+    auto strike = [this](Agent& target, int index, double damage) -> bool {
+        if (damage <= 0.0 || target.ship.maxHullHP <= 0.0) return false;
+        target.ship.hullHP -= damage;
+        if (target.ship.hullHP > 0.0) return false;
+        downgradeAgentToEscapePod(target);
+        rebakeBakedBonuses(index);
+        return true;
+    };
+
     // Resolve combat
     if (roll < successThreshold + 0.15) {
         // Attacker wins
@@ -7505,15 +7539,18 @@ bool Game::robAgent(int attackerIndex, int victimIndex) {
             attacker.lastAction = "destroyed " + victim.type;
             victim.lastAction = "destroyed by " + attacker.type;
             lootCargo(attacker, victim);
-            
+
             // Credits are immaterial and cannot be stolen
             downgradeAgentToEscapePod(victim);
             rebakeBakedBonuses(victimIndex);
         } else {
-            // Victim surrenders cargo
+            // Victim surrenders cargo — но не даром: стычка была, и корпуса
+            // обеих сторон это помнят.
             attacker.lastAction = "robbed " + victim.type;
             victim.lastAction = "robbed by " + attacker.type;
             lootCargo(attacker, victim);
+            strike(victim, victimIndex, attackPower);
+            strike(attacker, attackerIndex, victimPower);
         }
         return true;
     } else {
@@ -7528,9 +7565,11 @@ bool Game::robAgent(int attackerIndex, int victimIndex) {
             downgradeAgentToEscapePod(attacker);
             rebakeBakedBonuses(attackerIndex);
         } else {
-            // Attacker repelled
+            // Attacker repelled — отбились, но обстрел был обоюдным.
             attacker.lastAction = "repelled by " + victim.type;
             victim.lastAction = "repelled pirate " + attacker.type;
+            strike(attacker, attackerIndex, victimPower);
+            strike(victim, victimIndex, attackPower);
         }
         return false;
     }
