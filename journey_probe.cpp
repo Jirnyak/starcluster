@@ -98,6 +98,8 @@ int main(int argc, char** argv) {
     double slackSum = 0.0;      // отношение «данный срок / мой реальный полёт»
     int slackCount = 0, slackImpossible = 0;
     std::vector<double> slackAll;   // распределение «срок / мой полёт»
+    std::vector<double> massAll;    // (§57) массы предложенных заказов — есть ли интервал
+    std::vector<double> rewardAll;
     int gapCount = 0;
     double freeSum = 0.0;
     int freeCount = 0;
@@ -189,6 +191,10 @@ int main(int argc, char** argv) {
                 }
                 const double net = job.reward - g.agentContractRoadCost(pa, job.id);
                 const double given = job.deadline - g.time;
+                // ⚠️ Только ГРУЗОВЫЕ заказы: у курьера и награды за голову груза
+                // нет вовсе, и их «масса» — мусор, а не маленький заказ.
+                if (job.resource >= 0) massAll.push_back(job.amount * resourceUnitMassByIndex(job.resource));
+                rewardAll.push_back(job.reward);
 
                 // Чем догрузиться в ту же систему: лучшая строка сводки туда.
                 double haulProfit = 0.0;
@@ -332,6 +338,16 @@ int main(int argc, char** argv) {
     std::printf("судьба заказов: взято %d, сдано %d, просрочено %d, висит %d; срок/мой полёт в среднем %.3g по %d\n",
                 jobsTaken, jobsDelivered, jobsExpired, jobsPending,
                 slackCount > 0 ? slackSum / double(slackCount) : 0.0, slackCount);
+    if (!massAll.empty()) {
+        std::sort(massAll.begin(), massAll.end());
+        std::sort(rewardAll.begin(), rewardAll.end());
+        const double q[] = {0.0, 0.25, 0.50, 0.75, 1.0};
+        std::printf("масса заказа, т:");
+        for (int k = 0; k < 5; ++k) std::printf("  %.0f%%=%.4g", q[k] * 100.0, massAll[size_t(q[k] * double(massAll.size() - 1))]);
+        std::printf("\nнаграда, Cr:  ");
+        for (int k = 0; k < 5; ++k) std::printf("  %.0f%%=%.4g", q[k] * 100.0, rewardAll[size_t(q[k] * double(rewardAll.size() - 1))]);
+        std::printf("\n");
+    }
     if (!slackAll.empty()) {
         std::sort(slackAll.begin(), slackAll.end());
         const double q[] = {0.05, 0.10, 0.25, 0.50, 0.75};

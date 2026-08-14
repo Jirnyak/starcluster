@@ -1534,21 +1534,53 @@ bool tryCreateDeliveryContract(Game& game, int originStar) {
     // разъехалось бы насмерть: тир открывала бы одна фракция, а росла
     // репутация у другой. Теперь тир, оплата и репутация — про одну и ту же
     // фракцию, и остальные шесть типов заказа давно делают именно так.
+    // (§57) РАЗМЕР ЗАКАЗА — НЕПРЕРЫВНАЯ ФУНКЦИЯ КОНТЕКСТА, А НЕ БРОСОК КОСТИ.
+    //
+    // Было: тир кидался кубом от потолка репутации (`rollContractTier`), из тира
+    // считалась номинальная масса, к ней добавлялся разброс ±25%. У новичка
+    // потолок равен нулю, куб нуля — ноль, и доска схлопывалась в ТОЧКУ: все
+    // заказы ровно `JOB_CARGO_BASE`. Ни маленьких, ни больших, ни интервала.
+    //
+    // Стало: сколько везти — спрашиваем у МИРА. Столько, сколько система реально
+    // недобирает (`hungerMass` — тот же голод в массе, по которому выбран сам
+    // элемент), с двумя честными потолками: сколько ей доверят (репутация) и
+    // сколько есть на складе отправителя.
+    //
+    //   масса = min( голод цели, доверие заказчика, пятая часть склада )
+    //
+    // Интервал получается сам и на ЛЮБОЙ репутации: системы недобирают
+    // по-разному, поэтому рядом висят и мелкие заказы, и крупные. Репутация
+    // двигает не «ступень», а ПОТОЛОК — непрерывно, вместе с дальностью.
     const int issuer = starAuthority(game, originStar);
-    const double tier = rollContractTier(game, issuer);
-    const int targetStar = pickNeedyTarget(game, originStar, contractRangeShare(tier));
+    const double trust = game.factionJobTier(issuer);          // 0..1, непрерывен
+    const double trustMass = std::max(1.0, Game::jobCargoForTier(trust));
+    const int targetStar = pickNeedyTarget(game, originStar, contractRangeShare(trust));
     if (!validStar(game, targetStar)) return false;
 
-    const double wantedMass = rollContractCargoMass(tier);
-    const int resourceIndex = pickNeededResource(game, originStar, targetStar, wantedMass);
+    const int resourceIndex = pickNeededResource(game, originStar, targetStar, trustMass);
     if (resourceIndex < 0) return false;
 
     Market& origin = game.markets[originStar];
     const Market& target = game.markets[targetStar];
     const double unitMass = std::max(0.001, resourceUnitMassByIndex(resourceIndex));
+
+    // Голод цели по этому элементу — та же величина, которой `pickNeededResource`
+    // его и выбрал: годовое потребление за несколько лет плюс незакрытый спрос.
+    const double consumption = resourceIndex < int(target.demandRate.size()) ? target.demandRate[resourceIndex] : 0.0;
+    const double unmet = resourceIndex < int(target.demand.size()) ? target.demand[resourceIndex].amount : 0.0;
+    const double hungerMass = (consumption * 4.0 + unmet) * unitMass;
+
+    const double wantedMass = std::min(hungerMass, trustMass);
     const double amount = std::min(origin.supply[resourceIndex].amount * 0.18, wantedMass / unitMass);
     if (amount <= 0.25) return false;
     const double cargoMass = amount * unitMass;
+
+    // Тир заказа — теперь ОПИСАНИЕ реального размера, а не жребий, который его
+    // породил: где эта партия стоит на лестнице масс. Им пользуются залог и
+    // проверки репутации, и смысл у него прежний.
+    const double tier = std::max(0.0, std::min(1.0,
+        std::log(std::max(1.0, cargoMass) / JOB_CARGO_BASE) /
+        std::log(std::max(1.0001, JOB_CARGO_TOP / JOB_CARGO_BASE))));
 
     const double distance = cachedRouteDistance(game, originStar, targetStar);
 
