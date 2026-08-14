@@ -2115,6 +2115,22 @@ double s_dryLoadedOverPlanned = 0.0;  // сколько залили сверх 
 long long s_dryLoadedCount = 0;
 bool s_strandTrace = false;           // печатать разбор первых быстрых прибытий
 int s_strandTraceLeft = 12;
+// (§50) Спасение: чем кончилось и сколько ждали. Ожидание меряется от подъёма
+// маяка до стыковки — в него входит и ход света, и полёт спасателя.
+long long s_rescueBeacons = 0;
+long long s_rescueLive = 0;           // вытащил живой борт
+long long s_rescueState = 0;          // вытащил казённый спасатель
+long long s_rescueLastResort = 0;     // сработал TOW_WAIT_YEARS: физика не справилась
+long long s_rescueLoots = 0;          // первым пришёл чужой и вычистил трюм
+double s_rescueWaitSum = 0.0, s_rescueWaitWorst = 0.0;
+long long s_rescueWaitCount = 0;
+double s_rescueLightSum = 0.0;        // из ожидания — только ход света до спасателя
+long long s_rescueLightCount = 0;
+// Проводка награды обеими сторонами: сколько ушло из казны и сколько дошло до
+// карманов. Меряется здесь, а не разницей казны снаружи: казна живёт своей
+// жизнью (тарифы, выкупы, субсидии), и на её фоне награда — шум.
+double s_rescueBountyPaid = 0.0;      // списано с казны (награда + залитое топливо)
+double s_rescueBountyCash = 0.0;      // зачислено спасателям деньгами
 
 bool moveShipToward(Ship& ship, const ClusterStar& target, double dt) {
     const double dx = target.x - ship.x;
@@ -3596,10 +3612,25 @@ double strandStatHonestRatio() { return s_honestCount ? s_honestSum / double(s_h
 double strandStatDryReserve() { return s_dryLoadedCount ? s_dryLoadedOverPlanned / double(s_dryLoadedCount) : 0.0; }
 double strandStatWorstAny() { return s_strandWorstAny; }
 double strandStatWorstSpeed() { return s_strandWorstSpeed; }
+// (§50) Спасение: обёртки над теми же счётчиками.
+long long strandStatBeacons() { return s_rescueBeacons; }
+long long strandStatLiveRescues() { return s_rescueLive; }
+long long strandStatStateRescues() { return s_rescueState; }
+long long strandStatLastResort() { return s_rescueLastResort; }
+long long strandStatLoots() { return s_rescueLoots; }
+double strandStatWaitAverage() { return s_rescueWaitCount ? s_rescueWaitSum / double(s_rescueWaitCount) : 0.0; }
+double strandStatWaitWorst() { return s_rescueWaitWorst; }
+double strandStatLightAverage() { return s_rescueLightCount ? s_rescueLightSum / double(s_rescueLightCount) : 0.0; }
+double strandStatBountyPaid() { return s_rescueBountyPaid; }
+double strandStatBountyCash() { return s_rescueBountyCash; }
 void strandStatReset() { s_strandArrivals = s_strandDryArrivals = s_strandOvershoots = s_strandFastArrivals = s_strandRiskyDepartures = s_strandTows = 0;
     s_strandWorstSpeed = s_strandWorstAny = 0.0;
     s_ratioSum = s_ratioMax = s_dryLoadedOverPlanned = 0.0; s_ratioCount = s_dryLoadedCount = 0;
-    s_rapSum = s_rapMax = 0.0; s_rapCount = 0; s_honestSum = 0.0; s_honestCount = 0; }
+    s_rapSum = s_rapMax = 0.0; s_rapCount = 0; s_honestSum = 0.0; s_honestCount = 0;
+    s_rescueBeacons = s_rescueLive = s_rescueState = s_rescueLastResort = s_rescueLoots = 0;
+    s_rescueWaitSum = s_rescueWaitWorst = s_rescueLightSum = 0.0;
+    s_rescueWaitCount = s_rescueLightCount = 0;
+    s_rescueBountyPaid = s_rescueBountyCash = 0.0; }
 
 Game::Game() : time(0.0) {}
 
@@ -3620,7 +3651,9 @@ bool Game::saveToFile(const std::string& path) {
         return false;
     }
     out << std::setprecision(17);
-    out << "STARCLUSTER_SAVE 19 " << cluster.stars.size() << '\n';
+    // (§50) Версия 20: блок `DISTRESS` — маяки бедствия, состояние спасателей и
+    // годы дрейфа. Поднята ОДИН РАЗ на всё, что добавил раздел.
+    out << "STARCLUSTER_SAVE 20 " << cluster.stars.size() << '\n';
     out << "SEED " << seed << '\n';
     out << "RNG " << rng << '\n';
     out << "TIME " << time << ' ' << contractUpdateTimer << ' ' << factionUpdateTimer << ' '
@@ -3978,6 +4011,36 @@ bool Game::saveToFile(const std::string& path) {
         << tradeInsightPending << ' ' << tradeInsightTimer << ' '
         << exoticUnitsSold << '\n';
 
+    // (§50) БЕДА ПЕРЕЖИВАЕТ ЗАГРУЗКУ. До этого `driftYears` не сохранялся
+    // намеренно: ждать было нечего, помощь приходила по таймеру. С маяком у
+    // беды появился возраст — сигнал ушёл в такой-то год, спасатель уже в пути,
+    // — и терять это при загрузке значило бы звать помощь дважды и заново
+    // отсчитывать ход света.
+    //
+    // Блок отдельный и один на всё, что добавил §50: маяки, состояние
+    // спасателей и годы дрейфа. Дописывать поля в строку `AGENT` нельзя —
+    // последним в ней идёт токен `lastAction`, и разбор старой версии схватил
+    // бы вместо него следующий тег (та же грабля, что развела версии 16 и 17).
+    // Спасатели пишутся РАЗРЕЖЕННО: их единицы на тысячу бортов.
+    out << "DISTRESS " << distress.size() << '\n';
+    for (const DistressBeacon& beacon : distress) {
+        out << "DB " << beacon.agent << ' ' << beacon.x << ' ' << beacon.y << ' ' << beacon.z << ' '
+            << beacon.vx << ' ' << beacon.vy << ' ' << beacon.vz << ' '
+            << beacon.raisedTime << ' ' << beacon.responder << ' '
+            << (beacon.stateSent ? 1 : 0) << ' ' << (beacon.looted ? 1 : 0) << '\n';
+    }
+    size_t rescuerCount = 0;
+    for (const Agent& agent : agents) {
+        if (agent.rescueTarget >= 0 || agent.driftYears > 0.0) ++rescuerCount;
+    }
+    out << "RESCUERS " << rescuerCount << '\n';
+    for (size_t i = 0; i < agents.size(); ++i) {
+        const Agent& agent = agents[i];
+        if (agent.rescueTarget < 0 && agent.driftYears <= 0.0) continue;
+        out << "RS " << i << ' ' << agent.rescueTarget << ' ' << (agent.rescueKnows ? 1 : 0) << ' '
+            << agent.rescueResumeStar << ' ' << agent.driftYears << '\n';
+    }
+
     if (!out) {
         lastEvent = "save failed";
         return false;
@@ -4009,7 +4072,7 @@ bool Game::loadFromFile(const std::string& path) {
     // писались и читались в игре, но в сейв не попадали. Блок отдельный, значит
     // старые сейвы читаются прежним путём.
     if (!(in >> tag >> version >> starCount) || tag != "STARCLUSTER_SAVE" ||
-        version < 14 || version > 19) {
+        version < 14 || version > 20) {
         lastEvent = "load failed: version";
         return false;
     }
@@ -4877,6 +4940,52 @@ bool Game::loadFromFile(const std::string& path) {
         loaded.everEnteredLocal = enteredLocal != 0;
     }
 
+    // (§50) Маяки и спасатели. Сейвы 14..19 блока не содержат — там беда просто
+    // не имела возраста, и после загрузки застрявший ждал заново.
+    if (version >= 20) {
+        size_t beaconCount = 0;
+        if (!expectTag(in, "DISTRESS") || !(in >> beaconCount)) {
+            lastEvent = "load failed: distress";
+            return false;
+        }
+        loaded.distress.clear();
+        loaded.distress.reserve(beaconCount);
+        for (size_t b = 0; b < beaconCount; ++b) {
+            DistressBeacon beacon;
+            int stateSent = 0, looted = 0;
+            if (!expectTag(in, "DB") ||
+                !(in >> beacon.agent >> beacon.x >> beacon.y >> beacon.z >>
+                    beacon.vx >> beacon.vy >> beacon.vz >>
+                    beacon.raisedTime >> beacon.responder >> stateSent >> looted)) {
+                lastEvent = "load failed: distress beacon";
+                return false;
+            }
+            beacon.stateSent = stateSent != 0;
+            beacon.looted = looted != 0;
+            loaded.distress.push_back(beacon);
+        }
+        size_t rescuerCount = 0;
+        if (!expectTag(in, "RESCUERS") || !(in >> rescuerCount)) {
+            lastEvent = "load failed: rescuers";
+            return false;
+        }
+        for (size_t r = 0; r < rescuerCount; ++r) {
+            size_t index = 0;
+            int rescueTarget = -1, knows = 0, resumeStar = -1;
+            double driftYears = 0.0;
+            if (!expectTag(in, "RS") ||
+                !(in >> index >> rescueTarget >> knows >> resumeStar >> driftYears)) {
+                lastEvent = "load failed: rescuer row";
+                return false;
+            }
+            if (index >= loaded.agents.size()) continue;
+            loaded.agents[index].rescueTarget = rescueTarget;
+            loaded.agents[index].rescueKnows = knows != 0;
+            loaded.agents[index].rescueResumeStar = resumeStar;
+            loaded.agents[index].driftYears = driftYears;
+        }
+    }
+
     if (!in) {
         lastEvent = "load failed";
         return false;
@@ -5104,6 +5213,10 @@ void Game::init(size_t num_stars) {
     factionRelations.clear();
     playerKnowledge.clear();
     pendingSignals.clear();
+    // (§50) Маяки — тоже состояние мира: без сброса беда одного мира зазвучала
+    // бы в следующем, и харнес мерил бы чужое спасение.
+    distress.clear();
+    distressTimer = 0.0;
     signalMemory.clear();
     routeNextHop.clear();
     marketUpdatedAt.clear();
@@ -5564,6 +5677,9 @@ void Game::update(double dt) {
     updateFactions(dt);
     updateContracts(dt);
     updateAgents(dt);
+    // (§50) Диспетчер маяков — ПОСЛЕ движения бортов: спасатель должен видеть
+    // сегодняшнее положение дрейфующего, а не вчерашнее. Свой такт внутри.
+    updateDistress(dt);
     processSignals();
     updateAnomalies(dt);
     updateLicence(dt);
@@ -6173,6 +6289,173 @@ void Game::processSignals() {
     }
 }
 
+// (§50) СПАСЕНИЕ ИЗ ДРЕЙФА — механика, а не таймер.
+//
+// До этого раздела помощь приходила из ниоткуда ровно через `TOW_WAIT_YEARS`:
+// заглушка-телепорт. Теперь ожидание физическое и складывается из двух слагаемых,
+// каждое из которых можно замерить отдельно:
+//
+//   1. СВЕТ ДОШЁЛ. Маяк — точка и момент; услышал тот, до кого свет успел дойти
+//      (`time >= raisedTime + расстояние`). Скорость света в единицах игры
+//      равна единице: расстояния — световые годы, время — годы. Ровно так же
+//      считает вся очередь `pendingSignals` (§16).
+//   2. СПАСАТЕЛЬ ДОЛЕТЕЛ. Ближайший из услышавших бросает дело и идёт на
+//      перехват на полном ходу. Гарантия встречи держится ДОГОНЯЕМОСТЬЮ (§48.6):
+//      в кандидаты берётся только борт, чей потолок скорости выше скорости
+//      дрейфа. Гравитация тут ни при чём — она посчитана и отвергнута числом.
+//
+// Долетев до ТОЧКИ СИГНАЛА, спасатель получает настоящее положение борта:
+// дрейф строго баллистический, поэтому «точка плюс скорость на прошедшее время»
+// — не догадка, а расчёт (решение пользователя, §48.8 п.2). Догонит или нет —
+// его забота: скорость дрейфа никто не гасит.
+//
+// ⚠️ На маяк слетаются не только спасатели. Пират или борт враждебной державы,
+// услышавший сигнал первым, приходит за ГРУЗОМ, а не за жизнью: вычищает трюм и
+// уходит. Спасение при этом никуда не девается — оно остаётся бесплатным и
+// гарантированным (§48.8 п.3), просто застрявшего привезут в порт пустым. Так
+// у беды появляется цена, которую нельзя переждать: время теряют все, а груз —
+// тот, кто сломался далеко от своих.
+
+// Цена корпуса по имени борта.
+//
+// ⚠️ Точного совпадения НЕ ХВАТАЕТ, и замер это поймал: награда за спасение
+// вышла нулевой при списании 17 927 Cr с казны. У игрока имя борта и правда
+// равно имени класса (иначе `buyShip` не найдёт текущий корпус), а флот держав
+// строится под составным именем вида `Vekhra_Hauler_7` — и точный поиск по нему
+// не находит ничего. Поэтому: сначала точное совпадение, потом вхождение имени
+// класса в имя борта, и из подошедших берётся САМОЕ ДЛИННОЕ имя — иначе
+// «Hauler» победил бы «Heavy Hauler» на одном и том же борту.
+double hullClassPrice(const Ship& ship) {
+    const std::vector<ShipClass>& classes = shipClasses();
+    for (size_t c = 0; c < classes.size(); ++c) {
+        if (classes[c].name == ship.name) return classes[c].price;
+    }
+    double price = 0.0;
+    size_t longest = 0;
+    for (size_t c = 0; c < classes.size(); ++c) {
+        const std::string& name = classes[c].name;
+        if (name.empty() || name.size() <= longest) continue;
+        if (ship.name.find(name) == std::string::npos) continue;
+        longest = name.size();
+        price = classes[c].price;
+    }
+    if (price > 0.0) return price;
+
+    // Ни то, ни другое: борта, которыми населяется мир на старте, — БЕЗЫМЯННЫЕ
+    // по классу. Они собираются числами прямо в `Game::init` («Trader_7» с
+    // выданными вручную трюмом и ускорением) и ни к одной строке таблицы не
+    // привязаны. Для них цена берётся по БЛИЖАЙШЕЙ сухой массе: именно она
+    // ведёт лестницу цен в таблице классов, и оценка «во что обошёлся бы такой
+    // корпус на верфи» — это ровно тот вопрос, на который отвечает награда.
+    double bestGap = 1e300;
+    for (size_t c = 0; c < classes.size(); ++c) {
+        if (classes[c].price <= 0.0) continue;
+        const double gap = std::fabs(classes[c].dryMass - ship.dryMass);
+        if (gap < bestGap) { bestGap = gap; price = classes[c].price; }
+    }
+    return price;
+}
+
+double distanceShipToPoint(const Ship& ship, double x, double y, double z) {
+    const double dx = x - ship.x, dy = y - ship.y, dz = z - ship.z;
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// Положение борта по данным САМОГО МАЯКА: точка плюс скорость на прошедшее
+// время. Совпадает с настоящим до последнего знака, пока дрейф баллистический
+// (а он баллистический: у мёртвого двигателя нет тяги), — и это утверждение
+// проверяется харнесом, а не берётся на веру.
+void beaconPredictedPosition(const DistressBeacon& beacon, double now, double& x, double& y, double& z) {
+    const double years = std::max(0.0, now - beacon.raisedTime);
+    x = beacon.x + beacon.vx * years;
+    y = beacon.y + beacon.vy * years;
+    z = beacon.z + beacon.vz * years;
+}
+
+// (§50) ПЕРЕХВАТ: цель — не звезда, а точка, которая сама летит.
+//
+// `moveShipToward` для этого не годится: он гасит скорость В НОЛЬ у неподвижной
+// звезды, а на перехвате гасить надо РАЗНИЦУ скоростей. Схема та же самая,
+// только записанная в системе отсчёта цели: желаемая скорость = скорость цели
+// плюс подход по направлению на неё, а подход ограничен тем, что ещё можно
+// погасить на оставшемся пути (sqrt(2*a*s)). Ни одного нового числа: и потолок
+// скорости, и расход в быстроте взяты у самого полёта.
+//
+// ⚠️ Критерий встречи ШАГОЗАВИСИМЫЙ, и это не небрежность, а урок §48.9.
+// Погасить разницу ровно в точке нельзя никогда: шаг интегрирования конечен.
+// Мерить надо не величину остатка, а ВЫПОЛНИМОСТЬ манёвра — «до цели меньше
+// одного шага сближения И разницу можно снять одним импульсом тяги». Ровно так
+// же устроено прибытие к звезде (`speed <= accel * dt`). Порог по остатку
+// проверялся: на шаге 1.0 года спасатель проскакивал цель и болтался вокруг неё
+// вечно, а на шаге 0.01 сходился — то есть проверялась ошибка интегрирования.
+// `matchVelocity` разводит два разных дела. ТОЧКА СИГНАЛА — путевая: её надо
+// ПРОЙТИ, а не остановиться в ней. ⚠️ Первая версия тормозила в ноль и там:
+// замер показал скорость 0.000000 c в точке маяка, то есть борт гасил весь
+// разгон, чтобы тут же набрать его заново. Это стоило лишнего цикла
+// «разгон + торможение» — а топливо ему покупалось на ОДИН, по `legCost`, — и
+// било в тот самый сценарий, где спасатель сохнет на догоне. Уравнивать
+// скорость нужно только с самим дрейфующим бортом: там это и есть швартовка.
+bool chaseShipToward(Ship& ship, double tx, double ty, double tz,
+                     double tvx, double tvy, double tvz, double dt, bool matchVelocity) {
+    const double dx = tx - ship.x, dy = ty - ship.y, dz = tz - ship.z;
+    const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const double rvx = ship.vx - tvx, rvy = ship.vy - tvy, rvz = ship.vz - tvz;
+    const double rel = std::sqrt(rvx * rvx + rvy * rvy + rvz * rvz);
+    const double accel = shipCurrentAcceleration(ship);
+
+    if (dist <= std::max(RESCUE_DOCK_DISTANCE, rel * dt) &&
+        (!matchVelocity || rel <= std::max(RESCUE_MATCH_SPEED, accel * dt))) {
+        if (!matchVelocity) return true;    // точку прошли, ход не гасим
+        // Встреча состоялась: садимся борт к борту и уравниваем скорость.
+        ship.x = tx; ship.y = ty; ship.z = tz;
+        ship.vx = tvx; ship.vy = tvy; ship.vz = tvz;
+        return true;
+    }
+
+    if (accel > 0.0) {
+        const double dirX = dist > 1e-12 ? dx / dist : 0.0;
+        const double dirY = dist > 1e-12 ? dy / dist : 0.0;
+        const double dirZ = dist > 1e-12 ? dz / dist : 0.0;
+        const double targetSpeed = std::sqrt(tvx * tvx + tvy * tvy + tvz * tvz);
+        const double ceiling = shipCruiseSpeed(ship);
+        // Запас над целью — это и есть догоняемость: если он нулевой, борт
+        // висит на хвосте и не сближается. Диспетчер таких в спасатели не берёт.
+        const double headroom = std::max(0.0, ceiling - targetSpeed);
+        // Тормозной профиль нужен только там, где надо ОСТАНОВИТЬСЯ рядом. К
+        // путевой точке идём на полном ходу и проходим её насквозь.
+        const double approach = matchVelocity
+            ? std::min(headroom, std::sqrt(2.0 * accel * std::max(0.0, dist)))
+            : headroom;
+        const double wantX = tvx + dirX * approach;
+        const double wantY = tvy + dirY * approach;
+        const double wantZ = tvz + dirZ * approach;
+        const double needX = wantX - ship.vx, needY = wantY - ship.vy, needZ = wantZ - ship.vz;
+        const double need = std::sqrt(needX * needX + needY * needY + needZ * needZ);
+        if (need > 1e-12) {
+            const double speed = std::sqrt(ship.vx * ship.vx + ship.vy * ship.vy + ship.vz * ship.vz);
+            const double rapidityCost = 1.0 / std::max(1e-6, 1.0 - speed * speed);
+            const double budget = std::min(need, accel * dt);
+            const double given = consumeAndStoreAsh(ship, budget * rapidityCost) / rapidityCost;
+            const double k = given / need;
+            ship.vx += needX * k;
+            ship.vy += needY * k;
+            ship.vz += needZ * k;
+        }
+        const double after = std::sqrt(ship.vx * ship.vx + ship.vy * ship.vy + ship.vz * ship.vz);
+        if (after > ceiling && after > 1e-12) {
+            const double k = ceiling / after;
+            ship.vx *= k; ship.vy *= k; ship.vz *= k;
+        }
+    }
+
+    ship.x += ship.vx * dt;
+    ship.y += ship.vy * dt;
+    ship.z += ship.vz * dt;
+    return false;
+}
+
+void closeDistress(Game& game, int beaconIndex);   // (§50) объявлена ниже, нужна буксиру
+
 // (§38) Буксир для корабля, которому нечем тормозить.
 //
 // Берёт долю кошелька и половину трюма, ставит корабль в БЛИЖАЙШУЮ систему и
@@ -6213,6 +6496,14 @@ void towStrandedShip(Game& game, int agentIndex) {
     // же плече, и буксир превратится в бесконечную петлю.
     shipEmergencyPrime(agent.ship);
     ++s_strandTows;
+    // (§50) Беда кончилась — маяк снимается здесь же, а не на следующем опросе:
+    // иначе спасатель ещё четверть года летел бы к уже вытащенному борту.
+    agent.driftYears = 0.0;
+    for (size_t b = 0; b < game.distress.size(); ++b) {
+        if (game.distress[b].agent != agentIndex) continue;
+        closeDistress(game, int(b));
+        break;
+    }
     agent.lastAction = "towed in";
     if (agent.playerControlled) {
         game.lastEvent = "rescued - brought in to " + port.name;
@@ -6220,9 +6511,647 @@ void towStrandedShip(Game& game, int agentIndex) {
     }
 }
 
+// (§50) Поднять маяк. Один борт — один маяк: повторный вызов ничего не делает,
+// поэтому звать её можно из каждой ветки дрейфа и на каждом тике.
+void raiseDistress(Game& game, int agentIndex) {
+    if (agentIndex < 0 || agentIndex >= int(game.agents.size())) return;
+    for (size_t b = 0; b < game.distress.size(); ++b) {
+        if (game.distress[b].agent == agentIndex) return;
+    }
+    const Ship& ship = game.agents[size_t(agentIndex)].ship;
+    DistressBeacon beacon;
+    beacon.agent = agentIndex;
+    beacon.x = ship.x; beacon.y = ship.y; beacon.z = ship.z;
+    beacon.vx = ship.vx; beacon.vy = ship.vy; beacon.vz = ship.vz;
+    beacon.raisedTime = game.time;
+    game.distress.push_back(beacon);
+    ++s_rescueBeacons;
+    if (game.agents[size_t(agentIndex)].playerControlled) {
+        game.lastEvent = "distress beacon raised";
+        game.pushNews("Distress beacon raised - adrift with dead engines", 2);
+    }
+}
+
+// Снять маяк. ⚠️ `erase` СДВИГАЕТ индексы, а на них ссылается `rescueTarget` у
+// спасателей: без пересчёта борт после чужого спасения молча улетал бы догонять
+// не того. Маяков единицы, поэтому честный проход по агентам дешевле, чем
+// заводить долгоживущие идентификаторы и хранить их в сейве.
+void closeDistress(Game& game, int beaconIndex) {
+    if (beaconIndex < 0 || beaconIndex >= int(game.distress.size())) return;
+    for (size_t a = 0; a < game.agents.size(); ++a) {
+        Agent& r = game.agents[a];
+        if (r.rescueTarget == beaconIndex) {
+            r.rescueTarget = -1;
+            r.rescueKnows = false;
+            r.ship.enRoute = false;
+            r.ship.targetStar = -1;
+            // ⚠️ Спасателя, чей рейс отменили, надо ОТШВАРТОВАТЬ, если он уже
+            // в пустоте: `currentStar` продолжал бы указывать на порт вылета за
+            // десятки световых лет, и `updateTrader` строил бы маршруты от
+            // звезды, а торговал бы через пустоту. Ровно та же грабля, что в
+            // ветке экстренной остановки и у бросившего погоню. Проверяется по
+            // расстоянию, а не по флагу: борт, который так и не отошёл от
+            // причала, пришвартован по-настоящему и трогать его нельзя.
+            if (validStar(game, r.currentStar) &&
+                distanceShipToStar(r.ship, game.cluster.stars[size_t(r.currentStar)]) > RESCUE_DOCK_DISTANCE) {
+                r.currentStar = -1;
+            }
+        } else if (r.rescueTarget > beaconIndex) {
+            --r.rescueTarget;
+        }
+    }
+    game.distress.erase(game.distress.begin() + beaconIndex);
+}
+
+// Свет от маяка дошёл до точки? Единственная формула ожидания во всей механике.
+bool distressHeardAt(const DistressBeacon& beacon, double now, double x, double y, double z) {
+    const double dx = x - beacon.x, dy = y - beacon.y, dz = z - beacon.z;
+    return now >= beacon.raisedTime + std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// Кто пришёл на сигнал — спасать или грабить. Пират грабит всегда; борт державы
+// — только если с хозяином застрявшего у него настоящая вражда. Порог −35 не
+// выдуман здесь: ровно с него военный борт державы переходит от патрулирования
+// к нападению (`updateMilitary`), и «достаточно враждебен, чтобы стрелять»
+// обязано значить то же самое, что «достаточно враждебен, чтобы обобрать».
+bool answersDistressAsLooter(const Game& game, const Agent& comer, const Agent& victim) {
+    if (agentIsPiracyThreat(comer)) return true;
+    if (!validFaction(game, comer.ship.ownerFaction) || !validFaction(game, victim.ship.ownerFaction)) return false;
+    if (comer.ship.ownerFaction == victim.ship.ownerFaction) return false;
+    return game.factionRelation(comer.ship.ownerFaction, victim.ship.ownerFaction) < -35;
+}
+
+// Спасатель довёл дело до конца: борт на буксир, обоих — в ближайший порт,
+// награду — из казны.
+void completeRescue(Game& game, int beaconIndex, int rescuerIndex) {
+    // ⚠️ Маяк берётся КОПИЕЙ, и снимает его РОВНО ОДИН вызов — тот, что внутри
+    // `towStrandedShip`. Первая версия держала ссылку и в конце гасила маяк
+    // второй раз, уже по чужому индексу: `towStrandedShip` успевал снять свой,
+    // вектор сжимался, и `closeDistress(beaconIndex)` убивал СОСЕДНЮЮ беду
+    // вместе с её спасателем. Замер: 42% тактов в мире на 2048 звёзд идут с
+    // двумя и более маяками одновременно (в полном мире их до 33), так что
+    // «соседа» почти всегда есть кому найтись. Пострадавший тут же поднимал
+    // маяк заново — с новой точкой и новым временем, то есть ход света и всё
+    // ожидание отсчитывались с нуля, и со стороны это выглядело как «спасатели
+    // почему-то не долетают».
+    const DistressBeacon beacon = game.distress[size_t(beaconIndex)];
+    const int victimIndex = beacon.agent;
+    if (victimIndex < 0 || victimIndex >= int(game.agents.size())) { closeDistress(game, beaconIndex); return; }
+
+    const double waited = std::max(0.0, game.time - beacon.raisedTime);
+    s_rescueWaitSum += waited;
+    if (waited > s_rescueWaitWorst) s_rescueWaitWorst = waited;
+    ++s_rescueWaitCount;
+
+    const double hull = hullClassPrice(game.agents[size_t(victimIndex)].ship);
+    towStrandedShip(game, victimIndex);              // спасённый — в ближайший порт
+    const int port = game.agents[size_t(victimIndex)].currentStar;
+
+    Agent& rescuer = game.agents[size_t(rescuerIndex)];
+    // Буксир идёт в порт ВМЕСТЕ с тем, кого тащит: иначе спасатель оставался бы
+    // висеть в пустоте с полупустыми баками — то есть спасение порождало бы
+    // следующее бедствие.
+    if (validStar(game, port)) {
+        const ClusterStar& star = game.cluster.stars[size_t(port)];
+        rescuer.ship.x = star.x; rescuer.ship.y = star.y; rescuer.ship.z = star.z;
+        rescuer.ship.vx = rescuer.ship.vy = rescuer.ship.vz = 0.0;
+        rescuer.currentStar = port;
+        rescuer.destStar = validStar(game, rescuer.rescueResumeStar) ? rescuer.rescueResumeStar : port;
+    }
+    rescuer.ship.enRoute = false;
+    rescuer.ship.targetStar = -1;
+    rescuer.rescueKnows = false;
+    rescuer.rescueResumeStar = -1;
+    rescuer.lastAction = "answered a distress call";
+
+    // НАГРАДА: полный бак плюс доля цены корпуса, платит клиринговая палата
+    // (решение пользователя, §48.8 п.5). ⚠️ Деньги и вещество не появляются из
+    // воздуха: топливо доливается физически, а его рыночная стоимость и доля
+    // корпуса списываются с казны — обе стороны проводки, как в §47.
+    const double fuelBefore = shipFuelMix(rescuer.ship).mass + shipPropellantMix(rescuer.ship).mass;
+    shipEmergencyPrime(rescuer.ship, 1.0);
+    const double poured = std::max(0.0, shipFuelMix(rescuer.ship).mass + shipPropellantMix(rescuer.ship).mass - fuelBefore);
+    double propellantPrice = 1.0, fuelPrice = 1.0;
+    routePrices(game, rescuer.ship, port, propellantPrice, fuelPrice);
+    const double bill = poured * std::max(propellantPrice, fuelPrice) + hull * RESCUE_HULL_SHARE;
+    const double cash = hull * RESCUE_HULL_SHARE;
+    if (validFaction(game, game.clearingFaction)) {
+        Faction& state = game.factions[size_t(game.clearingFaction)];
+        const double paid = std::min(bill, std::max(0.0, state.treasury));
+        const double toPocket = std::min(cash, paid);
+        state.treasury -= paid;
+        rescuer.money += toPocket;
+        s_rescueBountyPaid += paid;
+        s_rescueBountyCash += toPocket;
+    }
+
+    if (rescuer.playerControlled) {
+        game.lastEvent = "rescue complete - bounty paid";
+        game.pushNews("Rescue complete: " + std::to_string(int(cash)) + " Cr and a full tank", 1);
+    }
+    if (rescuer.type == "rescue") ++s_rescueState; else ++s_rescueLive;
+    // Маяк уже снят внутри `towStrandedShip` — второго `closeDistress` здесь
+    // быть не должно (см. ⚠️ в шапке функции).
+}
+
+// Мародёр добрался первым. Трюм вычищен, борт брошен дрейфовать дальше —
+// спасатели придут своим чередом, маяк остаётся в эфире.
+void lootDistress(Game& game, int beaconIndex, int looterIndex) {
+    DistressBeacon& beacon = game.distress[size_t(beaconIndex)];
+    Agent& victim = game.agents[size_t(beacon.agent)];
+    Agent& looter = game.agents[size_t(looterIndex)];
+
+    // Груз ПЕРЕЕЗЖАЕТ, а не испаряется: сколько влезет в чужой трюм, столько и
+    // увезут, остальное выброшено за борт. Мародёр не волшебник, и трюм у него
+    // не резиновый — тот же учёт, что при обычном разбое.
+    double room = std::max(0.0, looter.ship.cargoCapacity - shipCargoMass(looter.ship));
+    for (size_t c = 0; c < victim.ship.cargo.size() && room > 0.0; ++c) {
+        const int index = elementIndex(victim.ship.cargo[c].element);
+        if (index < 0) continue;
+        const double unit = std::max(0.001, resourceUnitMassByIndex(index));
+        const double move = std::min(victim.ship.cargo[c].amount, room / unit);
+        if (move <= 0.01) continue;
+        bool merged = false;
+        for (size_t k = 0; k < looter.ship.cargo.size(); ++k) {
+            if (looter.ship.cargo[k].element != victim.ship.cargo[c].element) continue;
+            looter.ship.cargo[k].amount += move;
+            merged = true;
+            break;
+        }
+        if (!merged) looter.ship.cargo.emplace_back(victim.ship.cargo[c].element, move);
+        room -= move * unit;
+    }
+    victim.ship.cargo.clear();
+    victim.cargoCost = 0.0;
+    beacon.looted = true;
+    beacon.responder = -1;
+    looter.rescueTarget = -1;
+    looter.rescueKnows = false;
+    looter.ship.enRoute = false;
+    looter.ship.targetStar = -1;
+    looter.currentStar = -1;      // взял добычу в пустоте, а не в порту
+    looter.lastAction = "stripped a distress call";
+    ++s_rescueLoots;
+
+    if (victim.playerControlled) {
+        game.lastEvent = "boarded while adrift - hold stripped";
+        game.pushNews("Raiders answered your beacon first: hold stripped", 2);
+    } else if (looter.playerControlled) {
+        game.lastEvent = "stripped an adrift hull";
+    }
+}
+
+// (§50) СКОЛЬКО ИДТИ ДО ВСТРЕЧИ — мерка, по которой выбирается спасатель.
+//
+// ⚠️ Первая версия брала БЛИЖАЙШЕГО, и замер снял с этого выбора почву:
+// ожидание вышло 63.8 года в среднем при ходе света 4.9 — то есть 93% ожидания
+// съедал догон, а не расстояние. Ближний тихоход висит на хвосте вечно, дальний
+// быстроход обгоняет его за десяток лет. Правильный вопрос — не «кто ближе», а
+// «кто раньше будет там», и он раскладывается на два физических слагаемых:
+//
+//   долёт до точки сигнала            t1 = расстояние / крейсер
+//   догон хвоста (борт всё это время уходит)
+//                                     t2 = скорость_дрейфа * (t1 + возраст маяка)
+//                                          / (крейсер − скорость_дрейфа)
+//
+// Знаменатель и есть ДОГОНЯЕМОСТЬ (§48.6): не догоняет — бесконечность, и такой
+// борт отсеивается сам, без отдельного порога «на 15% быстрее».
+double rescueEtaYears(const Game& game, const Agent& cand, const DistressBeacon& beacon, double driftSpeed) {
+    // На перехват идут на полном ходу, поэтому мерка — потолок корпуса, а не
+    // сегодняшнее экономичное деление.
+    const double cruise = std::max(0.02, cand.ship.speed);
+    const double closing = cruise - driftSpeed;
+    if (closing <= 1e-6) return 1e300;
+    const double t1 = distanceShipToPoint(cand.ship, beacon.x, beacon.y, beacon.z) / cruise;
+    const double gap = driftSpeed * std::max(0.0, game.time + t1 - beacon.raisedTime);
+    return t1 + gap / closing;
+}
+
+// Хватит ли борту расходников на весь перехват. Считается той же `legCost`, что
+// и обычное плечо: перехват — такой же полёт, просто цель у него движется.
+bool rescuerCanReach(const Game& game, const Agent& cand, double path) {
+    double propellantPrice = 1.0, fuelPrice = 1.0;
+    routePrices(game, cand.ship, cand.currentStar, propellantPrice, fuelPrice);
+    const RouteCost need = legCost(cand.ship, path, propellantPrice, fuelPrice);
+    if (!need.feasible) return false;
+    if (shipFuelMix(cand.ship).mass < need.fuelMass) return false;
+    if (!driveUsesFuelAsPropellant(cand.ship.driveIndex) &&
+        shipPropellantMix(cand.ship).mass < need.propellantMass) return false;
+    return true;
+}
+
+// Отправить борт на перехват. Возвращает false, если он не тянет дорогу, — и
+// тогда борт остаётся при своих, а маяк ищет другого.
+//
+// ⚠️ Проверка топлива идёт ДО того, как борту выкрутят крейсер и перенастроят
+// двигатель, и отказ ВОЗВРАЩАЕТ прежний режим. Первая версия проверяла после:
+// отвергнутый торговец так и оставался на полном ходу и жёг топливо не по тому
+// профилю весь остаток своего рейса — и так на каждом опросе.
+bool launchRescuer(Game& game, int beaconIndex, int rescuerIndex, double light, double eta) {
+    Agent& rescuer = game.agents[size_t(rescuerIndex)];
+    const double keepFraction = rescuer.ship.cruiseFraction;
+    // На перехват идут на полном ходу: экономичный крейсер (§48.4) — размен
+    // «дешевле, но реже», а здесь второй половины размена нет.
+    rescuer.ship.cruiseFraction = 1.0;
+    shipTuneDrive(rescuer.ship, 1.0, 1.0);
+    // Заправка НА ВЕСЬ ПУТЬ, а не на расстояние до точки сигнала: перехват — это
+    // долёт плюс догон, и второе слагаемое обычно больше первого.
+    const double path = std::max(light, rescuer.ship.speed * eta);
+    if (validStar(game, rescuer.currentStar) && !rescuer.ship.enRoute) {
+        double propellantPrice = 1.0, fuelPrice = 1.0;
+        routePrices(game, rescuer.ship, rescuer.currentStar, propellantPrice, fuelPrice);
+        const RouteCost need = legCost(rescuer.ship, path, propellantPrice, fuelPrice);
+        buyRouteConsumables(game, rescuer, rescuer.currentStar, need);
+    }
+    // ⚠️ СПАСАТЕЛЬ, КОТОРЫЙ НЕ ДОЛЕТИТ, НЕ ЛЕТИТ ВОВСЕ. И это ровно
+    // противоположно правилу вылета торговца: тому «лететь впритык» разрешено,
+    // потому что альтернатива — стоять в порту вечно (§48.8). У спасателя
+    // альтернатива другая: не полетит он — полетит кто-то ещё. Замер первой
+    // версии, где рискнуть разрешалось: 13 вылетов впритык породили 47 маяков —
+    // спасатели сохли на догоне и уходили в дрейф сами, то есть механика
+    // спасения ПЛОДИЛА бедствия.
+    if (!rescuerCanReach(game, rescuer, path)) {
+        rescuer.ship.cruiseFraction = keepFraction;
+        shipTuneDrive(rescuer.ship, 1.0, 1.0);
+        rescuer.lastAction = "cannot reach the beacon";
+        return false;
+    }
+    rescuer.rescueTarget = beaconIndex;
+    rescuer.rescueKnows = false;
+    rescuer.rescueResumeStar = rescuer.destStar;
+    rescuer.ship.enRoute = true;
+    rescuer.ship.targetStar = -3;      // цель — точка сигнала, а не звезда
+    rescuer.lastAction = "answering a distress call";
+    game.distress[size_t(beaconIndex)].responder = rescuerIndex;
+    s_rescueLightSum += light;         // ход света до того, кто откликнулся
+    ++s_rescueLightCount;
+    return true;
+}
+
+// Казённый спасательный катер: сначала свободный из уже построенных, и только
+// если такого нет — новый. Возвращает индекс агента или −1.
+int dispatchStateCutter(Game& game, DistressBeacon& beacon, double driftSpeed,
+                        double& outLight, double& outEta) {
+    if (!validFaction(game, game.clearingFaction)) return -1;
+
+    // Свободный катер, до которого дошёл свет, — берётся без всякой стройки.
+    int idle = -1;
+    double idleEta = 1e299;
+    for (size_t a = 0; a < game.agents.size(); ++a) {
+        const Agent& cutter = game.agents[a];
+        if (cutter.type != "rescue" || cutter.rescueTarget >= 0) continue;
+        if (!distressHeardAt(beacon, game.time, cutter.ship.x, cutter.ship.y, cutter.ship.z)) continue;
+        const double eta = rescueEtaYears(game, cutter, beacon, driftSpeed);
+        if (eta < idleEta) { idleEta = eta; idle = int(a); }
+    }
+    if (idle >= 0 && idleEta <= TOW_WAIT_YEARS) {
+        outEta = idleEta;
+        outLight = distanceShipToPoint(game.agents[size_t(idle)].ship, beacon.x, beacon.y, beacon.z);
+        return idle;
+    }
+    // ⚠️ Флаг «казна уже слала» НЕ запирает постройку навсегда. Первая версия
+    // запирала — и замер нашёл 12 маяков, у которых катер был построен, ушёл на
+    // другую беду, а второго не полагалось: борта висели по 265 лет. Число
+    // катеров и без флага упирается в три вещи, каждая из которых настоящая:
+    // свободный катер ищется ПЕРВЫМ, есть потолок населения и есть казна.
+    // Отсюда флот палаты сам равен числу ОДНОВРЕМЕННЫХ бедствий.
+
+    // Потолок населения — тот же, что у флота держав (§47.11).
+    const size_t starCount = std::max<size_t>(1, game.cluster.stars.size());
+    const double targetAgents = std::max(48.0,
+        double(AGENT_TARGET_FULL) * double(starCount) / double(STAR_COUNT));
+    if (double(game.agents.size()) >= targetAgents * FLEET_POPULATION_HEADROOM) return -1;
+
+    Faction& state = game.factions[size_t(game.clearingFaction)];
+    if (state.controlledStars.empty()) return -1;
+
+    // Порт приписки: система палаты, до которой сигнал УЖЕ дошёл и от которой
+    // ближе всего лететь. Если свет не дошёл ни до одной — катер не выйдет, и
+    // это правильно: палата ещё не знает о беде.
+    int berth = -1;
+    double bestDistance = 1e300;
+    for (size_t k = 0; k < state.controlledStars.size(); ++k) {
+        const int s = state.controlledStars[k];
+        if (!validStar(game, s)) continue;
+        const ClusterStar& star = game.cluster.stars[size_t(s)];
+        if (!distressHeardAt(beacon, game.time, star.x, star.y, star.z)) continue;
+        const double dx = star.x - beacon.x, dy = star.y - beacon.y, dz = star.z - beacon.z;
+        const double d = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (d < bestDistance) { bestDistance = d; berth = s; }
+    }
+    if (berth < 0) return -1;
+
+    // Корпус — САМЫЙ БЫСТРЫЙ по карману, а не самый дорогой: у катера одна
+    // работа, и это догоняемость. Медленнее дрейфа — не берём вовсе.
+    const std::vector<ShipClass>& classes = shipClasses();
+    int pick = -1;
+    double pickSpeed = driftSpeed;
+    for (size_t c = 0; c < classes.size(); ++c) {
+        if (classes[c].price <= 0.0 || classes[c].price > state.treasury) continue;
+        const double speed = shipClassMaxSpeed(classes[c]);
+        if (speed > pickSpeed) { pickSpeed = speed; pick = int(c); }
+    }
+    if (pick < 0) return -1;
+
+    // ⚠️ ПРОВЕРИТЬ ОЦЕНКУ ВСТРЕЧИ ДО СТРОЙКИ, а не после. Первая версия строила
+    // катер и лишь потом узнавала, что тот не успеет: `rescueEtaYears` растёт
+    // без границ с возрастом маяка (разрыв = скорость дрейфа × прожитые годы),
+    // поэтому у старой беды НИ ОДИН корпус в игре не проходит порог. Катер
+    // тут же освобождался — и через четверть года строился следующий.
+    // Замер: 77 катеров на ЧЕТЫРЕ маяка за тридцать лет (4 в год, ровно по
+    // одному на опрос), 308 млн Cr из казны, от причала отошёл ОДИН, спасений
+    // ноль; в полном мире — 275 катеров на 1280 бортов, то есть 21% населения
+    // мира стало балластом и заперло потолок, за которым державы перестали
+    // строить флот. Оценка считается по корпусу-кандидату ДО покупки: не
+    // успеет — не строим, и беда честно уходит на последний рубеж.
+    const ClusterStar& star = game.cluster.stars[size_t(berth)];
+    {
+        Ship probe("probe", star.x, star.y, star.z, 0.12, game.clearingFaction);
+        shipApplyClass(probe, classes[size_t(pick)]);
+        Agent trial("rescue", probe);
+        trial.currentStar = berth;
+        const double eta = rescueEtaYears(game, trial, beacon, driftSpeed);
+        if (eta > TOW_WAIT_YEARS) return -1;
+        if (!rescuerCanReach(game, trial, std::max(bestDistance, probe.speed * eta))) return -1;
+    }
+    state.treasury -= classes[size_t(pick)].price;
+    Ship hull("Cutter", star.x, star.y, star.z, 0.12, game.clearingFaction);
+    shipApplyClass(hull, classes[size_t(pick)]);
+    shipAutofit(hull);
+    // ⚠️ Имя борта — это и есть имя КЛАССА (по нему считается цена корпуса и
+    // ищется текущий корпус при покупке), поэтому переименовывать катер нельзя.
+    hull.name = classes[size_t(pick)].name;
+    Agent cutter("rescue", hull);
+    cutter.currentStar = berth;
+    cutter.homeStar = berth;
+    cutter.destStar = berth;
+    cutter.money = 0.0;
+    cutter.lastAction = "commissioned as a cutter";
+    game.agents.push_back(cutter);
+    beacon.stateSent = true;
+    outLight = bestDistance;
+    outEta = rescueEtaYears(game, game.agents.back(), beacon, driftSpeed);
+    return int(game.agents.size()) - 1;
+}
+
+// (§50) ДИСПЕТЧЕР: кто услышал маяк и кто пойдёт на перехват.
+void Game::updateDistress(double dt) {
+    distressTimer += dt;
+    if (distress.empty()) { distressTimer = 0.0; return; }
+    if (distressTimer < DISTRESS_POLL_YEARS) return;
+    distressTimer = 0.0;
+
+    for (size_t b = 0; b < distress.size(); ) {
+        DistressBeacon& beacon = distress[b];
+        if (beacon.agent < 0 || beacon.agent >= int(agents.size())) { closeDistress(*this, int(b)); continue; }
+        const Agent& victim = agents[size_t(beacon.agent)];
+        // Борт ожил (вытащили, долили, встал в порту) — маяк снят.
+        //
+        // ⚠️ Признак беды — МЁРТВЫЙ ДВИГАТЕЛЬ, а не «нет порта под ногами».
+        // Первая версия спрашивала `validStar(currentStar)` и снимала маяк на
+        // первом же опросе: в полёте `currentStar` продолжает указывать на порт
+        // ВЫЛЕТА и становится −1 только после экстренной остановки. Замер это
+        // и показал — 3207 маяков за 300 лет (один на 0.1 года) при нуле
+        // спасений: сигнал гас раньше, чем свет успевал до кого-нибудь дойти.
+        if (!victim.ship.enRoute || shipCurrentAcceleration(victim.ship) > 0.0) {
+            closeDistress(*this, int(b));
+            continue;
+        }
+        const double driftSpeed = std::sqrt(victim.ship.vx * victim.ship.vx +
+                                            victim.ship.vy * victim.ship.vy +
+                                            victim.ship.vz * victim.ship.vz);
+        // Взявшийся спасатель ПЕРЕПРОВЕРЯЕТСЯ, а не держит маяк вечно.
+        //
+        // ⚠️ Замер первой версии: 32 маяка в эфире, старейшему 265 лет, и у
+        // каждого спасатель ЕСТЬ. Разбор показал, чем они заняты: борт с
+        // потолком 0.191c догонял дрейф 0.184c — сближение 0.007c, то есть
+        // тысяча лет на десяток световых. Назначение было пожизненным, и один
+        // безнадёжный кандидат навсегда закрывал маяк для всех остальных.
+        // Теперь оценка встречи считается заново каждый опрос, и спасатель,
+        // который проигрывает даже последнему рубежу, освобождает место.
+        if (beacon.responder >= 0 && beacon.responder < int(agents.size()) &&
+            agents[size_t(beacon.responder)].rescueTarget == int(b)) {
+            if (rescueEtaYears(*this, agents[size_t(beacon.responder)], beacon, driftSpeed) <= TOW_WAIT_YEARS) {
+                ++b;
+                continue;
+            }
+            Agent& quitter = agents[size_t(beacon.responder)];
+            quitter.rescueTarget = -1;
+            quitter.rescueKnows = false;
+            quitter.ship.enRoute = false;
+            quitter.ship.targetStar = -1;
+            // ⚠️ Борт бросил погоню ПОСРЕДИ ПУСТОТЫ и ни к одной системе не
+            // пришвартован. Без этого `currentStar` продолжал бы указывать на
+            // порт вылета — та же грабля, что в ветке экстренной остановки:
+            // маршруты считались бы от звезды за световые годы, а торговать
+            // можно было бы прямо из пустоты.
+            quitter.currentStar = -1;
+            quitter.lastAction = "lost the chase";
+        }
+        beacon.responder = -1;
+        int best = -1;
+        double bestEta = 1e299;
+        double bestLight = 0.0;
+        for (size_t a = 0; a < agents.size(); ++a) {
+            const Agent& cand = agents[a];
+            if (int(a) == beacon.agent || cand.rescueTarget >= 0) continue;
+            // Игрок сам решает, лететь ему на сигнал или нет: отнимать у него
+            // руль ради чужой беды — та же подстава, что молча выпустить его
+            // в дрейф (§48.9).
+            if (cand.playerControlled) continue;
+            // ⚠️ ХОД СВЕТА ПРОВЕРЯЕТСЯ ПЕРВЫМ, и это не косметика, а такт.
+            // Отсев по свету — три вычитания и корень, он отбрасывает почти всех
+            // (скопление 100 ly, маяку обычно считанные годы); а
+            // `shipCurrentAcceleration` обходит оба списка расходников на борту.
+            // Раньше порядок был обратный, и полное скопление считало год за
+            // 160.4 мс при бюджете 160.
+            if (!distressHeardAt(beacon, time, cand.ship.x, cand.ship.y, cand.ship.z)) continue;
+            // Мёртвому двигателю спасать некого — он сам скоро позовёт.
+            if (shipCurrentAcceleration(cand.ship) <= 0.0) continue;
+            // Обобранному маяку мародёр больше не интересен — брать нечего.
+            if (beacon.looted && answersDistressAsLooter(*this, cand, victim)) continue;
+            // ⚠️ Порог годности ВЫВЕДЕН, а не назначен: кандидат обязан успеть
+            // раньше последнего рубежа. Спасатель, который не обгоняет казённый
+            // буксир по таймеру, — театр: он занимает маяк и ничего не решает.
+            const double eta = rescueEtaYears(*this, cand, beacon, driftSpeed);
+            if (eta > TOW_WAIT_YEARS) continue;
+            if (eta < bestEta) {
+                bestEta = eta;
+                bestLight = distanceShipToPoint(cand.ship, beacon.x, beacon.y, beacon.z);
+                best = int(a);
+            }
+        }
+
+        // Живой кандидат снаряжается ПЕРВЫМ, и только если он не тянет дорогу —
+        // зовётся казна. ⚠️ Раньше отвергнутому по топливу живому борту казна на
+        // смену не приходила вовсе: маяк оставался без спасателя, хотя палата
+        // даже не пробовала.
+        bool dispatched = best >= 0 && launchRescuer(*this, int(b), best, bestLight, bestEta);
+        if (!dispatched) {
+            // (§50) Живых нет — идёт КАЗНА (решение пользователя, §48.8).
+            // Клиринговая палата держит спасательные катера: один корпус, одна
+            // задача, самый быстрый, какой она может себе позволить, — потому
+            // что вся работа катера и есть догоняемость.
+            const int cutter = dispatchStateCutter(*this, distress[b], driftSpeed, bestLight, bestEta);
+            if (cutter >= 0) dispatched = launchRescuer(*this, int(b), cutter, bestLight, bestEta);
+        }
+        (void)dispatched;
+        ++b;
+    }
+}
+
+// (§50) Маяки, чей свет ДОШЁЛ до борта. Игрок слышит ровно то же и по тому же
+// правилу, что и ИИ, — никаких «оповещений для удобства»: сигнал, до которого
+// свет ещё летит, для него не существует.
+std::vector<int> Game::audibleDistress(int agentIndex) const {
+    std::vector<int> heard;
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return heard;
+    const Ship& ship = agents[size_t(agentIndex)].ship;
+    for (size_t b = 0; b < distress.size(); ++b) {
+        if (distress[b].agent == agentIndex) continue;
+        if (!distressHeardAt(distress[b], time, ship.x, ship.y, ship.z)) continue;
+        heard.push_back(int(b));
+    }
+    // Свежие первыми: старый маяк, скорее всего, уже кем-то взят.
+    for (size_t i = 0; i + 1 < heard.size(); ++i) {
+        for (size_t j = i + 1; j < heard.size(); ++j) {
+            if (distress[size_t(heard[j])].raisedTime > distress[size_t(heard[i])].raisedTime) {
+                const int t = heard[i]; heard[i] = heard[j]; heard[j] = t;
+            }
+        }
+    }
+    return heard;
+}
+
+// Игрок берётся за спасение. Отказы называются вслух: молчаливый отказ на
+// кнопке — та же подстава, что молча выпустить борт в дрейф (§48.9).
+bool Game::commandAgentToDistress(int agentIndex, int beaconIndex) {
+    if (agentIndex < 0 || agentIndex >= int(agents.size())) return false;
+    if (beaconIndex < 0 || beaconIndex >= int(distress.size())) return false;
+    Agent& agent = agents[size_t(agentIndex)];
+    const DistressBeacon& beacon = distress[size_t(beaconIndex)];
+    if (beacon.agent == agentIndex) return false;
+    if (agent.ship.enRoute) {
+        if (agent.playerControlled) lastEvent = "rescue blocked: ship already en route";
+        return false;
+    }
+    if (!distressHeardAt(beacon, time, agent.ship.x, agent.ship.y, agent.ship.z)) {
+        if (agent.playerControlled) lastEvent = "rescue blocked: signal has not arrived yet";
+        return false;
+    }
+    if (shipCurrentAcceleration(agent.ship) <= 0.0) {
+        if (agent.playerControlled) lastEvent = "rescue blocked: no thrust";
+        return false;
+    }
+    // ДОГОНЯЕМОСТЬ (§48.6). Тот же порог, что у диспетчера: браться за перехват
+    // на борту, который дрейфующего не догонит, — это обещание, которого игра
+    // не сдержит.
+    const double driftSpeed = beacon.agent >= 0 && beacon.agent < int(agents.size())
+        ? std::sqrt(agents[size_t(beacon.agent)].ship.vx * agents[size_t(beacon.agent)].ship.vx +
+                    agents[size_t(beacon.agent)].ship.vy * agents[size_t(beacon.agent)].ship.vy +
+                    agents[size_t(beacon.agent)].ship.vz * agents[size_t(beacon.agent)].ship.vz)
+        : 0.0;
+    // ⚠️ Игроку меряем по ФАКТИЧЕСКОМУ крейсеру, а не по потолку корпуса: ручку
+    // ему не крутим (§48.4), и если он идёт на экономичном делении, догонять
+    // придётся на нём же. Поднять тягу — его решение, и отказ прямо на это
+    // указывает.
+    if (shipCruiseSpeed(agent.ship) <= driftSpeed * 1.15) {
+        if (agent.playerControlled) lastEvent = "rescue blocked: cruise too slow to overhaul the drift";
+        return false;
+    }
+    // ⚠️ Прежнего откликнувшегося надо ОТПУСТИТЬ, а не просто затереть поле
+    // маяка: иначе он продолжал бы лететь к той же беде и при этом считался бы
+    // занятым для всех остальных маяков (`cand.rescueTarget >= 0` в диспетчере)
+    // — один игрок молча вычёркивал чужой борт из спасателей навсегда.
+    DistressBeacon& target = distress[size_t(beaconIndex)];
+    if (target.responder >= 0 && target.responder < int(agents.size()) &&
+        agents[size_t(target.responder)].rescueTarget == beaconIndex) {
+        Agent& previous = agents[size_t(target.responder)];
+        previous.rescueTarget = -1;
+        previous.rescueKnows = false;
+        previous.ship.enRoute = false;
+        previous.ship.targetStar = -1;
+        previous.lastAction = "stood down from the call";
+    }
+    agent.rescueTarget = beaconIndex;
+    agent.rescueKnows = false;
+    agent.rescueResumeStar = agent.destStar;
+    agent.ship.enRoute = true;
+    agent.ship.targetStar = -3;
+    agent.lastAction = "answering a distress call";
+    target.responder = agentIndex;
+    if (agent.playerControlled) {
+        const double light = distanceShipToPoint(agent.ship, beacon.x, beacon.y, beacon.z);
+        lastEvent = "rescue set: beacon " + std::to_string(int(light + 0.5)) + " ly out";
+    }
+    return true;
+}
+
 void Game::updateAgents(double dt) {
     for (size_t i = 0; i < agents.size(); ++i) {
         Agent& agent = agents[i];
+        // (§50) СПАСАТЕЛЬНЫЙ РЕЙС идёт первым: борт бросил дело, и торговый
+        // планировщик не должен перехватывать у него руль на полпути.
+        if (agent.rescueTarget >= 0) {
+            if (agent.rescueTarget >= int(distress.size())) {
+                agent.rescueTarget = -1;
+                agent.rescueKnows = false;
+                agent.ship.enRoute = false;
+                agent.ship.targetStar = -1;
+            } else {
+                const int beaconIndex = agent.rescueTarget;
+                const DistressBeacon& beacon = distress[size_t(beaconIndex)];
+                // ⚠️ X STOP ОТМЕНЯЕТ И СПАСАТЕЛЬНЫЙ РЕЙС. Этот блок стоит выше
+                // разбора `targetStar`, поэтому без явной проверки `abortAgentRoute`
+                // ставил −2, а борт продолжал РАЗГОНЯТЬСЯ на перехват — и всё
+                // это время интерфейс честно рисовал ему «X BRAKING». Взявшись
+                // за чужую беду, игрок терял руль до конца рейса.
+                if (agent.ship.targetStar == -2) {
+                    agent.rescueTarget = -1;
+                    agent.rescueKnows = false;
+                    agent.lastAction = "broke off the call";
+                    if (beaconIndex < int(distress.size())) distress[size_t(beaconIndex)].responder = -1;
+                    // Дальше — обычная ветка экстренного торможения, ниже по циклу.
+                } else if (shipCurrentAcceleration(agent.ship) <= 0.0) {
+                    // ⚠️ Спасатель тоже смертен. Если по дороге кончился расходник —
+                    // он бросает дело и сам поднимает маяк; иначе спасение плодило бы
+                    // спасения, а застрявший ждал бы того, кто уже не долетит.
+                    agent.driftYears += dt;
+                    agent.rescueTarget = -1;
+                    agent.rescueKnows = false;
+                    agent.ship.targetStar = -2;   // дальше — обычный дрейф
+                    if (beaconIndex < int(distress.size())) distress[size_t(beaconIndex)].responder = -1;
+                    raiseDistress(*this, int(i));
+                    continue;
+                } else {
+                    bool met = false;
+                    if (!agent.rescueKnows) {
+                        // Пока не долетел до ТОЧКИ СИГНАЛА, настоящего положения он
+                        // не знает: свет принёс только «где было и с какой скоростью».
+                        double px = beacon.x, py = beacon.y, pz = beacon.z;
+                        if (chaseShipToward(agent.ship, px, py, pz, 0.0, 0.0, 0.0, dt, false)) {
+                            agent.rescueKnows = true;
+                            if (agent.playerControlled) {
+                                beaconPredictedPosition(beacon, time, px, py, pz);
+                                lastEvent = "beacon reached - hull located ahead";
+                            }
+                        }
+                    } else if (beacon.agent >= 0 && beacon.agent < int(agents.size())) {
+                        const Ship& hull = agents[size_t(beacon.agent)].ship;
+                        met = chaseShipToward(agent.ship, hull.x, hull.y, hull.z,
+                                              hull.vx, hull.vy, hull.vz, dt, true);
+                    }
+                    if (met) {
+                        if (answersDistressAsLooter(*this, agent, agents[size_t(beacon.agent)])) {
+                            lootDistress(*this, beaconIndex, int(i));
+                        } else {
+                            completeRescue(*this, beaconIndex, int(i));
+                        }
+                    }
+                    continue;
+                }
+            }
+        }
         if (agent.ship.enRoute) {
             if (agent.ship.targetStar == -2) {
                 const double speed = std::sqrt(agent.ship.vx * agent.ship.vx + agent.ship.vy * agent.ship.vy + agent.ship.vz * agent.ship.vz);
@@ -6248,17 +7177,38 @@ void Game::updateAgents(double dt) {
                         agent.ship.vz -= agent.ship.vz / speed * brake;
                         agent.missionCooldown = 0.0;   // тормозим — счётчик дрейфа сбрасываем
                     } else {
-                        // (§38) Тормозить НЕЧЕМ. Считаем годы беспомощного
-                        // дрейфа и после TOW_WAIT_YEARS зовём буксир: иначе
-                        // корабль летел бы в пустоту вечно, а с ним и партия.
-                        agent.missionCooldown += dt;
-                        if (agent.missionCooldown >= TOW_WAIT_YEARS) {
+                        // (§38) Тормозить НЕЧЕМ — беспомощный дрейф.
+                        // (§50) Первым делом поднимается МАЯК: сигнал уходит со
+                        // светом, и с этой секунды ожидание физическое. Буксир по
+                        // TOW_WAIT_YEARS остался последним рубежом на случай,
+                        // когда никто не долетел (см. game.h).
+                        //
+                        // ⚠️ СЧЁТ ИДЁТ ПО `driftYears`, а не по `missionCooldown`.
+                        // Здесь стоял `missionCooldown` — общий кулдаун, который
+                        // ветка `-2` НЕ ПЕРЕХВАТЫВАЕТ (нет `continue`), так что
+                        // ниже по циклу отрабатывал `updateTrader` и обнулял его.
+                        // Последний рубеж не срабатывал НИКОГДА: замер §50 нашёл
+                        // 12 бортов с `driftYears` до 265 лет при `cooldown` 0.0.
+                        // Отдельный счётчик дрейфа для того и заведён (§48.8).
+                        agent.driftYears += dt;
+                        if (agent.driftYears >= TOW_WAIT_YEARS) {
+                            ++s_rescueLastResort;
                             towStrandedShip(*this, int(i));
                         }
                     }
                     agent.ship.x += agent.ship.vx * dt;
                     agent.ship.y += agent.ship.vy * dt;
                     agent.ship.z += agent.ship.vz * dt;
+                    // ⚠️ МАЯК ПОДНИМАЕТСЯ ПОСЛЕ ХОДА, а не до него, и это не
+                    // придирка. `raiseDistress` записывает положение и метит его
+                    // сегодняшним временем; `Game::update` увеличивает время в
+                    // самом начале такта, а корабль двигается вот здесь, в
+                    // конце. Подъём до хода записывал вчерашнюю точку под
+                    // сегодняшней датой, и модель маяка промахивалась ровно на
+                    // один тик пути — замер поймал 0.0103 ly при v*dt = 0.0103.
+                    // В ветке маршрута такой беды нет: там `moveShipToward`
+                    // двигает корабль до проверки.
+                    if (shipCurrentAcceleration(agent.ship) <= 0.0) raiseDistress(*this, int(i));
                 }
             } else if (agent.ship.targetStar >= 0 && agent.ship.targetStar < int(cluster.stars.size())) {
                 const bool arrived = moveShipToward(agent.ship, cluster.stars[agent.ship.targetStar], dt);
@@ -6273,8 +7223,14 @@ void Game::updateAgents(double dt) {
                 // стыковку, а маршрутная оценка вдобавок занижала расход вдвое.
                 if (!arrived) {
                     if (shipCurrentAcceleration(agent.ship) <= 0.0) {
+                        // (§50) Маяк поднимается СРАЗУ, а не через срок ожидания:
+                        // борт узнаёт о мёртвом двигателе первым тиком, и сигнал
+                        // уходит тогда же. Ждать после этого приходится не
+                        // таймер, а свет и спасателя.
+                        raiseDistress(*this, int(i));
                         agent.driftYears += dt;
                         if (agent.driftYears >= TOW_WAIT_YEARS) {
+                            ++s_rescueLastResort;
                             towStrandedShip(*this, int(i));
                             agent.driftYears = 0.0;
                             continue;

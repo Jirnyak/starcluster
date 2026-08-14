@@ -121,6 +121,12 @@ const Entry EXACT[] = {
     {"Read the tanks before every hop, Master. A hull out of propellant does not drift home, it simply drifts - and if the route is beyond your tanks, the terminal will refuse to plot it at all.",
      "Смотри на ёмкости перед каждым прыжком, хозяин. Корпус без рабочего тела не дрейфует домой - он просто дрейфует. А если маршрут не по бакам, терминал откажется его прокладывать."},
 
+    // Беда и спасение (§50).
+    {"A dead engine raises a beacon, and it travels at the speed of light like every other word in this cluster. Rescue is not a rule, Master - it is someone hearing you and being fast enough to overhaul your drift.",
+     "Мёртвый двигатель поднимает маяк, и тот идёт со светом, как всякое слово в этом скоплении. Спасение здесь не правило, хозяин, а тот, кто тебя услышал и быстрее твоего дрейфа."},
+    {"Hear one yourself and press H. Fly to the point the signal left, and the model gives you the hull's true place. The state pays a full tank and a tenth of that hull - but raiders listen to those beacons too.",
+     "Услышишь сам - жми H. Долети до точки, откуда ушёл сигнал, и расчёт даст настоящее место борта. Государство платит полный бак и десятую часть корпуса. Но маяки слушают и мародёры."},
+
     // Заказы и репутация (§23, §24).
     {"Ports also post JOBS: a cargo, a destination, a deadline. Deliver and your name grows; miss the date and it shrinks.",
      "Ещё порты вывешивают ЗАКАЗЫ: груз, точка назначения, срок. Довезёшь - имя растёт, просрочишь - падает."},
@@ -544,6 +550,17 @@ const Entry WORDS[] = {
     {"FLY THE SYSTEM: PRESS L", "ЛЕТАТЬ В СИСТЕМЕ: L"},
     {"REPAIR HULL: DOCK + PRESS J", "РЕМОНТ КОРПУСА: СТЫКОВКА + J"},
     {"SCAN ANOMALY: PRESS K", "СКАН АНОМАЛИИ: K"},
+    // (§50) Спасение из дрейфа. ⚠️ Русские строки тут ДЛИННЕЕ английских, а
+    // панель целей узкая — длину мерить `UI::textWidth` и смотреть `make uishots
+    // ru` глазами. «RUN TO THE BEACON» намеренно не «БЕГИ К МАЯКУ»: борт летит
+    // к ТОЧКЕ, откуда ушёл сигнал, а самого борта там давно нет.
+    {"DISTRESS CALL: PRESS H", "СИГНАЛ БЕДСТВИЯ: H"},
+    {"RUN TO THE BEACON", "К ТОЧКЕ СИГНАЛА"},
+    {"ON A DISTRESS CALL", "ИДУ НА СИГНАЛ"},
+    {"RUNNING TO THE BEACON", "К ТОЧКЕ СИГНАЛА"},
+    {"CLOSING ON THE HULL", "СБЛИЖЕНИЕ С БОРТОМ"},
+    {"H    ANSWER DISTRESS", "H    ИДТИ НА СИГНАЛ"},
+    {"ANSWER DISTRESS", "ИДТИ НА СИГНАЛ"},
     {"UPGRADE: SHIPYARD", "УЛУЧШЕНИЕ: ВЕРФЬ"},
     {"RESEARCH A CHROMOCORE", "ИЗУЧИТЬ ХРОМОЯДРО"},
     {"TRADE: BUY", "ТОРГОВЛЯ: КУПИТЬ"},

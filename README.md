@@ -196,6 +196,9 @@ steps, the asset-extraction layer, and the list of keys the IME cannot produce.
 - `I`: open the transaction journal (it opens with a net-worth summary).
 - `G`: route the player ship to the selected star.
 - `X`: stop the ship. `N`: switch to another hull of your fleet.
+- `H`: answer the freshest distress beacon whose light has reached you. The ship
+  flies to the point the signal left, and only there does it learn where the
+  drifting hull actually is. `X` breaks off the run.
 - `L`: enter or leave local flight mode (first-person flight inside the system).
 - `E`: open the brokerage (route board, trading licences, faction shares).
 - `[` / `]`: change selected element.
@@ -729,15 +732,16 @@ back to the working directory so older saves still open.
 The file is text and begins with:
 
 ```text
-STARCLUSTER_SAVE 17
+STARCLUSTER_SAVE 20
 ```
 
 The save stores the world seed, RNG state, time, stars, markets, factions,
 relations, colonies, contracts, agents, faction knowledge, player knowledge,
 pending signals, signal memory, trading licence state, journal and reputation,
 what has already been claimed in local flight, exotic-market depletion, hull
-refits, and the share portfolio with the published faction books. `F9` loads the
-same file and rebuilds runtime caches. Versions 14 through 17 load; anything
+refits, the share portfolio with the published faction books, and the distress
+beacons in flight with the state of every rescuer answering them. `F9` loads the
+same file and rebuilds runtime caches. Versions 14 through 20 load; anything
 older is rejected with a clear message rather than opening corrupt.
 
 ⚠️ The market record is only the *moving parts* - stock, prices, rates. The
@@ -820,20 +824,26 @@ work" but "does it lock the player in *together with* the others".
   are not synchronized with the current source list.
 - Startup generates 8,192 systems and takes several seconds with no loading
   screen.
-- A game-year of simulation costs about 160 ms at 8,192 systems and roughly a
-  thousand agents. That is 16% of a second at 1 year/second and fine, but it
-  cannot sustain the higher speed multipliers: the loop caps its substeps and
-  falls behind instead. Most of what remains is the market substitution model
-  and the RNG, not routing.
+- A game-year of simulation costs on the order of 160 ms at 8,192 systems and
+  roughly a thousand agents. That is 16% of a second at 1 year/second and fine,
+  but it cannot sustain the higher speed multipliers: the loop caps its substeps
+  and falls behind instead. Most of what remains is the market substitution model
+  and the RNG, not routing. ⚠️ The figure is machine-dependent and drifts with
+  the simulated horizon: `tick_probe.cpp` measures the same commit at 169.6 ms
+  over 100 years and 158.3 ms over 200, because the world's own composition
+  changes. Repeats are stable to within 1 ms, so only before/after on one machine
+  over one horizon means anything - treat the absolute number as a guide, not a
+  gate.
 - Reputation still tops out at 1000 completed jobs with only two outlets: the
   size of the jobs offered and a fresh copy of a power's books. Beyond that it
   buys nothing. The old figure of 817,000 game years to cap one faction was
   measured when only 1.65% of stars had an owner; powers now buy systems from the
   centre and their holdings grow, so the grind is shorter - but it has not been
   measured again.
-- The introductory novel ends at line 27 and only speaks about the high-tech
-  floor contextually, in the first port that actually has such a market. It says
-  nothing about shares or the fleet autopilot.
+- The introductory novel ends at line 29 and only speaks about the high-tech
+  floor contextually, in the first port that actually has such a market. Lines 27
+  and 28 now cover the distress beacon and answering one. It still says nothing
+  about shares or the fleet autopilot.
 - Measured per credit of flight-year, the high-tech floor equals ordinary trade
   and is ten times worse on a long leg: the rarity of the sources is paid for in
   travel time, exactly enough to eat the premium. The containment bay caps at 360
@@ -844,17 +854,24 @@ work" but "does it lock the player in *together with* the others".
   number of agents. Measured at full scale: 1,005 agents at seed and 138 ms per game
   year on 8,192 systems (125 ms before the route-estimate fix of section 48 added
   a cruise-fraction search at departure).
-- Ships now strand for real, and the rescue that answers is still faceless. Two
-  physical doors into trouble were opened in section 48.9: only a live engine can
-  dock, so a ship with empty tanks flies past its destination, and a trader too poor
-  to buy the full reserve departs on a shoestring rather than standing in port
-  forever. Measured on the full world at the game's own timestep: 0.075 shoestring
-  departures per year and one rescue per 33 years. The tow is now free - the state
-  pulls you in and the only price is the time lost. What is missing is the mechanic
-  proper: a distress signal travelling at light speed, a living rescuer who diverts
-  and intercepts (with the clearing house as the fallback), the player able to fly to
-  a signal and chase the drifting hull, and the state-paid bounty of a full tank plus
-  about 10% of the saved hull's value. See master_prompt section 48.9.
+- Ships strand for real and the rescue that answers is now a mechanic, not a
+  timer (section 50). A dead engine raises a beacon; the beacon travels at light
+  speed like every other signal in the cluster; whoever hears it and can overhaul
+  the drift diverts and intercepts. Reaching the point the signal left hands the
+  rescuer the hull's true position - drift is strictly ballistic, and the model is
+  exact to 0.000000 ly over 0.856 ly of measured travel. The state pays a full
+  tank plus a tenth of the saved hull, both sides of the entry. Raiders and
+  hostile powers hear the same beacon and come for the hold instead, so the tow
+  stays free while the cargo does not.
+- Rescue's honest weak point is the speed ladder, and the number says so: the
+  hundred-year state tow still fires in roughly half of all cases. Hulls drift at
+  0.15-0.26c while ship-class ceilings run 0.13-0.31c, so closing speeds are
+  0.05c and under and nobody in the cluster physically arrives in time. Measured
+  on 1,200-star worlds over 300 years at the game's timestep: 3-10 beacons per
+  world, average wait 46-73 years of which 4-8 are light travel, and zero beacons
+  left unresolved. `TOW_WAIT_YEARS` sits at 100 because the worst honest rescue
+  measured 87.5 years - it is placed just above physics, not in place of it. If
+  that backstop starts firing more often, the ladder is what to look at.
 - At the deliberate 100 Cr pauper start there is no profitable trade at all: zero
   out of forty board entries in each of four measured worlds, because one leg of
   road costs 6,300-7,500 Cr against 2,700-5,000 Cr of gross. That matches the

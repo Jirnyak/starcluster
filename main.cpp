@@ -1234,6 +1234,21 @@ int main(int argc, char** argv) {
                 if (e.key.keysym.sym == SDLK_x && game.playerAgent >= 0) {
                     game.abortAgentRoute(game.playerAgent);
                 }
+                // (§50) `H` — «иду на сигнал». Берётся САМЫЙ СВЕЖИЙ из слышимых
+                // маяков: `audibleDistress` уже отдаёт их свежими вперёд, а
+                // старый сигнал, скорее всего, давно кем-то взят.
+                //
+                // ⚠️ Буква выбрана из свободных: `A`, `D`, `S`, `W` заняты
+                // поворотом камеры (сканкоды), `R` — это ROB, и вешать на неё
+                // ещё и спасение значило бы, что одна клавиша то грабит, то
+                // спасает в зависимости от того, выделен ли кто-то на карте.
+                if (e.key.keysym.sym == SDLK_h && game.playerAgent >= 0) {
+                    const std::vector<int> heard = game.audibleDistress(game.playerAgent);
+                    if (!heard.empty() && game.commandAgentToDistress(game.playerAgent, heard[0])) {
+                        selectedAgent = game.playerAgent;
+                        followAgent = true;
+                    }
+                }
                 if (e.key.keysym.sym == SDLK_c && anchorStar() >= 0) {
                     selectedStar = anchorStar();
                     UI::openColonyWindow(ui, selectedStar, winW, winH);

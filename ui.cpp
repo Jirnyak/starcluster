@@ -707,7 +707,18 @@ void drawAgentPanel(SDL_Renderer* renderer, const Game& game, int agentIndex, in
     // сработала»: линия маршрута пропадает сразу, а корабль ещё летит.
     const bool braking = agent.ship.enRoute && agent.ship.targetStar == -2;
     const bool adrift = !agent.ship.enRoute && !here;
-    if (braking) {
+    // (§50) Спасательный рейс — отдельное состояние, и его надо НАЗЫВАТЬ.
+    // Цель у него не звезда, а точка сигнала, поэтому обычная строка «FROM/TO»
+    // показала бы порт вылета и старый пункт назначения: игрок читал бы её как
+    // «лечу торговать», пока корабль гонится за чужой бедой.
+    const bool onCall = agent.rescueTarget >= 0;
+    if (onCall) {
+        char call[64];
+        std::snprintf(call, sizeof(call), "ON A DISTRESS CALL  %.3FC", speedOf(agent));
+        drawText(renderer, x + 10, y + 46, call, P.amber, 1);
+        drawText(renderer, x + 10, y + 59,
+                 agent.rescueKnows ? "CLOSING ON THE HULL" : "RUNNING TO THE BEACON", P.text, 1);
+    } else if (braking) {
         char brake[64];
         std::snprintf(brake, sizeof(brake), "BRAKING  %.3FC -> 0", speedOf(agent));
         drawText(renderer, x + 10, y + 46, brake, P.red, 1);
@@ -799,8 +810,8 @@ void drawControlsCard(SDL_Renderer* renderer, int screenW, int screenH) {
     struct Group { const char* title; const char* lines[10]; };
     static const Group groups[] = {
         { "FLIGHT", { "L    ENTER SYSTEM", "G    GO TO SELECTED", "X    STOP SHIP",
-                      "F    FOLLOW SHIP", "TAB  NEXT AGENT", "ENTER OPEN SYSTEM",
-                      "SPACE PAUSE", "1-4  SIM SPEED", NULL, NULL } },
+                      "H    ANSWER DISTRESS", "F    FOLLOW SHIP", "TAB  NEXT AGENT",
+                      "ENTER OPEN SYSTEM", "SPACE PAUSE", "1-4  SIM SPEED", NULL } },
         { "TRADE",  { "T    AUTO TRADE", "B    BUY", "Q    SELL", "E    BROKERAGE",
                       "O    CARGO", "U    SHIPYARD", "I    TRANSACTION LOG",
                       "V    ADVISOR", "F2   BUY BACK LICENCE", "[ ]  CYCLE ELEMENT" } },
@@ -3846,6 +3857,19 @@ std::vector<ObjectiveStep> objectiveLadder(const Game& game) {
         }
     }
     if (sh.hullHP < sh.maxHullHP - 0.5) objs.push_back({"REPAIR HULL: DOCK + PRESS J", false, true});
+    // (§50) Маяк бедствия — самое срочное, что бывает: его слышно только пока
+    // борт дрейфует, и первым на сигнал приходит не обязательно спасатель.
+    // ⚠️ Спрашиваем `audibleDistress`, а не размер списка маяков: игрок обязан
+    // слышать ровно то, до чего ДОШЁЛ СВЕТ, как и все остальные (§16).
+    if (p.rescueTarget >= 0) {
+        // ⚠️ Строка короткая не для красоты: панель держит 208 px, и на русском
+        // запас там 4 px. «X TO BREAK OFF» в неё не влезало (234 px) — про отбой
+        // игрок узнаёт из карточки F1, где `X STOP SHIP` и так есть.
+        objs.push_back({p.rescueKnows ? "CLOSING ON THE HULL" : "RUN TO THE BEACON",
+                        false, true});
+    } else if (!game.audibleDistress(game.playerAgent).empty()) {
+        objs.push_back({"DISTRESS CALL: PRESS H", false, true});
+    }
     return objs;
 }
 
@@ -4011,7 +4035,7 @@ struct TutorialCue {
 
 // Последний шаг вступительной новеллы. Дальше tutorialCompleted, и Тимертия
 // говорит только по делу (шаг 100 — сводка по новой системе).
-const int TUTORIAL_LAST_STEP = 27;
+const int TUTORIAL_LAST_STEP = 29;   // (§50) 27 и 28 — беда и спасение
 
 // Сколько ближайших систем смотрит совет. 128 — не потолок железа, а потолок
 // смысла: мерка Cr/год топит дальние цели сама, и на замере 8192 систем
@@ -4162,7 +4186,15 @@ std::string getTutorialText(const Game& game, int step, TutorialCue& cue, Visual
         case 24: return I18N::tr("When the vault allows it, press C and buy a system outright. It pays you rent, berths your fleet, and takes any name you care to write on it.");
         case 25: return I18N::tr("Finally, the new technology of applied color superconductivity has produced novel AI cores.");
         case 26: return I18N::tr("They are still prototypes and very rare. Be sure to privatise every one you find.");
-        case 27: return I18N::tr("F1 lists every control. I am at your service with more insights at any time, Master. [V]");
+        // --- Беда и спасение (§50) --------------------------------------------
+        // Новелла молчала о дрейфе вовсе: игрок узнавал о нём, только застряв.
+        // Две реплики: что будет с тобой и что можно сделать для другого.
+        // ⚠️ Вставлены В КОНЕЦ, перед прощальной строкой, а не рядом с репликой
+        // про баки (18), где им место по смыслу: там пришлось бы сдвинуть номера
+        // девяти шагов, а на них завязаны и снимки, и харнес ширины.
+        case 27: return I18N::tr("A dead engine raises a beacon, and it travels at the speed of light like every other word in this cluster. Rescue is not a rule, Master - it is someone hearing you and being fast enough to overhaul your drift.");
+        case 28: return I18N::tr("Hear one yourself and press H. Fly to the point the signal left, and the model gives you the hull's true place. The state pays a full tank and a tenth of that hull - but raiders listen to those beacons too.");
+        case 29: return I18N::tr("F1 lists every control. I am at your service with more insights at any time, Master. [V]");
         // (§37.2) Хайтек-этаж. Говорится ОДИН раз и только на месте: там, где
         // рынок экзотики действительно есть. Три реплики, потому что это три
         // разных вещества с тремя разными смыслами, и в одну коробку они не

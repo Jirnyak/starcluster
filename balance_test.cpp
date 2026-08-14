@@ -2830,11 +2830,300 @@ void testRevokedLicenceCanBeWorkedOff() {
 // `shipConsumeForDeltaV` возвращает ноль, скорость не падает никогда,
 // `enRoute` остаётся true вечно, а на нём завязано всё — покупка, продажа,
 // добыча, заказы, верфь. Выхода не было вообще, только новая партия.
+// (§50) СИГНАЛ БЕДСТВИЯ ИДЁТ СО СВЕТОМ, а не приходит мгновенно.
+//
+// Утверждение одно и проверяемое: борт, до которого свет ещё не дошёл, маяка НЕ
+// СЛЫШИТ, а ровно в момент «расстояние = прошедшее время» — слышит. Скорость
+// света в единицах игры равна единице (ly и годы), так что проверка сравнивает
+// расстояние с временем напрямую.
+void testDistressTravelsAtLightSpeed() {
+    Game g;
+    buildWorld(g, 4242, 4);
+    const int pa = g.playerAgent;
+
+    // Топим борт на ИЗВЕСТНОМ удалении от игрока: механику подъёма проверяют
+    // другие проверки, здесь мерится ТОЛЬКО ход света.
+    //
+    // ⚠️ Маяк нельзя подложить руками с `agent = -1`: диспетчер справедливо
+    // считает такой маяк мусором и снимает его на первом же опросе — первая
+    // версия проверки на этом и провалилась, причём молча выглядела как «свет
+    // не дошёл». Беда должна быть настоящей.
+    int victim = -1;
+    for (size_t i = 0; i < g.agents.size(); ++i) {
+        if (int(i) == pa) continue;
+        victim = int(i);
+        break;
+    }
+    if (victim < 0) { check(false, "сигнал бедствия идёт со светом", "нет второго борта"); return; }
+
+    const double reach = 6.0;
+    Agent& v = g.agents[size_t(victim)];
+    v.ship.x = g.agents[pa].ship.x + reach;
+    v.ship.y = g.agents[pa].ship.y;
+    v.ship.z = g.agents[pa].ship.z;
+    // Дрейф МАЛЫЙ, но не нулевой: за семь лет борт уйдёт на 0.007 ly против
+    // шести световых до игрока, то есть на ход света не влияет.
+    // ⚠️ И не ниже 0.0001: под этим порогом ветка экстренной остановки считает
+    // корабль ОСТАНОВИВШИМСЯ, он встаёт в пустоте, беды нет и маяка тоже.
+    // Первая версия ставила 1e-6 и провалилась с виду как «свет не дошёл».
+    v.ship.vx = 0.001; v.ship.vy = 0.0; v.ship.vz = 0.0;
+    v.ship.enRoute = true;
+    v.ship.targetStar = -2;
+    v.ship.fuel.clear();
+    v.ship.propellant.clear();
+    v.currentStar = -1;
+    // Игрок стоит в порту и никуда не летит: иначе он сам сокращает расстояние.
+    g.agents[pa].ship.enRoute = false;
+
+    const double raised = g.time;
+    g.update(0.01);
+    const bool silentAtOnce = g.audibleDistress(pa).empty();
+    // Ждём чуть меньше, чем нужно свету.
+    while (g.time - raised < reach - 0.5) g.update(0.25);
+    const bool silentBefore = g.audibleDistress(pa).empty();
+    while (g.time - raised < reach + 0.5) g.update(0.25);
+    const bool heardAfter = !g.audibleDistress(pa).empty();
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "маяк в %.1f ly: сразу %s, за 0.5 года до срока %s, через 0.5 года после %s",
+        reach, silentAtOnce ? "молчит" : "СЛЫШЕН",
+        silentBefore ? "молчит" : "СЛЫШЕН", heardAfter ? "слышен" : "МОЛЧИТ");
+    check(silentAtOnce && silentBefore && heardAfter,
+          "сигнал бедствия идёт со светом", buf);
+}
+
+// (§50) Маяк несёт ТОЧКУ И СКОРОСТЬ, и по ним настоящее положение борта
+// считается точно — потому что дрейф строго баллистический. На этом стоит вся
+// вторая половина механики: долетев до точки сигнала, спасатель знает, куда
+// целиться, а не ищет вслепую.
+void testBeaconModelMatchesTheRealHull() {
+    Game g;
+    buildWorld(g, 3131, 4);
+    const int pa = g.playerAgent;
+    Agent& p = g.agents[pa];
+
+    p.ship.enRoute = true;
+    p.ship.targetStar = -2;
+    p.ship.vx = 0.04; p.ship.vy = 0.01; p.ship.vz = 0.0;
+    p.ship.fuel.clear();
+    p.ship.propellant.clear();
+    p.currentStar = -1;
+
+    for (int t = 0; t < 4; ++t) g.update(0.25);
+    if (g.distress.empty()) {
+        check(false, "маяк считает положение борта точно", "маяк не поднялся вовсе");
+        return;
+    }
+    // ⚠️ Маяк берётся КОПИЕЙ, а не ссылкой. Ссылка в `g.distress` живёт до
+    // первого спасения: маяк снимается, вектор сжимается — и дальше проверка
+    // читает мусор. Первая версия так и делала и «нашла» промах в 10.8 ly,
+    // хотя промаха не было: она сравнивала настоящий борт с чужим маяком.
+    const DistressBeacon beacon = g.distress[0];
+
+    // Модель сверяется НА КАЖДОМ ШАГЕ, пока борт дрейфует, и берётся ХУДШИЙ
+    // промах: одна точка в конце ничего не доказывает — совпасть можно случайно.
+    double worstError = 0.0;
+    double years = 0.0;
+    for (int t = 0; t < 80 && !g.distress.empty(); ++t) {
+        g.update(0.25);
+        if (g.distress.empty()) break;               // вытащили — дрейф кончился
+        years = g.time - beacon.raisedTime;
+        const double mx = beacon.x + beacon.vx * years;
+        const double my = beacon.y + beacon.vy * years;
+        const double mz = beacon.z + beacon.vz * years;
+        const Ship& hull = g.agents[pa].ship;
+        const double err = std::sqrt((mx - hull.x) * (mx - hull.x) +
+                                     (my - hull.y) * (my - hull.y) +
+                                     (mz - hull.z) * (mz - hull.z));
+        if (err > worstError) worstError = err;
+    }
+    const double travelled = std::sqrt(beacon.vx * beacon.vx + beacon.vy * beacon.vy) * years;
+
+    char buf[240];
+    std::snprintf(buf, sizeof(buf),
+        "за %.1f года борт ушёл %.3f ly, худший промах модели %.6f ly",
+        years, travelled, worstError);
+    check(worstError < 0.001 && travelled > 0.3, "маяк считает положение борта точно", buf);
+}
+
+// (§50) НАГРАДА СПАСАТЕЛЮ — из казны, и ровно столько же из неё уходит.
+//
+// Проверяется не размер награды (он назначен пользователем — 10% корпуса плюс
+// полный бак), а СХОДИМОСТЬ ПРОВОДКИ: деньги не появляются из воздуха. Ровно то
+// же правило, что у всех остальных выплат государства (§47).
+void testRescueBountyLeavesTheTreasury() {
+    Game g;
+    buildWorld(g, 8181, 4);
+    if (!(g.clearingFaction >= 0 && g.clearingFaction < int(g.factions.size()))) {
+        check(false, "награда спасателю выходит из казны", "нет клиринговой палаты");
+        return;
+    }
+
+    // Ищем борт ИИ, который может стать спасателем, и топим другой борт рядом.
+    int victim = -1, rescuer = -1;
+    for (size_t i = 0; i < g.agents.size(); ++i) {
+        if (int(i) == g.playerAgent) continue;
+        if (g.agents[i].ship.enRoute) continue;
+        if (victim < 0) { victim = int(i); continue; }
+        if (rescuer < 0 && g.agents[i].currentStar >= 0) { rescuer = int(i); break; }
+    }
+    if (victim < 0 || rescuer < 0) {
+        check(false, "награда спасателю выходит из казны", "не нашлось пары бортов");
+        return;
+    }
+
+    // Ставим жертву в дрейф в двух шагах от спасателя: перехват должен занять
+    // годы, а не века, иначе проверка станет прогоном мира.
+    Agent& v = g.agents[size_t(victim)];
+    v.ship.x = g.agents[size_t(rescuer)].ship.x + 0.4;
+    v.ship.y = g.agents[size_t(rescuer)].ship.y;
+    v.ship.z = g.agents[size_t(rescuer)].ship.z;
+    v.ship.vx = 0.002; v.ship.vy = 0.0; v.ship.vz = 0.0;   // ползёт, догнать легко
+    v.ship.enRoute = true;
+    v.ship.targetStar = -2;
+    v.ship.fuel.clear();
+    v.ship.propellant.clear();
+    v.currentStar = -1;
+
+    // ⚠️ Разницей казны «до и после» это не мерится. Клиринговая палата живёт
+    // своей жизнью — тариф, выкупы лицензий, субсидии колониям, — и за сорок
+    // лет прогона её счёт вырос на 128 миллионов при награде в тысячи: на этом
+    // фоне проводка не видна вовсе. Первая версия проверки так и провалилась,
+    // показав «казна выросла». Меряем сами проводки, счётчиками.
+    strandStatReset();
+    for (int t = 0; t < 400 && strandStatLiveRescues() + strandStatStateRescues() == 0; ++t) {
+        g.update(0.1);
+    }
+    const long long done = strandStatLiveRescues() + strandStatStateRescues();
+    const double paid = strandStatBountyPaid();
+    const double cash = strandStatBountyCash();
+    // Казна платит и награду, и залитое спасателю топливо; деньгами в карман
+    // уходит только первая часть. Значит списано НЕ МЕНЬШЕ, чем зачислено, —
+    // и ни один кредит не появился из воздуха.
+    const bool conserved = paid + 1e-6 >= cash;
+
+    char buf[260];
+    std::snprintf(buf, sizeof(buf),
+        "спасений %lld; списано с казны %.0f Cr, зачислено спасателям %.0f Cr",
+        done, paid, cash);
+    check(done >= 1 && cash > 0.0 && conserved,
+          "награда спасателю выходит из казны", buf);
+}
+
+// (§50) ИГРОК МОЖЕТ БЫТЬ СПАСАТЕЛЕМ: слышит маяк, летит к точке сигнала и,
+// долетев, получает настоящее положение борта.
+void testPlayerFliesToTheBeacon() {
+    Game g;
+    buildWorld(g, 6464, 4);
+    const int pa = g.playerAgent;
+
+    // Топим соседний борт неподалёку от игрока.
+    int victim = -1;
+    for (size_t i = 0; i < g.agents.size(); ++i) {
+        if (int(i) == pa) continue;
+        victim = int(i);
+        break;
+    }
+    if (victim < 0) { check(false, "игрок долетает до сигнала", "нет второго борта"); return; }
+
+    Agent& v = g.agents[size_t(victim)];
+    v.ship.x = g.agents[pa].ship.x + 0.6;
+    v.ship.y = g.agents[pa].ship.y;
+    v.ship.z = g.agents[pa].ship.z;
+    v.ship.vx = 0.001; v.ship.vy = 0.0; v.ship.vz = 0.0;
+    v.ship.enRoute = true;
+    v.ship.targetStar = -2;
+    v.ship.fuel.clear();
+    v.ship.propellant.clear();
+    v.currentStar = -1;
+    // Игроку — полные баки: проверяется навигация, а не заправка.
+    shipEmergencyPrime(g.agents[pa].ship, 1.0);
+
+    for (int t = 0; t < 8 && g.distress.empty(); ++t) g.update(0.25);
+    if (g.distress.empty()) { check(false, "игрок долетает до сигнала", "маяк не поднялся"); return; }
+
+    // Свет должен дойти: 0.6 ly — это 0.6 года.
+    for (int t = 0; t < 8 && g.audibleDistress(pa).empty(); ++t) g.update(0.25);
+    const std::vector<int> heard = g.audibleDistress(pa);
+    const bool audible = !heard.empty();
+    const bool taken = audible && g.commandAgentToDistress(pa, heard[0]);
+
+    bool learned = false;
+    for (int t = 0; t < 600 && g.agents[pa].rescueTarget >= 0; ++t) {
+        g.update(0.05);
+        if (g.agents[pa].rescueKnows) learned = true;
+    }
+    // Рейс кончился: либо встречей (маяк снят), либо игрок бросил погоню.
+    const bool finished = g.agents[pa].rescueTarget < 0;
+
+    char buf[260];
+    std::snprintf(buf, sizeof(buf),
+        "маяк слышен %s, взят %s, до точки долетел %s, рейс завершён %s (маяков осталось %d)",
+        audible ? "да" : "НЕТ", taken ? "да" : "НЕТ",
+        learned ? "да" : "НЕТ", finished ? "да" : "НЕТ", int(g.distress.size()));
+    check(audible && taken && learned && finished, "игрок долетает до сигнала", buf);
+}
+
+// (§50) МАЯК ПЕРЕЖИВАЕТ СЕЙВ (версия 20). Без этого после загрузки беда
+// начиналась бы заново: сигнал уходил бы второй раз, а спасатель забывал бы,
+// куда летел.
+void testDistressSurvivesSave() {
+    Game g;
+    buildWorld(g, 7373, 4);
+    int victim = -1;
+    for (size_t i = 0; i < g.agents.size(); ++i) {
+        if (int(i) == g.playerAgent) continue;
+        victim = int(i);
+        break;
+    }
+    if (victim < 0) { check(false, "маяк переживает сейв", "нет второго борта"); return; }
+
+    Agent& v = g.agents[size_t(victim)];
+    v.ship.vx = 0.03; v.ship.vy = 0.0; v.ship.vz = 0.0;
+    v.ship.enRoute = true;
+    v.ship.targetStar = -2;
+    v.ship.fuel.clear();
+    v.ship.propellant.clear();
+    v.currentStar = -1;
+    for (int t = 0; t < 8 && g.distress.empty(); ++t) g.update(0.25);
+    if (g.distress.empty()) { check(false, "маяк переживает сейв", "маяк не поднялся"); return; }
+
+    const DistressBeacon before = g.distress[0];
+    const double driftBefore = g.agents[size_t(victim)].driftYears;
+
+    const std::string path = "/tmp/starcluster_distress_test.sav";
+    const bool saved = g.saveToFile(path);
+    Game loaded;
+    const bool ok = saved && loaded.loadFromFile(path);
+    const bool sameCount = ok && loaded.distress.size() == g.distress.size();
+    const bool sameBeacon = sameCount &&
+        loaded.distress[0].agent == before.agent &&
+        std::fabs(loaded.distress[0].raisedTime - before.raisedTime) < 1e-9 &&
+        std::fabs(loaded.distress[0].x - before.x) < 1e-9 &&
+        std::fabs(loaded.distress[0].vx - before.vx) < 1e-9;
+    const bool sameDrift = ok && victim < int(loaded.agents.size()) &&
+        std::fabs(loaded.agents[size_t(victim)].driftYears - driftBefore) < 1e-9;
+
+    char buf[260];
+    std::snprintf(buf, sizeof(buf),
+        "маяков %d -> %d, возраст сигнала %.2f, годы дрейфа %.2f -> %.2f",
+        int(g.distress.size()), ok ? int(loaded.distress.size()) : -1,
+        g.time - before.raisedTime, driftBefore,
+        ok && victim < int(loaded.agents.size()) ? loaded.agents[size_t(victim)].driftYears : -1.0);
+    check(ok && sameBeacon && sameDrift, "маяк переживает сейв", buf);
+}
+
 void testStrandedShipGetsTowed() {
     Game g;
     buildWorld(g, 5959, 10);
     const int pa = g.playerAgent;
     Agent& p = g.agents[pa];
+
+    // (§50) Счётчики обнуляются здесь же: ниже по проверке `strandStatLoots()`
+    // отличает «груз отнял мародёр» от «груз пропал без причины», а с чужими
+    // числами от предыдущих проверок это различение было бы фикцией.
+    strandStatReset();
 
     // Разгоняем корабль и осушаем баки: тормозить нечем.
     p.ship.enRoute = true;
@@ -2849,7 +3138,14 @@ void testStrandedShipGetsTowed() {
     const double moneyBefore = p.money;
     const double cargoBefore = p.ship.cargo.empty() ? 0.0 : p.ship.cargo[0].amount;
 
-    for (int y = 0; y < 40 && g.agents[pa].ship.enRoute; ++y) g.update(1.0);
+    // (§50) Сорока лет БОЛЬШЕ НЕ ХВАТАЕТ, и это не поломка, а смена механики.
+    // Помощь перестала приходить по таймеру в шесть лет: теперь ждут свет и
+    // спасателя, а `TOW_WAIT_YEARS` из срока ожидания превратился в последний
+    // рубеж на сто лет (замер: худшее ЧЕСТНОЕ спасение — 87.5 года, рубеж
+    // поставлен сразу над ним, чтобы не подменять собой физику). Проверка
+    // утверждает ГАРАНТИЮ — «вытащат обязательно», — поэтому мерить её надо на
+    // горизонте гарантии, а не на старом таймере.
+    for (int y = 0; y < 150 && g.agents[pa].ship.enRoute; ++y) g.update(1.0);
 
     const Agent& after = g.agents[pa];
     const double cargoAfter = after.ship.cargo.empty() ? 0.0 : after.ship.cargo[0].amount;
@@ -2860,15 +3156,24 @@ void testStrandedShipGetsTowed() {
     // государство даром, платит застрявший только временем. Кошелёк и груз
     // обязаны дойти ЦЕЛЫМИ, иначе за одну беду возьмут дважды.
     const bool keptMoney = after.money >= moneyBefore - 1e-6;
+    // (§50) Груз может пропасть — но только в РУКИ МАРОДЁРА, и это видно
+    // счётчиком. Само спасение по-прежнему не берёт ни кредита: сигнал бедствия
+    // слышат все, включая пиратов и враждебные державы, и кто долетит первым,
+    // тот и решает, спасать или обобрать. Требовать здесь целый трюм значило бы
+    // требовать, чтобы на маяк слетались только добрые.
     const bool keptCargo = cargoAfter >= cargoBefore - 1e-6;
+    const bool lootedInstead = strandStatLoots() > 0;
     const bool canFly = shipFuelMass(after.ship) > 0.0;
 
-    char buf[240];
+    char buf[260];
     std::snprintf(buf, sizeof(buf),
-        "освобождён %s (система %d), кошелёк %.0f -> %.0f, груз %.0f -> %.0f, топливо на борту %.2f",
+        "освобождён %s (система %d), кошелёк %.0f -> %.0f, груз %.0f -> %.0f (%s), топливо %.2f",
         freed ? "да" : "НЕТ", after.currentStar, moneyBefore, after.money,
-        cargoBefore, cargoAfter, shipFuelMass(after.ship));
-    check(freed && keptMoney && keptCargo && canFly, "застрявшего вытаскивают, и это не грабёж", buf);
+        cargoBefore, cargoAfter,
+        keptCargo ? "цел" : (lootedInstead ? "отнят мародёром" : "ПРОПАЛ БЕЗ ПРИЧИНЫ"),
+        shipFuelMass(after.ship));
+    check(freed && keptMoney && (keptCargo || lootedInstead) && canFly,
+          "застрявшего вытаскивают, и это не грабёж", buf);
 }
 
 // Никто не остаётся в дрейфе НАВСЕГДА (§48.8).
@@ -4150,6 +4455,11 @@ int main(int argc, char** argv) {
     RUN(testDeadStarYieldsNeutronium);
     RUN(testAdvisorRunsCompound);
     RUN(testRevokedLicenceCanBeWorkedOff);
+    RUN(testDistressTravelsAtLightSpeed);
+    RUN(testBeaconModelMatchesTheRealHull);
+    RUN(testRescueBountyLeavesTheTreasury);
+    RUN(testPlayerFliesToTheBeacon);
+    RUN(testDistressSurvivesSave);
     RUN(testStrandedShipGetsTowed);
     RUN(testNobodyDriftsForever);
     RUN(testInsightIgnoresLotSplitting);

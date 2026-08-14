@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 
 int main(int argc, char** argv) {
     const int stars = argc > 1 ? std::atoi(argv[1]) : 1200;
@@ -26,7 +27,11 @@ int main(int argc, char** argv) {
     strandStatTrace(true);
 
     const int steps = int(double(years) / dt + 0.5);
+    // (§50) Заодно меряем ЦЕНУ ТАКТА: бюджет года симуляции — 160 мс на полное
+    // скопление (README), и спасение трогает горячий путь `updateAgents`.
+    const clock_t t0 = std::clock();
     for (int s = 0; s < steps; ++s) g.update(dt);
+    const double msPerYear = 1000.0 * double(std::clock() - t0) / double(CLOCKS_PER_SEC) / double(years);
 
     const long long total = strandStatArrivals();
     const long long over = strandStatOvershoots();
@@ -39,6 +44,7 @@ int main(int argc, char** argv) {
 
     std::printf("сид %u, звёзд %d, лет %d, шаг %.3f года, бортов %d (в пути %d, дрейфует %d)\n",
                 seed, stars, years, dt, int(g.agents.size()), enRoute, drifting);
+    std::printf("ТАКТ ГОДА               %.1f мс  (бюджет 160 мс на 8192 звезды)\n", msPerYear);
     std::printf("вылетов впритык (нищета) %lld  (%.3f в год)\n",
                 strandStatRiskyDepartures(), double(strandStatRiskyDepartures()) / years);
     std::printf("СПАСЕНИЙ (буксир)        %lld  (одно на %.1f лет)\n",
@@ -62,5 +68,52 @@ int main(int argc, char** argv) {
                 strandStatDryReserve());
     std::printf("худший остаток: у сухих %.4f c, вообще %.4f c\n",
                 strandStatWorstSpeed(), strandStatWorstAny());
+
+    // (§50) Спасение как механика: из чего складывается ожидание и чем всё
+    // кончается. `последний рубеж` — сколько раз сработал TOW_WAIT_YEARS, то
+    // есть сколько раз физика НЕ справилась. Если он не ноль — сломана физика.
+    int beaconsOpen = 0;
+    double oldestBeacon = 0.0;
+    for (size_t b = 0; b < g.distress.size(); ++b) {
+        ++beaconsOpen;
+        const double age = g.time - g.distress[b].raisedTime;
+        if (age > oldestBeacon) oldestBeacon = age;
+    }
+    std::printf("\n--- СПАСЕНИЕ (§50) ---\n");
+    std::printf("маяков поднято          %lld  (одно на %.1f лет)\n",
+                strandStatBeacons(), strandStatBeacons() ? double(years) / double(strandStatBeacons()) : 0.0);
+    std::printf("вытащено живым бортом   %lld\n", strandStatLiveRescues());
+    std::printf("вытащено казной         %lld\n", strandStatStateRescues());
+    std::printf("ПОСЛЕДНИЙ РУБЕЖ         %lld  (сработал TOW_WAIT_YEARS = %.0f лет)\n",
+                strandStatLastResort(), TOW_WAIT_YEARS);
+    std::printf("обобрано мародёрами     %lld\n", strandStatLoots());
+    std::printf("ожидание: среднее %.2f года, худшее %.2f года; из него ход света %.2f года\n",
+                strandStatWaitAverage(), strandStatWaitWorst(), strandStatLightAverage());
+    std::printf("маяков в эфире сейчас   %d  (старейшему %.1f года)\n", beaconsOpen, oldestBeacon);
+
+    // Разбор ЗАВИСШИХ маяков: без него видно только «не спасли», а надо знать
+    // почему — некому лететь, не догоняет или спасатель сам умер по дороге.
+    int shown = 0;
+    for (size_t b = 0; b < g.distress.size() && shown < 8; ++b, ++shown) {
+        const DistressBeacon& d = g.distress[b];
+        const Ship& v = g.agents[size_t(d.agent)].ship;
+        const double drift = std::sqrt(v.vx * v.vx + v.vy * v.vy + v.vz * v.vz);
+        const double dx = v.x - d.x, dy = v.y - d.y, dz = v.z - d.z;
+        const double gone = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (d.responder >= 0) {
+            const Agent& r = g.agents[size_t(d.responder)];
+            const double rx = v.x - r.ship.x, ry = v.y - r.ship.y, rz = v.z - r.ship.z;
+            std::printf("  маяк %2d: возраст %6.1f, дрейф %.3fc, ушёл %6.2f ly; спасатель #%d (%s) "
+                        "потолок %.3fc, знает=%d, до цели %6.2f ly\n",
+                        int(b), g.time - d.raisedTime, drift, gone, d.responder, r.type.c_str(),
+                        r.ship.speed, r.rescueKnows ? 1 : 0, std::sqrt(rx * rx + ry * ry + rz * rz));
+        } else {
+            std::printf("  маяк %2d: возраст %6.1f, дрейф %.3fc, ушёл %6.2f ly; СПАСАТЕЛЯ НЕТ "
+                        "(казна слала=%d, driftYears=%.1f, cooldown=%.1f, targetStar=%d)\n",
+                        int(b), g.time - d.raisedTime, drift, gone, d.stateSent ? 1 : 0,
+                        g.agents[size_t(d.agent)].driftYears, g.agents[size_t(d.agent)].missionCooldown,
+                        v.targetStar);
+        }
+    }
     return 0;
 }

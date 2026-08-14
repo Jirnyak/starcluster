@@ -342,6 +342,24 @@ int main(int argc, char** argv) {
                     std::printf("OBJECTIVE OVERFLOW: \"%s\" takes %d px of %d\n",
                                 ladder[i].text, wpx, budget);
             }
+            // (§50) Строки спасения меряются ОТДЕЛЬНЫМ списком, и это не
+            // дублирование. Они срочные и УСЛОВНЫЕ: появляются, только когда до
+            // борта дошёл свет чужого маяка или когда игрок уже идёт на сигнал,
+            // — а в мире харнеса никто не бедствует, и `objectiveLadder` их не
+            // вернёт никогда. Запас в панели на русском всего 4 px (204 из 208),
+            // так что «наверняка влезет» здесь не работает.
+            static const char* const conditional[] = {
+                "DISTRESS CALL: PRESS H",
+                "RUN TO THE BEACON",
+                "CLOSING ON THE HULL"
+            };
+            for (size_t i = 0; i < sizeof(conditional) / sizeof(conditional[0]); ++i) {
+                const int wpx = UI::textWidth(conditional[i], 1);
+                if (wpx > worstW) { worstW = wpx; worstText = conditional[i]; }
+                if (wpx > budget)
+                    std::printf("OBJECTIVE OVERFLOW: \"%s\" takes %d px of %d\n",
+                                conditional[i], wpx, budget);
+            }
             std::printf("objectives: %d steps, worst %d/%d px (\"%s\")\n",
                         int(ladder.size()), worstW, budget, worstText);
         }
