@@ -36,9 +36,17 @@ uiclick: ui_click_test.cpp $(LIBSOURCES)
 # квоты, непрерывность лестницы цен, окупаемость трюма и разведки. Лестница
 # проверок покрывала память и инварианты, но не экономику — а все крупные
 # ошибки оказались именно там (см. balance_test.cpp).
+# (§49) ДВА НАБОРА. `balance` — быстрый, для итерации: покрывает все механики и
+# идёт около двух с половиной минут. `balance_full` — весь, включая шестнадцать
+# долгих прогонов динамики мира (девять минут). Быстрый НЕ заменяет полный:
+# перед коммитом и перед релизом гоняется полный.
 balance: balance_test.cpp $(LIBSOURCES)
 	$(CXX) balance_test.cpp $(LIBSOURCES) -O2 -std=c++11 $(WARNFLAGS) $(SDL_CFLAGS) $(SDL_LIBS) -o balance_test
 	SDL_VIDEODRIVER=dummy ./balance_test
+
+balance_full: balance_test.cpp $(LIBSOURCES)
+	$(CXX) balance_test.cpp $(LIBSOURCES) -O2 -std=c++11 $(WARNFLAGS) $(SDL_CFLAGS) $(SDL_LIBS) -o balance_test
+	SDL_VIDEODRIVER=dummy ./balance_test --full
 
 # Санитайзер-сборка игры. Проверка: `make asan && ./game_asan --smoke && ./game_asan --localsmoke`.
 asan: $(SOURCES)

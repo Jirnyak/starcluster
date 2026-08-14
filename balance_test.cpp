@@ -37,6 +37,19 @@ namespace {
 
 int gFailures = 0;
 
+// (§49) ДВА НАБОРА, А НЕ ОДИН.
+//
+// Полный прогон стоит девять минут, и половину съедают четыре проверки, каждая
+// из которых крутит мир веками. Гонять их после каждой правки — значит не
+// гонять проверки вообще: разработка сводится к ожиданию. Поэтому набор
+// раздвоен: `make balance` — быстрый (около двух с половиной минут, покрывает
+// все механики), `make balance_full` — весь, включая долгие прогоны динамики
+// мира. ⚠️ Быстрый набор НЕ заменяет полный: перед коммитом и перед релизом
+// гоняется полный, и он же обязан быть зелёным на последнем коммите.
+bool gFull = false;
+int gSkipped = 0;
+double gSkippedCost = 0.0;
+
 void check(bool ok, const std::string& what, const std::string& detail) {
     std::printf("%-4s %-46s %s\n", ok ? "ok" : "FAIL", what.c_str(), detail.c_str());
     if (!ok) ++gFailures;
@@ -195,8 +208,12 @@ void testRunProfitSane() {
     check(falls && jackpotEarly && jackpotGoneLate && tamedLate,
           "куш есть у бедного и выдыхается у богатого", buf);
 
-    std::snprintf(buf, sizeof(buf), "отдача падает с ростом кошелька на %d из %d сидов",
-                  monotone, monotoneTotal);
+    // (§49) Худший мир НАЗЫВАЕТСЯ. Обе величины считались и никуда не шли —
+    // компилятор ругался на `worstSeed`, а замер терял самое полезное: с какого
+    // сида начинать разбор, если инвариант поедет.
+    std::snprintf(buf, sizeof(buf),
+                  "отдача падает с ростом кошелька на %d из %d сидов; худший рейс x%.1f (сид %u)",
+                  monotone, monotoneTotal, worstRatio, worstSeed);
     check(monotoneTotal > 0 && monotone == monotoneTotal,
           "проскальзывание наказывает объём", buf);
 }
@@ -1214,7 +1231,6 @@ void testBuySystemMovesMoneyAndOwner() {
     Game g;
     buildWorld(g, 42, 4);
     const int pa = g.playerAgent;
-    const int home = g.agents[pa].currentStar;
     // Берём чужую систему: своя стартовая уже наша и продаваться не должна.
     int target = -1;
     for (size_t i = 0; i < g.cluster.stars.size(); ++i) {
@@ -2699,9 +2715,16 @@ void testDeadStarYieldsNeutronium() {
 // нет. Если хоть одна из четырёх ям вернётся, капитал перестанет расти.
 void testAdvisorRunsCompound() {
     const unsigned seeds[3] = {1234u, 42u, 777u};
+    // (§49) В быстром наборе — ОДИН мир вместо трёх, но те же 25 рейсов.
+    //
+    // Резать надо число миров, а не длину партии: вся ценность этой проверки в
+    // ВТОРОМ десятке рейсов (§46) — первые десять росли и у сломанной игры.
+    // Один мир ловит запирание, три ловят его же на разных раскладах; для
+    // итерации хватает первого, перед коммитом гоняется полный набор.
+    const int worlds = gFull ? 3 : 1;
     int grew = 0;
     char detail[240] = "";
-    for (int si = 0; si < 3; ++si) {
+    for (int si = 0; si < worlds; ++si) {
         Game g;
         g.seed = seeds[si];
         g.init(1200);
@@ -2764,8 +2787,8 @@ void testAdvisorRunsCompound() {
         }
     }
     char buf[300];
-    std::snprintf(buf, sizeof(buf), "%s; выросли %d из 3 миров", detail, grew);
-    check(grew == 3, "советчик ведёт к росту, а не в тупик", buf);
+    std::snprintf(buf, sizeof(buf), "%s; выросли %d из %d миров", detail, grew, worlds);
+    check(grew == worlds, "советчик ведёт к росту, а не в тупик", buf);
 }
 
 // Отозванную лицензию можно ОТРАБОТАТЬ (§37.7).
@@ -3995,103 +4018,155 @@ void testFleetGrowthRespectsWorldBudget() {
           "стройка флота не топит симуляцию", buf);
 }
 
-int main() {
-    std::printf("=== РЕГРЕССИЯ БАЛАНСА ===\n\n");
-    testSlippageExists();
-    testRunProfitSane();
-    testBoardHonest();
-    testStarterAlwaysTradeable();
-    testCargoPaysOff();
-    testSurveyPaysOff();
-    testPriceLadderContinuous();
-    testStarterHullIsAClass();
-    testQuotaReachable();
-    testCargoToTankLoop();
-    testAnyElementLoads();
-    testBallastWeakensMix();
-    testBurnedFuelBecomesAsh();
-    testFusionFissionTradeoff();
-    testIronIsDead();
-    testSelfFuelBeatsStation();
-    testOverloadAllowedButGrounds();
-    testAshIgnoresHoldLimit();
-    testThrottleTradesPropellantForFuel();
-    testThrottleMidpointIsCostOptimum();
-    testRouteEstimateMatchesFlight();
-    testSlowCruiseIsCheaper();
-    testOptimalBeatsDefaults();
-    testRapidityDivergesNearLight();
-    testDockedAndLocalFlightAreFree();
-    testSpeedLadderIsSmooth();
-    testEmergencyStopIsPhysical();
-    testAdriftShipRoutesByCoordinates();
-    testDriveSlotExclusive();
-    testSystemPriceOrder();
-    testBuySystemMovesMoneyAndOwner();
-    testOwnedMarketIsFreeButFinite();
-    testColonyVaultConserves();
-    testBeltIsLocalDirt();
-    testMiningBurnsReactorFuel();
-    testDrillScalesWithReactor();
-    testWorldPopulationScalesWithSize();
-    testJobPaysLikeARun();
-    testJobDeadlinesAreReachable();
-    testTakenJobCanExpire();
-    testJournalCountsPayoutOnce();
-    testJobTierCurveSpansTheHullLadder();
-    testFailureCostsMoreThanSuccessGives();
-    testReputationUnlocksBiggerJobs();
-    testFleetCapacityGatesBigJobs();
-    testSaveKeepsReputationAndJournal();
-    testPlayerRenamesOwnSystem();
-    testStarNamesAreNamesNotIndices();
-    testStarNamesSpeakRussianAfterLoad();
-    testAdviceIsARealRun();
-    testAdviceMeasuresPerYear();
-    testAdviceRespectsSurvey();
-    testSameSeedSameWorld();
-    testInsightBurnsReactorFuel();
-    testArrivalReportReachesTheScreen();
-    testContractPaysForTheRoad();
-    testContractLedgerBalances();
-    testAdviceSubtractsRoadWhenTanksAreDry();
-    testSellAllKeepsContractCargo();
-    testEveryJobHasAnIssuer();
-    testJobRewardGrowsWithReputation();
-    testClusterHasSixteenPlayers();
-    testAllSixteenPayTheTariff();
-    testPowerBuysSystemFromTheState();
-    testPowersExpandSlowly();
-    testPowerBuysLicencesAndHulls();
-    testFleetGrowthRespectsWorldBudget();
-    testPlayerBuyingStateSystemPaysTheState();
-    testPowersHoldSharesInEachOther();
-    testSaveKeepsTheWholeCluster();
-    testRevokedLicenceUnlocksExoticsAndShares();
-    testProgressSurvivesSave();
-    testSaveKeepsTheMarketAlive();
-    testChromocoresSurviveHullChange();
-    testExoticMarketsAreRare();
-    testExoticRunIsAnotherFloor();
-    testAntimatterBurnsWithTheFuel();
-    testForgePicksTheStat();
-    testRefitSurvivesHullAndSave();
-    testDividendsReachTheAccount();
-    testRefuelQuoteMatchesCharge();
-    testDeadStarYieldsNeutronium();
-    testAdvisorRunsCompound();
-    testRevokedLicenceCanBeWorkedOff();
-    testStrandedShipGetsTowed();
-    testNobodyDriftsForever();
-    testInsightIgnoresLotSplitting();
-    testJobBondBurnsOnFailure();
-    testGrownColonyOutgrowsItsMarket();
-    testFleetAutopilotEarnsAndKeepsDeterminism();
-    testAutopilotOffChangesNothing();
-    testAutopilotOnKeepsTheRngStream();
-    testSharesPayBackInCenturies();
-    testSharesSurviveSave();
-    testTranslationsKeepFormatOrder();
+
+// (§49) ХРОНОМЕТР ПРОВЕРОК. Набор рос годами и дорос до восьми минут, а какие
+// именно проверки его едят — никто не знал. Меряем каждую и печатаем самые
+// тяжёлые: резать наугад нельзя.
+double gElapsed[256];
+const char* gNames[256];
+int gRunCount = 0;
+
+
+// Тяжёлая проверка: в быстром наборе пропускается, но НАЗЫВАЕТСЯ вслух вместе
+// с ценой, чтобы пропуск нельзя было принять за покрытие.
+#define RUN_HEAVY(fn, seconds) do { \
+    if (gFull) { RUN(fn); } \
+    else { ++gSkipped; gSkippedCost += (seconds); std::printf("--   %-46s пропущена (тяжёлая, ~%.0f с)\n", #fn, double(seconds)); } \
+} while (0)
+
+#define RUN(fn) do { \
+    const clock_t t0 = std::clock(); \
+    fn(); \
+    if (gRunCount < 256) { \
+        gElapsed[gRunCount] = double(std::clock() - t0) / double(CLOCKS_PER_SEC); \
+        gNames[gRunCount] = #fn; \
+        ++gRunCount; \
+    } \
+} while (0)
+
+void reportTimings() {
+    int order[256];
+    for (int i = 0; i < gRunCount; ++i) order[i] = i;
+    for (int i = 0; i < gRunCount; ++i) {
+        for (int j = i + 1; j < gRunCount; ++j) {
+            if (gElapsed[order[j]] > gElapsed[order[i]]) { const int t = order[i]; order[i] = order[j]; order[j] = t; }
+        }
+    }
+    double total = 0.0;
+    for (int i = 0; i < gRunCount; ++i) total += gElapsed[i];
+    std::printf("\n--- ВРЕМЯ: всего %.1f с на %d проверок; самые тяжёлые ---\n", total, gRunCount);
+    for (int i = 0; i < gRunCount && i < 20; ++i) {
+        std::printf("  %6.1f с  %5.1f%%  %s\n", gElapsed[order[i]],
+                    total > 0.0 ? 100.0 * gElapsed[order[i]] / total : 0.0, gNames[order[i]]);
+    }
+}
+
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--full") gFull = true;
+    }
+    std::printf("=== РЕГРЕССИЯ БАЛАНСА (%s) ===\n\n", gFull ? "ПОЛНЫЙ набор" : "быстрый набор");
+    RUN(testSlippageExists);
+    RUN_HEAVY(testRunProfitSane, 17);
+    RUN(testBoardHonest);
+    RUN(testStarterAlwaysTradeable);
+    RUN(testCargoPaysOff);
+    RUN(testSurveyPaysOff);
+    RUN(testPriceLadderContinuous);
+    RUN(testStarterHullIsAClass);
+    RUN_HEAVY(testQuotaReachable, 6);
+    RUN(testCargoToTankLoop);
+    RUN(testAnyElementLoads);
+    RUN(testBallastWeakensMix);
+    RUN(testBurnedFuelBecomesAsh);
+    RUN(testFusionFissionTradeoff);
+    RUN(testIronIsDead);
+    RUN(testSelfFuelBeatsStation);
+    RUN(testOverloadAllowedButGrounds);
+    RUN(testAshIgnoresHoldLimit);
+    RUN(testThrottleTradesPropellantForFuel);
+    RUN(testThrottleMidpointIsCostOptimum);
+    RUN(testRouteEstimateMatchesFlight);
+    RUN(testSlowCruiseIsCheaper);
+    RUN(testOptimalBeatsDefaults);
+    RUN(testRapidityDivergesNearLight);
+    RUN(testDockedAndLocalFlightAreFree);
+    RUN(testSpeedLadderIsSmooth);
+    RUN(testEmergencyStopIsPhysical);
+    RUN(testAdriftShipRoutesByCoordinates);
+    RUN(testDriveSlotExclusive);
+    RUN(testSystemPriceOrder);
+    RUN(testBuySystemMovesMoneyAndOwner);
+    RUN(testOwnedMarketIsFreeButFinite);
+    RUN(testColonyVaultConserves);
+    RUN(testBeltIsLocalDirt);
+    RUN(testMiningBurnsReactorFuel);
+    RUN(testDrillScalesWithReactor);
+    RUN_HEAVY(testWorldPopulationScalesWithSize, 21);
+    RUN(testJobPaysLikeARun);
+    RUN(testJobDeadlinesAreReachable);
+    RUN(testTakenJobCanExpire);
+    RUN(testJournalCountsPayoutOnce);
+    RUN(testJobTierCurveSpansTheHullLadder);
+    RUN(testFailureCostsMoreThanSuccessGives);
+    RUN_HEAVY(testReputationUnlocksBiggerJobs, 14);
+    RUN(testFleetCapacityGatesBigJobs);
+    RUN(testSaveKeepsReputationAndJournal);
+    RUN(testPlayerRenamesOwnSystem);
+    RUN(testStarNamesAreNamesNotIndices);
+    RUN(testStarNamesSpeakRussianAfterLoad);
+    RUN(testAdviceIsARealRun);
+    RUN(testAdviceMeasuresPerYear);
+    RUN(testAdviceRespectsSurvey);
+    RUN(testSameSeedSameWorld);
+    RUN(testInsightBurnsReactorFuel);
+    RUN_HEAVY(testArrivalReportReachesTheScreen, 6);
+    RUN(testContractPaysForTheRoad);
+    RUN(testContractLedgerBalances);
+    RUN(testAdviceSubtractsRoadWhenTanksAreDry);
+    RUN(testSellAllKeepsContractCargo);
+    RUN_HEAVY(testEveryJobHasAnIssuer, 7);
+    RUN_HEAVY(testJobRewardGrowsWithReputation, 14);
+    RUN(testClusterHasSixteenPlayers);
+    RUN_HEAVY(testAllSixteenPayTheTariff, 41);
+    RUN(testPowerBuysSystemFromTheState);
+    RUN_HEAVY(testPowersExpandSlowly, 52);
+    RUN(testPowerBuysLicencesAndHulls);
+    RUN_HEAVY(testFleetGrowthRespectsWorldBudget, 70);
+    RUN(testPlayerBuyingStateSystemPaysTheState);
+    RUN_HEAVY(testPowersHoldSharesInEachOther, 10);
+    RUN_HEAVY(testSaveKeepsTheWholeCluster, 22);
+    RUN(testRevokedLicenceUnlocksExoticsAndShares);
+    RUN(testProgressSurvivesSave);
+    RUN(testSaveKeepsTheMarketAlive);
+    RUN(testChromocoresSurviveHullChange);
+    RUN(testExoticMarketsAreRare);
+    RUN(testExoticRunIsAnotherFloor);
+    RUN(testAntimatterBurnsWithTheFuel);
+    RUN(testForgePicksTheStat);
+    RUN(testRefitSurvivesHullAndSave);
+    RUN_HEAVY(testDividendsReachTheAccount, 7);
+    RUN(testRefuelQuoteMatchesCharge);
+    RUN(testDeadStarYieldsNeutronium);
+    RUN(testAdvisorRunsCompound);
+    RUN(testRevokedLicenceCanBeWorkedOff);
+    RUN(testStrandedShipGetsTowed);
+    RUN(testNobodyDriftsForever);
+    RUN(testInsightIgnoresLotSplitting);
+    RUN_HEAVY(testJobBondBurnsOnFailure, 8);
+    RUN(testGrownColonyOutgrowsItsMarket);
+    RUN_HEAVY(testFleetAutopilotEarnsAndKeepsDeterminism, 15);
+    RUN_HEAVY(testAutopilotOffChangesNothing, 6);
+    RUN(testAutopilotOnKeepsTheRngStream);
+    RUN(testSharesPayBackInCenturies);
+    RUN(testSharesSurviveSave);
+    RUN(testTranslationsKeepFormatOrder);
+    reportTimings();
+    if (!gFull) {
+        std::printf("\n⚠️  БЫСТРЫЙ НАБОР: пропущено %d тяжёлых проверок (~%.0f с).\n"
+                    "    Перед коммитом и перед релизом гонять `make balance_full`.\n",
+                    gSkipped, gSkippedCost);
+    }
     std::printf("\n%s (%d failures)\n", gFailures == 0 ? "PASS" : "FAIL", gFailures);
     return gFailures == 0 ? 0 : 1;
 }
