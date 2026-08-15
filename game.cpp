@@ -1240,7 +1240,19 @@ bool payContractReward(Game& game, Contract& contract, Agent& agent, bool emitSi
     if (agent.playerControlled && validFaction(game, contract.issuerFaction)) {
         game.resizeFactionReputation();
         double& reputation = game.factionReputation[size_t(contract.issuerFaction)];
-        reputation = std::min(REPUTATION_CAP_JOBS, reputation + 1.0);
+        // (§58) ДОВЕРИЕ РАСТЁТ С РАЗМЕРОМ СДАЧИ, НО МЕДЛЕННЕЕ, ЧЕМ ПАДАЕТ ОТ
+        // ПРОВАЛА. Раньше успех давал плоскую единицу независимо от массы:
+        // единица шкалы — один сданный заказ (§24). Это делало лестницу
+        // непроходимой снизу — крупная сдача стоила ровно столько же, сколько
+        // мелкая, и подняться можно было только числом рейсов.
+        //
+        // Закон взят ТОТ ЖЕ, что у штрафа (`applyContractFailureReputation`):
+        // корень из массы в базовых заказах. Разницу держит `REPUTATION_FAIL_FACTOR`
+        // = 2.0 — провал стоит ровно вдвое дороже успеха при ЛЮБОМ размере, то
+        // есть асимметрия сохранена и новых чисел не заведено.
+        const double mass = std::max(JOB_CARGO_BASE, game.contractCargoMass(contract));
+        const double gain = std::sqrt(mass / JOB_CARGO_BASE);
+        reputation = std::min(REPUTATION_CAP_JOBS, reputation + gain);
     }
 
     if (agent.playerControlled) {
@@ -1507,7 +1519,25 @@ int pickNeedyTarget(const Game& game, int originStar, double rangeShare) {
         // Чем выше тир, тем дальше «своя» дистанция. Близость к ней и есть
         // главный вес: заказ должен ЛЕЖАТЬ в своём поясе дальности, а не быть
         // просто самым выгодным из ближних.
-        const double wanted = 6.0 + 90.0 * rangeShare;
+        // (§58) ДАЛЬНОСТЬ — АБСОЛЮТНЫЙ РАДИУС, ГЛАДКО РАСТУЩИЙ С РЕПУТАЦИЕЙ.
+        //
+        // Было `6.0 + 90.0 * rangeShare` — два числа, взятых с потолка, и оба в
+        // световых годах. При базовой доле 0.10 новичку искали цель в 15 св.
+        // годах, а это для стартового «Hauler’а» больше сотни лет полёта. Замер
+        // показал цену: карьера на заказах делает 3 рейса за 1656 лет против 60
+        // за 1611 у торговой — то есть из шестидесятикратного отставания
+        // ДВАДЦАТКА была не платой, а дальностью.
+        //
+        // Обе границы теперь выведены из самого скопления:
+        //   низ — среднее расстояние между звёздами, `radiusLy / N^(1/3)`
+        //         (геометрия шара из N точек), то есть «соседняя система»;
+        //   верх — `radiusLy`, весь радиус скопления.
+        // Между ними — гладко, по репутации. Ни одного числа из воздуха, и
+        // масштаб сам едет за размером мира, а не зашит под один STAR_COUNT.
+        const double spacing = game.cluster.radiusLy > 0.0 && !game.cluster.stars.empty()
+            ? game.cluster.radiusLy / std::pow(double(game.cluster.stars.size()), 1.0 / 3.0)
+            : 6.0;
+        const double wanted = spacing + std::max(0.0, game.cluster.radiusLy - spacing) * rangeShare;
         const double miss = std::abs(distance - wanted) / wanted;
         const double rangeFit = 1.0 / (1.0 + miss * miss);
         const double score = rangeFit * (0.25 + market.strain) *

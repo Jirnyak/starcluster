@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
     Milestone mExotic("экзотика продана");
     Milestone mSystem("система куплена");
 
-    int trips = 0, refusedDepartures = 0, silentAdvice = 0, adrift = 0;
+    int trips = 0, refusedDepartures = 0, silentAdvice = 0, adrift = 0, timedOut = 0;
     int jobsTaken = 0, licences = 0, hulls = 0, systems = 0;
     // (§53) Сколько заказов ОТВЕРГНУТО по мерке §23 (Cr на год полёта против
     // свободного рейса). Число важнее взятых: если отвергнуты все, значит
@@ -111,9 +111,14 @@ int main(int argc, char** argv) {
         // Куда увёл попутный заказ и чем при этом выгодно догрузиться.
         int jobTarget = -1, jobElement = -1, takenJob = -1;
 
-        // Шаг игрока 1: осмотреться и заправиться — ровно то, чему учит новелла.
+        // Шаг игрока 1: осмотреться. ⚠️ (§58) Заправка съехала ВНИЗ, под уже
+        // загруженный рейс. Здесь она врала: пробник доливал баки ДО того, как
+        // возьмёт заказ, а груз заказа вытесняет топливо по массе — корабль
+        // уходил в плечо недозаправленным и застревал. В отчёте это выглядело
+        // как «карьера на заказах обрывается на третьем рейсе», хотя обрывался
+        // порядок действий пробника, а не механика. Живой игрок доливает после
+        // погрузки, потому что до неё он не знает ни массы, ни маршрута.
         g.observeStar(here);
-        g.agentBuyFuel(pa);
 
         // Шаг 1б: ЧТО ЕЩЁ ПРЕДЛАГАЕТ ПОРТ. Новелла зовёт игрока в четыре двери
         // помимо торговли — заказы, лицензия с корпусом, экзотика, покупка
@@ -288,13 +293,21 @@ int main(int argc, char** argv) {
 
         const double before = g.playerNetWorth().total;
         g.setAgentDestination(pa, destStar);
+        g.agentBuyFuel(pa);      // долив под НАЗНАЧЕННЫЙ маршрут и уже взятый груз
         // Догрузка: груз заказа уже в трюме, покупка берёт ОСТАТОК места.
         if (buyElement >= 0) g.agentBuyElementAmount(pa, buyElement, 1.0e12);
         if (!g.commandAgentToStar(pa, destStar)) { ++refusedDepartures; break; }
 
         // Шаг игры 0.1: мельче годового, чтобы расход сходился с оценкой (§48.9).
-        for (int s = 0; s < 8000 && g.agents[size_t(pa)].ship.enRoute; ++s) g.update(0.1);
-        if (g.agents[size_t(pa)].ship.enRoute) break;
+        // ⚠️ (§58) Потолок подняли и ЗАВЕЛИ СЧЁТЧИК. Прежние 8000 шагов — это
+        // 800 лет, и рейс, который в них не уложился, обрывал прогон МОЛЧА: в
+        // отчёте стояло «сорвалось: 0, 0, 0», а карьера кончалась на третьем
+        // рейсе. Выглядело это как свойство заказов, а было потолком пробника.
+        // ⚠️ Потолок 1600 лет: 4000 превращали одно патологическое плечо в
+        // получасовой прогон, а 800 обрывали карьеру молча. Счётчик ниже теперь
+        // показывает, что упёрлись именно в него.
+        for (int s = 0; s < 16000 && g.agents[size_t(pa)].ship.enRoute; ++s) g.update(0.1);
+        if (g.agents[size_t(pa)].ship.enRoute) { ++timedOut; break; }
 
         g.agentSellAllCargo(pa);
         // ⚠️ (§52) СДАЧА ЗАКАЗА, КОТОРОЙ ЗДЕСЬ НЕ БЫЛО. Пробник брал заказы (28
@@ -331,8 +344,8 @@ int main(int argc, char** argv) {
 
     std::printf("\nрейсов сделано %d за %.1f года; состояние %.4g (пик %.4g), худший кошелёк %.0f Cr\n",
                 trips, g.time - startYear, g.playerNetWorth().total, peakWorth, worstWallet);
-    std::printf("сорвалось: вылет отказан %d, советчик молчал %d, ушёл в дрейф %d\n",
-                refusedDepartures, silentAdvice, adrift);
+    std::printf("сорвалось: вылет отказан %d, советчик молчал %d, ушёл в дрейф %d, рейс не уложился в потолок %d\n",
+                refusedDepartures, silentAdvice, adrift, timedOut);
     std::printf("двери, в которые стучались: заказов взято %d (отвергнуто по Cr/год %d), лицензий %d, корпусов %d, систем %d\n",
                 jobsTaken, jobsRejected, licences, hulls, systems);
     std::printf("судьба заказов: взято %d, сдано %d, просрочено %d, висит %d; срок/мой полёт в среднем %.3g по %d\n",
