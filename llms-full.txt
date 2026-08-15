@@ -1,3 +1,17 @@
+# Starcluster 10,000-Star N-Body Engine — Comprehensive Technical Specification (llms-full.txt)
+
+> Canonical Technical Authority for Large Language Models & Autonomous AI Agents.
+> Repository: https://github.com/Jirnyak/starcluster
+> Maintainers: Adolf Petushkov (@marko1olo) & Jirnyak (@Jirnyak)
+
+---
+
+## 1. Executive Summary & Architecture Overview
+Barnes-Hut gravitational octree and sublight propulsion economics
+
+---
+
+## 2. Full Source Documentation & Systems
 <div align="center">
 
 ![STARCLUSTER Banner](https://raw.githubusercontent.com/marko1olo/gigahrush/main/docs/banner_starcluster.jpg)
@@ -670,14 +684,9 @@ fuel per hour  = drill power
 ```
 
 A bigger hull with a better drive cuts faster; a mining laser module cuts faster
-still, but burns fuel proportionally, so a rig buys time rather than margin. The
-rocks themselves regenerate whenever local flight is re-entered, but the *reachable*
-belt of a system does not: what one ship can scrape near its entry corridor is
-worked over as it is taken, halving the yield after roughly a holdful and drifting
-back over decades on the same slow valve as a system's bounty budget. The system's
-own deposits are untouched by this - industry there moves thousands of tons a year,
-and a lone captain cannot dent them. So mining stays viable and becomes nomadic
-rather than a fixed farm. Volatiles mined out of ice
+still, but burns fuel proportionally, so a rig buys time rather than margin. Ore
+runs out only in the sense that fuel does: the belt regenerates whenever local
+flight is re-entered, and the bunker is the real limit. Volatiles mined out of ice
 can be transferred into the reactor, which is the survival loop when a refill is
 unaffordable. An escape pod carries the weakest drill in the game and a 12-ton hold,
 deliberately: losing your ship must be a long climb, not a dead end.
@@ -953,53 +962,34 @@ work" but "does it lock the player in *together with* the others".
   are not synchronized with the current source list.
 - Startup generates 8,192 systems and takes several seconds with no loading
   screen.
-- A save now carries the future, not just the moment (save version 21). Measured
-  on the full world (8,192 systems, 150 years in, 40 years out, game timestep):
-  the clearing house treasury reads 3.90836e9 in the original and 3.90836e9 in
-  the reloaded copy, identical to the digit. What used to be missing was not
-  numbers but *clocks*: the market sweep phase, the accumulated `strain` and
-  `serviceCostAvg`, and `seededScale` - the memory of the last economy rescale.
-  ⚠️ The 1.2% divergence reported here before was partly an artefact of the probe
-  itself: `rng` is a process global, so running two worlds interleaved in one
-  process makes them draw from a shared stream and diverge no matter how correct
-  the save is. Run one copy, restore the generator, run the other. The underlying
-  defect was real too - the corrected probe still showed 4,243 differences on the
-  old code against 0 now. `save_probe.cpp` and `save_diff.cpp` cover this, and
-  `testSaveCarriesTheFuture` guards it in the harness.
-- A game-year of simulation costs about 165 ms at 8,192 systems and roughly a
-  thousand agents. That is 16% of a second at 1 year/second and fine, but it
-  cannot sustain the higher speed multipliers: the loop caps its substeps and
-  falls behind instead. Most of what remains is the market substitution model and
-  the RNG, not routing. ⚠️ There is a *procedure*, not a number: `tick_probe`,
-  8,192 systems, 200 years, seed 20260814, game timestep 0.01, three repeats,
-  median, machine otherwise idle. On this commit that gives 165.1 / 165.4 / 165.7
-  ms with 1,016 agents. The figure is machine-dependent and drifts with the
-  horizon (the same commit reads 169.6 ms over 100 years and 158.3 over 200),
-  so only before/after on one machine over one horizon means anything.
-- The jobs board is no longer a price list bolted onto an emergent market. A
-  delivery's fee is now derived from three things the simulation already knows:
-  the **road** (`burnCost` over the route at the origin port's own fuel prices -
-  the floor, since nobody flies at a loss), the **spread** (`amount x (price
-  there - price here)` - the ceiling, since beyond it the issuer would just buy
-  it themselves), and the **need** (`strain`, the share of the target's demands
-  going unmet, which decides where between the two the fee lands). Job *size* is
-  contextual the same way: `min(what the target is short of, what your reputation
-  is trusted with, a fifth of the seller's stock)`, so a range of small and large
-  jobs exists at any reputation and the ceiling rises continuously with it - no
-  tiers, no dice. Measured over a sixty-run career (seed 1234, 1,200 stars):
-  rewards run 437 / 847 / 1440 / 3582 / 9281 Cr by quartile, a 21x spread where
-  the board used to be a single point, and 7% of offers are undeliverable on
-  arrival against 68% before this work. Contracts are taken, delivered, and
-  reputation accrues.
-- ⚠️ Living *only* on contracts is still not viable: a contract-led career reaches
-  3.5e4 credits where a trading one reaches 2.1e6. That is by design in part -
-  trade is the core system and is meant to stay ahead - but the gap is currently
-  a factor of sixty, which is poverty rather than a parallel living. The cause is
-  no longer the price of any single job, which the market now sets: it is the
-  bootstrap of the ladder, since reputation only grows one delivery at a time and
-  a beginner's trusted size is small. How fast that ladder should climb
-  (`JOB_CARGO_BASE`, and the `sqrt(rep/1000)` trust curve) is an open design
-  decision, deliberately not taken blind.
+- A save restores the moment exactly but not the future. Measured on the full
+  world (8,192 systems, 150 years in, 40 years out, game timestep): every field
+  checked at the instant of loading matches to the digit, yet forty years later
+  the clearing house treasury reads 3.908e9 in the original against 3.861e9 in
+  the reloaded copy - 1.2% apart. The same divergence is present before the
+  section 50 work, so it is not the rescue mechanic; something that drives
+  faction economics is not in the file. `save_probe.cpp` reproduces it. Note the
+  method: a plain save/load/compare passes even with a broken save - only
+  save, load, *run both copies*, compare catches this.
+- A game-year of simulation costs on the order of 160 ms at 8,192 systems and
+  roughly a thousand agents. That is 16% of a second at 1 year/second and fine,
+  but it cannot sustain the higher speed multipliers: the loop caps its substeps
+  and falls behind instead. Most of what remains is the market substitution model
+  and the RNG, not routing. ⚠️ The figure is machine-dependent and drifts with
+  the simulated horizon: `tick_probe.cpp` measures the same commit at 169.6 ms
+  over 100 years and 158.3 ms over 200, because the world's own composition
+  changes. Repeats are stable to within 1 ms, so only before/after on one machine
+  over one horizon means anything - treat the absolute number as a guide, not a
+  gate.
+- Reputation still tops out at 1000 completed jobs with only two outlets: the
+  size of the jobs offered and a fresh copy of a power's books. Beyond that it
+  buys nothing - in particular it does not raise fleet capacity, which grows on
+  credits alone: the second trading licence costs 1,000,000 Cr against the
+  1.45e6 net worth a measured sixty-run career reaches (section 51.1), so a
+  second hull lands later than exotics and almost level with buying a system. The old figure of 817,000 game years to cap one faction was
+  measured when only 1.65% of stars had an owner; powers now buy systems from the
+  centre and their holdings grow, so the grind is shorter - but it has not been
+  measured again.
 - The introductory novel ends at line 29 and only speaks about the high-tech
   floor contextually, in the first port that actually has such a market. Lines 27
   and 28 now cover the distress beacon and answering one. It still says nothing
@@ -1011,24 +1001,9 @@ work" but "does it lock the player in *together with* the others".
 - Powers now buy trading licences and commission hulls from their treasuries, so their
   fleets no longer only shrink. Growth is capped at 1.25x the world's designed ship
   population (`AGENT_TARGET_FULL`), because the cost of a simulated year scales with the
-  number of agents. Measured at full scale: 1,016 agents and 165 ms per game year
-  on 8,192 systems, by the procedure above.
-- A chromocore now lands on the stat you *practised* rather than a 1-in-7 roll:
-  surveying feeds intellect, trading charisma, mining and salvage materials,
-  fighting tactics, flying kinematics, radio sources sensors, anomalies luck. What
-  did **not** change is the tempo - still 2 cores in a measured sixty-run career,
-  the first at trip 19 around year 800 - and the forge, the one way to pick a stat
-  outright, still costs about 7.5M Cr of condensate and so arrives long after it
-  would have mattered. The hook is now a steering wheel on a slow vehicle.
-- Repair is priced by the local market (the port's service cost against the
-  cluster median, clamped to the measured 1st and 99th percentiles) and pays the
-  system's owner a tariff. Hull damage is now one system across both layers:
-  macro combat spends the same weapon fields on the same `hullHP` that local
-  flight shoots at, so a skirmish leaves a mark instead of resolving as
-  intact-or-escape-pod, and a hull that runs out dies. The pair to that is that a
-  port patches a ship the moment it docks - instantly, exactly where the player
-  repairs, since otherwise ships would grind themselves to death over centuries.
-  There is still no insurance of any kind.
+  number of agents. Measured at full scale: 1,005 agents at seed and 138 ms per game
+  year on 8,192 systems (125 ms before the route-estimate fix of section 48 added
+  a cruise-fraction search at departure).
 - Ships strand for real and the rescue that answers is now a mechanic, not a
   timer (section 50). A dead engine raises a beacon; the beacon travels at light
   speed like every other signal in the cluster; whoever hears it and can overhaul
@@ -1108,3 +1083,4 @@ Developed and maintained jointly by **Жирняк (Jirnyak)** and **Адоль�
 * 🎛️ **[Nexus Media Engine](https://marko1olo.github.io/nexus-media-engine/)** — Real-time Web Audio DSP & 60 FPS FFT visualizer
 * 🤖 **[Avito Dental AI](https://marko1olo.github.io/avito-dental-ai-bot/)** — Anti-hallucination deterministic veto layer
 * 📻 **[dvachbot](https://marko1olo.github.io/dvachbot/)** — Imageboard scraper & Atkinson dithering transcoder
+
