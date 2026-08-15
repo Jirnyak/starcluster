@@ -852,24 +852,30 @@ work" but "does it lock the player in *together with* the others".
   ms with 1,016 agents. The figure is machine-dependent and drifts with the
   horizon (the same commit reads 169.6 ms over 100 years and 158.3 over 200),
   so only before/after on one machine over one horizon means anything.
-- Reputation still tops out at 1000 completed jobs, and its third outlet - a
-  discount on the licence bond, priced at `1 + best job tier` - has never fired,
-  because until now **two thirds of the jobs board could not be delivered at
-  all.** Measured across 123 offers in a sixty-run career (seed 1234, 1,200
-  stars): the deadline granted was on average 0.743 of the time the player's own
-  ship needs for that route, and 84 of 123 offers were already impossible the
-  moment they were posted. The issuer priced the deadline against an idealised
-  reference hull; the slack has been re-derived from the real one
-  (`CONTRACT_DEADLINE_SLACK` 1.35 -> 2.5), which moves the mean to 1.40, the
-  median to 1.48 and the impossible share to 30%. ⚠️ The remaining tail is not a
-  scalar problem: at the 5th percentile the deadline is nine times too short.
-  Those are jobs across the whole cluster that a given hull simply cannot reach
-  in time, and declining them is correct behaviour - the median is the acceptance
-  figure, not the tail. Job *pay* is still untouched at `CONTRACT_PAY_PER_YEAR =
-  9.0`, a constant left over from the economy before its rescale, so a contract
-  contributes about 0.4% of what the same flight-year earns in trade. Trade is
-  the core system by design and should stay ahead; the open question is only
-  whether contracts pay enough to live on for a player who prefers them.
+- The jobs board is no longer a price list bolted onto an emergent market. A
+  delivery's fee is now derived from three things the simulation already knows:
+  the **road** (`burnCost` over the route at the origin port's own fuel prices -
+  the floor, since nobody flies at a loss), the **spread** (`amount x (price
+  there - price here)` - the ceiling, since beyond it the issuer would just buy
+  it themselves), and the **need** (`strain`, the share of the target's demands
+  going unmet, which decides where between the two the fee lands). Job *size* is
+  contextual the same way: `min(what the target is short of, what your reputation
+  is trusted with, a fifth of the seller's stock)`, so a range of small and large
+  jobs exists at any reputation and the ceiling rises continuously with it - no
+  tiers, no dice. Measured over a sixty-run career (seed 1234, 1,200 stars):
+  rewards run 437 / 847 / 1440 / 3582 / 9281 Cr by quartile, a 21x spread where
+  the board used to be a single point, and 7% of offers are undeliverable on
+  arrival against 68% before this work. Contracts are taken, delivered, and
+  reputation accrues.
+- ⚠️ Living *only* on contracts is still not viable: a contract-led career reaches
+  3.5e4 credits where a trading one reaches 2.1e6. That is by design in part -
+  trade is the core system and is meant to stay ahead - but the gap is currently
+  a factor of sixty, which is poverty rather than a parallel living. The cause is
+  no longer the price of any single job, which the market now sets: it is the
+  bootstrap of the ladder, since reputation only grows one delivery at a time and
+  a beginner's trusted size is small. How fast that ladder should climb
+  (`JOB_CARGO_BASE`, and the `sqrt(rep/1000)` trust curve) is an open design
+  decision, deliberately not taken blind.
 - The introductory novel ends at line 29 and only speaks about the high-tech
   floor contextually, in the first port that actually has such a market. Lines 27
   and 28 now cover the distress beacon and answering one. It still says nothing
